@@ -16,7 +16,7 @@
 | Componente | Recomendación | Alternativa |
 |------------|---------------|-------------|
 | MCU | ESP32-S3-WROOM-1-N8R2 | ESP32-C3 |
-| DAC I2S | PCM5102A (SNR 112 dB) | MAX98357A (DAC+amp) |
+| DAC I2S | PCM5102A (SNR 112 dB, propuesto) | MAX98357A (DAC+amp), ES9023, AK4432 |
 | Regulador | AMS1117-3.3 | ME6211 |
 | Botón pairing | Pulsador táctil SMD 6×6 mm | — |
 | LED estado | WS2812B RGB | LED bicolor |
@@ -62,3 +62,7 @@
 ## Alimentación
 
 USB-C 5 V / 150 mA estimado.
+
+> **Nota:** PCM5102A es una propuesta inicial. No bloquea cambios futuros a ES9023,
+> AK4432 u otro DAC I2S de 16-bit. La elección final depende de disponibilidad,
+> costo y validación acústica con el parlante o equipo auxiliar objetivo.

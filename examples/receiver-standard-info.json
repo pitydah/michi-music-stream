@@ -1,1 +1,21 @@
-{"device_id":"rcv_standard_001","name":"Michi Stream Cocina","type":"michi_stream_standard","firmware":"0.1.0","api_version":"v1-lite","roles":["audio_receiver","music_stream_receiver"],"output":{"connector":"jack_3_5","max_sample_rate":48000,"max_bit_depth":16,"channels":2},"supported_codecs":["pcm_s16le","opus"],"features":{"pairing_button":true,"volume":true,"heartbeat":true,"ota_update":false}}
+{
+  "device_id": "rcv_standard_001",
+  "name": "Michi Stream Cocina",
+  "type": "michi_stream_standard",
+  "firmware": "0.1.0",
+  "api_version": "v1-lite",
+  "roles": ["audio_receiver", "music_stream_receiver"],
+  "output": {
+    "connector": "jack_3_5",
+    "max_sample_rate": 48000,
+    "max_bit_depth": 16,
+    "channels": 2
+  },
+  "supported_codecs": ["pcm_s16le", "opus"],
+  "features": {
+    "pairing_button": true,
+    "volume": true,
+    "heartbeat": true,
+    "ota_update": false
+  }
+}
