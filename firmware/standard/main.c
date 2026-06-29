@@ -1,3 +1,14 @@
+/*
+ * Michi Music Stream Standard — firmware prototype.
+ *
+ * ESTADO: PROTOTYPE. No probado en hardware real.
+ * - Sin reproduccion de audio estable validada.
+ * - Sin multiroom.
+ * - Sin Opus real implementado (solo stub).
+ * - Sin produccion Hi-Fi.
+ * - Usar solo para early prototyping con breadboard + PCM5102A.
+ */
+
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "esp_wifi.h"
@@ -32,7 +43,8 @@ static void hb_cb(void *a) { ESP_LOGW(TAG, "Heartbeat timeout"); session_stop();
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Michi Stream Standard v%s", FIRMWARE_VERSION);
+    ESP_LOGI(TAG, "Michi Music Stream Standard v%s [PROTOTYPE]", FIRMWARE_VERSION);
+    ESP_LOGW(TAG, "Este firmware es prototype. Sin audio validado ni multiroom.");
     nvs_flash_init(); wifi_init();
     gpio_config_t b = {.pin_bit_mask = 1ULL<<PAIRING_BUTTON_PIN, .mode = GPIO_MODE_INPUT, .pull_up_en = true, .intr_type = GPIO_INTR_NEGEDGE};
     gpio_config(&b); gpio_install_isr_service(0); gpio_isr_handler_add(PAIRING_BUTTON_PIN, btn_isr, NULL);

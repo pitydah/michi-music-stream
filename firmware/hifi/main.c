@@ -1,3 +1,14 @@
+/*
+ * Michi Music Stream Hi-Fi — firmware prototype.
+ *
+ * ESTADO: PROTOTYPE. No probado en hardware real.
+ * - DAC PCM5122 no validado con este stack.
+ * - Sin reproduccion de audio estable validada.
+ * - Sin multiroom.
+ * - Sin Opus real implementado (solo stub).
+ * - Requiere validacion de ruido, reloj y fuente analogica.
+ */
+
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "esp_wifi.h"
@@ -32,7 +43,8 @@ static void hb_cb(void *a) { ESP_LOGW(TAG, "Heartbeat timeout"); session_stop();
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Michi Stream Hi-Fi v%s", FIRMWARE_VERSION);
+    ESP_LOGI(TAG, "Michi Music Stream Hi-Fi v%s [PROTOTYPE]", FIRMWARE_VERSION);
+    ESP_LOGW(TAG, "Este firmware es prototype. DAC PCM5122 no validado.");
     nvs_flash_init(); wifi_init();
     gpio_config_t b = {.pin_bit_mask = 1ULL<<PAIRING_BUTTON_PIN, .mode = GPIO_MODE_INPUT, .pull_up_en = true, .intr_type = GPIO_INTR_NEGEDGE};
     gpio_config(&b); gpio_install_isr_service(0); gpio_isr_handler_add(PAIRING_BUTTON_PIN, btn_isr, NULL);

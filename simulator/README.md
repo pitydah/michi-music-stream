@@ -19,6 +19,11 @@ python3 receiver_sim.py --type hifi --port 8081
 
 # Configuración personalizada
 python3 receiver_sim.py --config mi_config.json
+
+# Modos iniciales
+python3 receiver_sim.py --type standard --pairing-open
+python3 receiver_sim.py --type standard --active-session
+python3 receiver_sim.py --type standard --fail-heartbeat
 ```
 
 ## Endpoints simulados
@@ -33,6 +38,15 @@ python3 receiver_sim.py --config mi_config.json
 | POST | `/api/v1/receiver/session/start` | Bearer | Inicia sesión de audio |
 | POST | `/api/v1/receiver/session/stop` | Bearer | Detiene sesión |
 | POST | `/api/v1/receiver/volume` | Bearer | Ajusta volumen (0-100) |
+
+## Modos iniciales (flags CLI)
+
+| Flag | Efecto |
+|------|--------|
+| `--pairing-open` | Inicia con ventana de pairing abierta (lista para confirmar) |
+| `--pairing-closed` | (default) Ventana cerrada, espera pair/start |
+| `--active-session` | Inicia con sesión activa (pairing + session/start pre-hecho). Token: `tok_preinit` |
+| `--fail-heartbeat` | Igual que --active-session pero heartbeat falla inmediatamente (útil para probar timeout) |
 
 ## Comportamiento simulado
 

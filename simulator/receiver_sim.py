@@ -468,6 +468,17 @@ def main():
     parser.add_argument("--port", "-p", type=int, default=8080, help="HTTP port")
     parser.add_argument("--host", default="0.0.0.0", help="Bind address")
     parser.add_argument("--debug", action="store_true", help="Flask debug mode")
+
+    # Initial state flags
+    parser.add_argument("--pairing-open", action="store_true",
+                        help="Start with pairing window already open (120s)")
+    parser.add_argument("--pairing-closed", action="store_true",
+                        help="Start with pairing window closed (default)")
+    parser.add_argument("--active-session", action="store_true",
+                        help="Start with an active audio session (implies pairing)")
+    parser.add_argument("--fail-heartbeat", action="store_true",
+                        help="Start with session but heartbeat will fail immediately")
+
     args = parser.parse_args()
 
     if args.config:
@@ -477,6 +488,29 @@ def main():
         cfg = HIFI_CONFIG if args.type == "hifi" else STANDARD_CONFIG
 
     state = SimulatorState(cfg)
+
+    # Aplicar modos iniciales
+    if args.pairing_open:
+        state.pair_start("preinit")
+        log.info("  initial mode: pairing window OPEN")
+
+    if args.active_session or args.fail_heartbeat:
+        # Pair and start a session
+        if not args.pairing_open:
+            state.pair_start("preinit")
+        nonce = state.current_nonce
+        state.pair_confirm(nonce, "preinit", "tok_preinit")
+        code, _ = state.session_start(
+            "sess_preinit", "pcm_s16le", 48000, 16, 2, 55300, 250, 70,
+        )
+        if code == 200:
+            log.info("  initial mode: active session (sess_preinit)")
+            log.info("  auth token: tok_preinit")
+
+        if args.fail_heartbeat:
+            state.last_heartbeat = 0.0  # heartbeat nunca se envió
+            log.info("  initial mode: heartbeat WILL FAIL (last_heartbeat=0)")
+
     app = create_app(state)
 
     log.info("=" * 60)
