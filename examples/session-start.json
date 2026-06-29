@@ -1,1 +1,11 @@
-{"session_id":"sess_001","codec":"pcm_s16le","sample_rate":48000,"bit_depth":16,"channels":2,"transport":"udp","stream_port":55300,"buffer_ms":250,"volume":70}
+{
+  "session_id": "sess_001",
+  "codec": "pcm_s16le",
+  "sample_rate": 48000,
+  "bit_depth": 16,
+  "channels": 2,
+  "transport": "udp",
+  "stream_port": 55300,
+  "buffer_ms": 250,
+  "volume": 70
+}
