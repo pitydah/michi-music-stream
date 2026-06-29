@@ -1,0 +1,28 @@
+{
+  "service": "michi-stream-standard",
+  "name": "Michi Stream Sim Standard",
+  "device_id": "rcv_sim_standard_001",
+  "api_version": "v1-lite",
+  "michi_link_version": "1.0.0-alpha",
+  "firmware": "0.1.0-sim",
+  "type": "michi_stream_standard",
+  "roles": ["audio_receiver", "music_stream_receiver"],
+  "auth": {
+    "required": true,
+    "strategy": "RECEIVER_BUTTON",
+    "token_refresh": false
+  },
+  "output": {
+    "connector": "jack_3_5",
+    "max_sample_rate": 48000,
+    "max_bit_depth": 16,
+    "channels": 2
+  },
+  "supported_codecs": ["pcm_s16le", "opus"],
+  "features": {
+    "pairing_button": true,
+    "volume": true,
+    "heartbeat": true,
+    "ota_update": false
+  }
+}
