@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "unsupported_codec",
+    "message": "Codec 'pcm_s24le' no soportado. Codecs: pcm_s16le, opus.",
+    "details": {
+      "requested_codec": "pcm_s24le",
+      "supported_codecs": ["pcm_s16le", "opus"]
+    }
+  }
+}

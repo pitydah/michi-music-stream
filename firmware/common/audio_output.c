@@ -13,16 +13,21 @@
 /*
  * audio_output.c — Pipeline de audio para Michi Music Stream.
  *
- * Limitaciones conocidas (v1-lite, fase inicial):
- * - Buffer circular simple: 4 MB, sin gestión avanzada de underrun/overrun.
- * - No hay PLL ni corrección de drift entre reloj del transmisor y receptor.
- * - Sin sincronización multiroom. La latencia no está calibrada.
- * - Bajo congestión Wi-Fi pueden ocurrir underruns (silencio insertado).
- * - Sin FEC ni re-transmisión de paquetes UDP perdidos.
- * - Sin decodificador Opus implementado (stub para pcm_s16le/pcm_s24le).
+ * ESTADO: PROTOTYPE. Limitaciones conocidas:
  *
- * El pipeline es funcional para pruebas con hardware real, pero NO es
- * apto para producción sin validación de jitter, drift y latencia.
+ * - Buffer circular simple (4 MB). Sin gestión avanzada de underrun/overrun.
+ * - Sin PLL ni corrección de drift entre reloj TX del controlador y
+ *   reloj I2S del receptor. Con sesiones largas puede haber desincronización.
+ * - Sin sincronización multiroom. La latencia no está calibrada ni medida.
+ * - Bajo congestión Wi-Fi: underruns probables (silencio insertado).
+ * - Sin FEC ni re-transmisión de paquetes UDP perdidos.
+ * - Sin decodificador Opus real implementado (solo esqueleto).
+ * - Sin producción Hi-Fi validada: PCM5122 no ha sido probado con este stack.
+ * - Sin hardware real probado: este código no ha sido ejecutado en PCB real.
+ *
+ * Este pipeline es funcional para early prototyping con ESP32-S3 +
+ * breadboard + PCM5102A. NO es apto para producción, demo de calidad
+ * audiófila, ni integración multiroom sin validación adicional.
  */
 
 static const char *TAG = "michi_audio";

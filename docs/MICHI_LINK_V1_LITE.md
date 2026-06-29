@@ -7,7 +7,7 @@ Protocolo REST liviano para control de receptores Michi Music Stream. Corre sobr
 | Campo | Valor |
 |-------|-------|
 | `michi_link_version` | `1.0.0-alpha` |
-| `api_version` | `v1` |
+| `api_version` | `v1-lite` |
 | API base path | `/api/v1` |
 
 ## Detalles técnicos
@@ -32,7 +32,7 @@ Protocolo REST liviano para control de receptores Michi Music Stream. Corre sobr
 | `service` | string | sí | Identificador del servicio: `michi-stream-standard` o `michi-stream-hifi` |
 | `name` | string | sí | Nombre legible configurable |
 | `device_id` | string | sí | Identificador único del dispositivo |
-| `api_version` | string | sí | Versión de API REST: `v1` |
+| `api_version` | string | sí | Versión de API REST: `v1-lite` |
 | `michi_link_version` | string | sí | Versión del protocolo Michi Link: `1.0.0-alpha` |
 | `firmware` | string | sí | Versión de firmware |
 | `type` | string | sí | `michi_stream_standard` o `michi_stream_hifi` |

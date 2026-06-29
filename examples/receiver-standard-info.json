@@ -2,7 +2,7 @@
   "service": "michi-stream-standard",
   "name": "Michi Stream Cocina",
   "device_id": "rcv_standard_001",
-  "api_version": "v1",
+  "api_version": "v1-lite",
   "michi_link_version": "1.0.0-alpha",
   "firmware": "0.1.0",
   "type": "michi_stream_standard",
