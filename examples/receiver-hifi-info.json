@@ -1,10 +1,17 @@
 {
-  "device_id": "rcv_hifi_001",
+  "service": "michi-stream-hifi",
   "name": "Michi Stream Living Hi-Fi",
-  "type": "michi_stream_hifi",
+  "device_id": "rcv_hifi_001",
+  "api_version": "v1",
+  "michi_link_version": "1.0.0-alpha",
   "firmware": "0.1.0",
-  "api_version": "v1-lite",
+  "type": "michi_stream_hifi",
   "roles": ["audio_receiver", "music_stream_receiver"],
+  "auth": {
+    "required": true,
+    "strategy": "RECEIVER_BUTTON",
+    "token_refresh": false
+  },
   "output": {
     "connector": "rca_stereo",
     "dac": "hifi_i2s",

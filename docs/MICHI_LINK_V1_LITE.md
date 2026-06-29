@@ -2,6 +2,14 @@
 
 Protocolo REST liviano para control de receptores Michi Music Stream. Corre sobre HTTP en puerto 80. Audio via UDP.
 
+## Versión
+
+| Campo | Valor |
+|-------|-------|
+| `michi_link_version` | `1.0.0-alpha` |
+| `api_version` | `v1` |
+| API base path | `/api/v1` |
+
 ## Detalles técnicos
 
 | Aspecto | Valor |
@@ -13,15 +21,65 @@ Protocolo REST liviano para control de receptores Michi Music Stream. Corre sobr
 | Audio | UDP raw |
 | Autenticación | `Authorization: Bearer <token>` |
 | Estrategia de auth | `RECEIVER_BUTTON` (pairing con botón físico) |
+| Token refresh | `false` (token fijo hasta factory reset) |
 | Content-Type | `application/json` |
 | Volumen | Entero `0` (silencio) a `100` (máximo) |
 
-## Roles del dispositivo
+## `receiver/info` — Esquema completo
+
+| Campo | Tipo | Obligatorio | Descripción |
+|-------|------|-------------|-------------|
+| `service` | string | sí | Identificador del servicio: `michi-stream-standard` o `michi-stream-hifi` |
+| `name` | string | sí | Nombre legible configurable |
+| `device_id` | string | sí | Identificador único del dispositivo |
+| `api_version` | string | sí | Versión de API REST: `v1` |
+| `michi_link_version` | string | sí | Versión del protocolo Michi Link: `1.0.0-alpha` |
+| `firmware` | string | sí | Versión de firmware |
+| `type` | string | sí | `michi_stream_standard` o `michi_stream_hifi` |
+| `roles` | array | sí | Roles del dispositivo |
+| `auth` | object | sí | Configuración de autenticación |
+| `auth.required` | bool | sí | `true` si requiere token |
+| `auth.strategy` | string | sí | `RECEIVER_BUTTON` |
+| `auth.token_refresh` | bool | sí | `false` (token fijo) |
+| `output` | object | sí | Capacidades de salida de audio |
+| `supported_codecs` | array | sí | Codecs de audio soportados |
+| `features` | object | sí | Características del dispositivo |
+
+### Roles
 
 | Role | Descripción |
 |------|-------------|
 | `audio_receiver` | Receptor de audio por red |
 | `music_stream_receiver` | Reproductor de flujo continuo |
+
+### `output`
+
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| `connector` | string | Tipo de conector físico: `jack_3_5`, `rca_stereo` |
+| `dac` | string | (opcional) Identificador del DAC: `hifi_i2s` |
+| `max_sample_rate` | int | Frecuencia de muestreo máxima en Hz |
+| `max_bit_depth` | int | Profundidad de bits máxima |
+| `channels` | int | Número de canales (siempre 2 en v1-lite) |
+
+### `auth`
+
+```json
+"auth": {
+  "required": true,
+  "strategy": "RECEIVER_BUTTON",
+  "token_refresh": false
+}
+```
+
+### `features`
+
+| Feature | Tipo | Descripción |
+|---------|------|-------------|
+| `pairing_button` | bool | Botón físico de pairing presente |
+| `volume` | bool | Control de volumen digital soportado |
+| `heartbeat` | bool | Heartbeat de sesión soportado |
+| `ota_update` | bool | Actualización OTA soportada |
 
 ## Formato de error
 
@@ -57,9 +115,9 @@ Todas las respuestas de error siguen esta estructura:
 
 ### GET /api/v1/receiver/info
 
-Sin autenticación. Devuelve información completa del dispositivo.
+Sin autenticación. Devuelve información completa del dispositivo según el esquema anterior.
 
-Respuesta (200) — ver `examples/receiver-standard-info.json` y `examples/receiver-hifi-info.json`.
+Ver ejemplos en `examples/receiver-standard-info.json` y `examples/receiver-hifi-info.json`.
 
 ---
 
@@ -67,7 +125,6 @@ Respuesta (200) — ver `examples/receiver-standard-info.json` y `examples/recei
 
 Sin autenticación.
 
-Respuesta (200):
 ```json
 {
   "device_id": "rcv_standard_001",
@@ -108,7 +165,18 @@ Response (200):
 }
 ```
 
-Error (409): `pairing_window_open` si ya hay ventana activa.
+Error (409) con `details`:
+```json
+{
+  "error": {
+    "code": "pairing_window_open",
+    "message": "Ya hay una ventana de pairing activa.",
+    "details": {
+      "remaining_seconds": 85
+    }
+  }
+}
+```
 
 ---
 
@@ -143,7 +211,16 @@ Response (200):
 }
 ```
 
-Error (409): `pairing_window_closed` si la ventana expiró o no fue abierta.
+Error (409):
+```json
+{
+  "error": {
+    "code": "pairing_window_closed",
+    "message": "La ventana de pairing expiró o no fue abierta. Presione el botón físico.",
+    "details": {}
+  }
+}
+```
 
 ---
 
@@ -224,8 +301,32 @@ Response (200):
 }
 ```
 
-Error (400): `unsupported_codec`, `unsupported_rate`.
-Error (409): `session_active` si ya hay sesión en curso.
+Error (400) — codec no soportado:
+```json
+{
+  "error": {
+    "code": "unsupported_codec",
+    "message": "Codec 'pcm_s24le' no soportado. Codecs: pcm_s16le, opus.",
+    "details": {
+      "requested_codec": "pcm_s24le",
+      "supported_codecs": ["pcm_s16le", "opus"]
+    }
+  }
+}
+```
+
+Error (409) — sesión activa:
+```json
+{
+  "error": {
+    "code": "session_active",
+    "message": "Ya hay una sesion de audio activa.",
+    "details": {
+      "active_session_id": "sess_001"
+    }
+  }
+}
+```
 
 ---
 
@@ -278,14 +379,15 @@ Si `volume` está fuera de rango (menor a 0 o mayor a 100), el receptor debe tru
 1. El usuario presiona el botón físico de pairing en el receptor → se abre ventana de 120 s.
 2. El controlador envía `POST /api/v1/receiver/pair/start`.
 3. El controlador envía `POST /api/v1/receiver/pair/confirm` con un token propio.
-4. El receptor almacena el token en NVS (memoria persistente).
+4. El receptor almacena el token en NVS (memoria persistente entre reinicios).
 5. Toda petición POST posterior (excepto `pair/start` y `pair/confirm`) debe incluir:
    ```
    Authorization: Bearer <token>
    ```
 6. Token inválido o ausente → respuesta 401 `invalid_token`.
 
-Estrategia de autenticación documentada: `RECEIVER_BUTTON`.
+Estrategia de autenticación: `RECEIVER_BUTTON`.
+El token no se refresca automáticamente. Para renovar, se debe hacer factory reset y repetir el pairing.
 
 ---
 
