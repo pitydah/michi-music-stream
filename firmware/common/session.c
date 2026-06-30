@@ -10,8 +10,11 @@ static const char *TAG = "michi_session";
 
 typedef struct { char id[32]; char codec[16]; int sr, bd, ch, sp, bm, vol; bool active; } sess_t;
 static sess_t s;
+static session_state_cb_t s_cb = NULL;
 
 void session_init(void) { memset(&s, 0, sizeof(s)); }
+
+void session_set_state_callback(session_state_cb_t cb) { s_cb = cb; }
 
 static bool codec_ok(const char *c)
 {
@@ -33,6 +36,7 @@ bool session_start(const char *sid, const char *codec, int sr, int bd, int ch, i
     audio_output_init(sr, bd, ch, bm, sp);
     audio_output_start();
     heartbeat_reset();
+    if (s_cb) s_cb(true, sid);
     ESP_LOGI(TAG, "Session %s started", sid);
     return true;
 }
@@ -41,6 +45,7 @@ bool session_stop(void)
 {
     if (!s.active) return false;
     audio_output_stop(); heartbeat_stop();
+    if (s_cb) s_cb(false, NULL);
     memset(&s, 0, sizeof(s));
     return true;
 }

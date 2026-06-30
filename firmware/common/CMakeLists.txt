@@ -10,5 +10,21 @@ idf_component_register(
         audio_output.c
         led.c
         pcm5122.c
+        app_core.c
+        wifi_prov.c
+        ota_update.c
     INCLUDE_DIRS "."
+    PRIV_REQUIRES
+        esp_wifi
+        esp_netif
+        nvs_flash
+        mdns
+        driver
+        esp_http_server
+        cJSON
+        esp_timer
+        i2s_parallel
+    PRIV_REQUIRES
+        smartconfig
+        esp_https_ota
 )

@@ -25,7 +25,14 @@ python3 tests/contract/test_contract.py
 CONT_EXIT=$?
 echo ""
 
-# ── 3. Quick launch smoke test ──────────────────────────────
+# ── 3. E2E integration test ─────────────────────────────────
+echo "--- E2E integration test ---"
+cd "$PROJECT_DIR"
+python3 tests/e2e/test_e2e_micro_stream.py 2>&1 | tail -5
+E2E_EXIT=$?
+echo ""
+
+# ── 4. Quick launch smoke test ──────────────────────────────
 echo "--- smoke test (launch + info + shutdown) ---"
 SMOKE_EXIT=0
 PORT=53320
@@ -55,9 +62,10 @@ echo ""
 echo "=== Results ==="
 echo "  simulator unit:  $([ $SIM_EXIT -eq 0 ] && echo 'PASS' || echo 'FAIL')"
 echo "  contract:        $([ $CONT_EXIT -eq 0 ] && echo 'PASS' || echo 'FAIL')"
+echo "  E2E:             $([ $E2E_EXIT -eq 0 ] && echo 'PASS' || echo 'FAIL')"
 echo "  smoke:           $([ $SMOKE_EXIT -eq 0 ] && echo 'PASS' || echo 'FAIL')"
 
-if [ $SIM_EXIT -ne 0 ] || [ $CONT_EXIT -ne 0 ] || [ $SMOKE_EXIT -ne 0 ]; then
+if [ $SIM_EXIT -ne 0 ] || [ $CONT_EXIT -ne 0 ] || [ $E2E_EXIT -ne 0 ] || [ $SMOKE_EXIT -ne 0 ]; then
     exit 1
 fi
 exit 0

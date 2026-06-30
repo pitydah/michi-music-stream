@@ -6,7 +6,10 @@
 #define PAIRING_WINDOW_SECONDS  120
 #define MAX_PAIRED_CONTROLLERS  4
 
+typedef void (*pairing_state_cb_t)(bool window_open, const char *initiator_id);
+
 void pairing_init(void);
+void pairing_set_state_callback(pairing_state_cb_t cb);
 bool pairing_start(const char *initiator_id, char *nonce_out, size_t nonce_size);
 bool pairing_confirm(const char *nonce, const char *initiator_id, const char *token);
 bool pairing_is_window_open(void);

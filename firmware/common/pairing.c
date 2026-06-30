@@ -15,6 +15,7 @@ static int64_t s_expires = 0;
 static char s_nonce[32] = {0};
 static controller_t s_ctrl[MAX_PAIRED_CONTROLLERS];
 static int s_count = 0;
+static pairing_state_cb_t s_cb = NULL;
 
 static void gen_nonce(char *out, size_t sz)
 {
@@ -61,6 +62,11 @@ void pairing_init(void)
     ESP_LOGI(TAG, "%d controller(s) paired", s_count);
 }
 
+void pairing_set_state_callback(pairing_state_cb_t cb)
+{
+    s_cb = cb;
+}
+
 bool pairing_start(const char *id, char *nonce_out, size_t nsz)
 {
     if (s_win) return false;
@@ -68,6 +74,7 @@ bool pairing_start(const char *id, char *nonce_out, size_t nsz)
     s_expires = esp_timer_get_time() / 1000 + PAIRING_WINDOW_SECONDS * 1000;
     gen_nonce(s_nonce, sizeof(s_nonce));
     if (nonce_out && nsz > 0) strncpy(nonce_out, s_nonce, nsz);
+    if (s_cb) s_cb(true, id);
     ESP_LOGI(TAG, "Window open %d s nonce=%s", PAIRING_WINDOW_SECONDS, s_nonce);
     return true;
 }
@@ -86,6 +93,7 @@ bool pairing_confirm(const char *nonce, const char *id, const char *token)
     strncpy(s_ctrl[s_count].token, token, sizeof(s_ctrl[s_count].token) - 1);
     s_count++; save(); s_win = false;
     memset(s_nonce, 0, sizeof(s_nonce));
+    if (s_cb) s_cb(false, NULL);
     ESP_LOGI(TAG, "Paired with %s", id);
     return true;
 }

@@ -6,6 +6,9 @@
 #include "heartbeat.h"
 #include "session.h"
 #include "volume.h"
+#if OTA_SUPPORTED
+#include "ota_update.h"
+#endif
 
 static httpd_handle_t s_server = NULL;
 
@@ -219,6 +222,31 @@ static esp_err_t volume_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+#if OTA_SUPPORTED
+static esp_err_t ota_post_handler(httpd_req_t *req)
+{
+    if (auth_guard(req) != ESP_OK) return ESP_FAIL;
+    char buf[512] = {0};
+    httpd_req_recv(req, buf, sizeof(buf) - 1);
+    cJSON *body = cJSON_Parse(buf);
+    if (!body || !cJSON_GetObjectItem(body, "url")) {
+        if (body) cJSON_Delete(body);
+        return send_error(req, 400, "bad_request", "Falta campo 'url'.");
+    }
+    const char *url = cJSON_GetObjectItem(body, "url")->valuestring;
+    bool ok = ota_start(url);
+    cJSON_Delete(body);
+    if (!ok) return send_error(req, 500, "internal_error", "OTA start failed.");
+    cJSON *r = cJSON_CreateObject();
+    cJSON_AddStringToObject(r, "status", "ota_started");
+    char *str = cJSON_PrintUnformatted(r);
+    httpd_resp_sendstr(req, str);
+    free(str);
+    cJSON_Delete(r);
+    return ESP_OK;
+}
+#endif
+
 static const httpd_uri_t endpoints[] = {
     {.uri = "/api/v1/receiver/info",        .method = HTTP_GET,  .handler = info_get_handler},
     {.uri = "/api/v1/receiver/firmware",    .method = HTTP_GET,  .handler = firmware_get_handler},
@@ -228,6 +256,9 @@ static const httpd_uri_t endpoints[] = {
     {.uri = "/api/v1/receiver/session/start",.method = HTTP_POST,.handler = session_start_post_handler},
     {.uri = "/api/v1/receiver/session/stop", .method = HTTP_POST,.handler = session_stop_post_handler},
     {.uri = "/api/v1/receiver/volume",      .method = HTTP_POST, .handler = volume_post_handler},
+#if OTA_SUPPORTED
+    {.uri = "/api/v1/receiver/ota",         .method = HTTP_POST, .handler = ota_post_handler},
+#endif
 };
 
 void michi_link_lite_init(void)
