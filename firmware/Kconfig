@@ -1,0 +1,40 @@
+menu "Michi Stream Configuration"
+
+    config MICHI_WIFI_SSID
+        string "Wi-Fi SSID"
+        default "michi"
+        help "Nombre de la red Wi-Fi a la que conectarse."
+
+    config MICHI_WIFI_PASSWORD
+        string "Wi-Fi Password"
+        default "michipass"
+        help "Contrasena de la red Wi-Fi."
+
+    config MICHI_STREAM_TYPE
+        string "Device type"
+        default "michi_stream_standard"
+        help "michi_stream_standard o michi_stream_hifi."
+
+    config MICHI_DEVICE_NAME
+        string "Device name"
+        default "Michi Stream"
+        help "Nombre legible del dispositivo."
+
+    config MICHI_DEVICE_ID
+        string "Device ID"
+        default "rcv_default_001"
+        help "Identificador unico del dispositivo."
+
+    config FIRMWARE_VERSION
+        string "Firmware version"
+        default "0.1.0"
+
+    config BUILD_DATE
+        string "Build date"
+        default "2026-06-29"
+
+    config API_VERSION
+        string "API version"
+        default "v1-lite"
+
+endmenu

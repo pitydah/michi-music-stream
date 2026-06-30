@@ -59,7 +59,7 @@ STANDARD_CONFIG = {
         "max_bit_depth": 16,
         "channels": 2,
     },
-    "supported_codecs": ["pcm_s16le", "opus"],
+    "supported_codecs": ["pcm_s16le"],
     "features": {"pairing_button": True, "volume": True, "heartbeat": True, "ota_update": False},
 }
 
@@ -80,7 +80,7 @@ HIFI_CONFIG = {
         "max_bit_depth": 24,
         "channels": 2,
     },
-    "supported_codecs": ["pcm_s16le", "pcm_s24le", "opus"],
+    "supported_codecs": ["pcm_s16le", "pcm_s24le"],
     "features": {"pairing_button": True, "volume": True, "heartbeat": True, "ota_update": True},
 }
 
@@ -418,15 +418,25 @@ def create_app(state: SimulatorState) -> Flask:
                 return jsonify({
                     "error": {"code": "bad_request", "message": f"Falta campo '{f}'.", "details": {}}
                 }), 400
+        sp = int(data["stream_port"])
+        if sp < 1024 or sp > 65535:
+            return jsonify({
+                "error": {"code": "bad_request", "message": "stream_port debe estar entre 1024 y 65535.", "details": {}}
+            }), 400
+        vol = int(data.get("volume", 70))
+        if vol < 0 or vol > 100:
+            return jsonify({
+                "error": {"code": "bad_request", "message": "volume debe estar entre 0 y 100.", "details": {}}
+            }), 400
         status, resp = state.session_start(
             session_id=data["session_id"],
             codec=data["codec"],
             sample_rate=int(data["sample_rate"]),
             bit_depth=int(data["bit_depth"]),
             channels=int(data["channels"]),
-            stream_port=int(data["stream_port"]),
+            stream_port=sp,
             buffer_ms=int(data["buffer_ms"]),
-            volume=int(data.get("volume", 70)),
+            volume=vol,
         )
         return jsonify(resp), status
 

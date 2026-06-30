@@ -1,0 +1,9 @@
+{
+  "error": {
+    "code": "session_active",
+    "message": "Ya hay una sesion de audio activa.",
+    "details": {
+      "active_session_id": "sess_001"
+    }
+  }
+}

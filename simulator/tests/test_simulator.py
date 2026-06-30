@@ -41,7 +41,7 @@ def test_info_standard():
     assert info["output"]["max_sample_rate"] == 48000
     assert info["output"]["max_bit_depth"] == 16
     assert "pcm_s16le" in info["supported_codecs"]
-    assert "opus" in info["supported_codecs"]
+    assert "pcm_s16le" in info["supported_codecs"]
     assert "pcm_s24le" not in info["supported_codecs"]
     assert info["features"]["ota_update"] == False
     assert info["auth"]["strategy"] == "RECEIVER_BUTTON"

@@ -18,7 +18,7 @@
     "max_bit_depth": 16,
     "channels": 2
   },
-  "supported_codecs": ["pcm_s16le", "opus"],
+  "supported_codecs": ["pcm_s16le"],
   "features": {
     "pairing_button": true,
     "volume": true,

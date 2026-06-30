@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "invalid_token",
+    "message": "Token de autorizacion invalido o ausente.",
+    "details": {}
+  }
+}

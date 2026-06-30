@@ -1,0 +1,22 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Contract tests
+        run: python3 tests/contract/test_contract.py
+      - name: Simulator unit tests
+        run: python3 simulator/tests/test_simulator.py
+      - name: Simulator HTTP integration tests
+        run: python3 -m pytest simulator/tests/test_integration_http.py -v
+      - name: Smoke test (launch + info)
+        run: bash scripts/test_receiver_simulator.sh

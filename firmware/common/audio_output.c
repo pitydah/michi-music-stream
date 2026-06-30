@@ -21,7 +21,7 @@
  * - Sin sincronización multiroom. La latencia no está calibrada ni medida.
  * - Bajo congestión Wi-Fi: underruns probables (silencio insertado).
  * - Sin FEC ni re-transmisión de paquetes UDP perdidos.
- * - Sin decodificador Opus real implementado (solo esqueleto).
+ * - Sin decodificador Opus. Solo PCM 16/24-bit LE.
  * - Sin producción Hi-Fi validada: PCM5122 no ha sido probado con este stack.
  * - Sin hardware real probado: este código no ha sido ejecutado en PCB real.
  *

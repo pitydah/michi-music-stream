@@ -162,6 +162,10 @@ static esp_err_t session_start_post_handler(httpd_req_t *req)
     cJSON_Delete(body);
     if (!*sid || !*codec || sr == 0 || bd == 0 || ch == 0 || sp == 0 || bm == 0)
         return send_error(req, 400, "bad_request", "Faltan campos requeridos.");
+    if (sp < 1024 || sp > 65535)
+        return send_error(req, 400, "bad_request", "stream_port debe estar entre 1024 y 65535.");
+    if (vol < 0 || vol > 100)
+        return send_error(req, 400, "bad_request", "volume debe estar entre 0 y 100.");
     if (session_is_active())
         return send_error(req, 409, "session_active", "Ya hay sesion activa.");
     if (!session_start(sid, codec, sr, bd, ch, sp, bm, vol))

@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "pairing_window_closed",
+    "message": "La ventana de pairing no esta abierta. Presione el boton fisico.",
+    "details": {}
+  }
+}
