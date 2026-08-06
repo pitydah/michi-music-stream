@@ -1,6 +1,7 @@
 #include <inttypes.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
@@ -11,6 +12,7 @@
 #include "nvs_flash.h"
 
 #include "michi_board.h"
+#include "michi_dac.h"
 #include "michi_version.h"
 
 static const char *TAG = "michi_app";
@@ -54,15 +56,15 @@ static void log_selftest_rows(const michi_board_info_t *info,
     ESP_LOGI(TAG, "backlight=%s", st->backlight_ok ? "ok" : "FAIL");
     ESP_LOGI(TAG, "wifi_supported=%s", st->wifi_supported ? "yes" : "no");
     ESP_LOGI(TAG, "ble_supported=%s", st->ble_supported ? "yes" : "no");
-    ESP_LOGI(TAG, "dac_present=%s (detection lands in phase 2)",
-             st->dac_present ? "true" : "false");
+    ESP_LOGI(TAG, "dac_model=%s dac_ok=%s",
+             st->dac_model[0] != '\0' ? st->dac_model : "none",
+             st->dac_ok ? "true" : "false");
     ESP_LOGI(TAG, "selftest=%s", st->overall ? "PASS" : "DEGRADED");
 }
 
 static void log_pending_subsystems(void)
 {
     ESP_LOGI(TAG, "subsystem=bsp state=ok phase=1");
-    ESP_LOGW(TAG, "subsystem=dac state=pending phase=2");
     ESP_LOGW(TAG, "subsystem=product_profile state=pending phase=3");
     ESP_LOGW(TAG, "subsystem=display state=pending phase=6");
     ESP_LOGW(TAG, "subsystem=led state=pending phase=7");
@@ -72,8 +74,56 @@ static void log_pending_subsystems(void)
     ESP_LOGW(TAG, "subsystem=api state=pending phase=12");
 }
 
+/* DAC phase 2 bring-up: init -> detect -> start. Honest at every step: no
+ * DAC, no clocks, init failure are all reported instead of faked. */
+static void init_dac(void)
+{
+    esp_err_t err = michi_dac_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "michi_dac_init failed: %s (audio unavailable)",
+                 esp_err_to_name(err));
+        ESP_LOGI(TAG, "subsystem=dac state=failed phase=2");
+        return;
+    }
+    err = michi_dac_detect();
+    if (err == ESP_ERR_NOT_FOUND) {
+        ESP_LOGW(TAG, "no DAC detected (probe 0x4D..0x4F + sanity): audio unavailable");
+        ESP_LOGI(TAG, "subsystem=dac state=absent phase=2");
+        return;
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "michi_dac_detect failed: %s (audio unavailable)",
+                 esp_err_to_name(err));
+        ESP_LOGI(TAG, "subsystem=dac state=error phase=2");
+        return;
+    }
+
+    const michi_dac_caps_t *caps = michi_dac_get_caps();
+    ESP_LOGI(TAG, "DAC detected: model=%s profile=%s tier=%d",
+             caps->model, caps->board_profile, (int)caps->tier);
+    ESP_LOGI(TAG, "subsystem=dac state=detected phase=2");
+
+    err = michi_dac_start(48000, 16, 2);
+    if (err != ESP_OK) {
+        /* Honest diagnostic: the DAC answered I2C but cannot be initialized.
+         * For the PCM5122 this is expected while no I2S master is running
+         * (PLL cannot lock without BCLK/LRCK); phase 11 starts the clocks. */
+        ESP_LOGE(TAG, "michi_dac_start(48000,16,2) failed: %s - "
+                 "dac detected but NOT initialized (audio_available=false)",
+                 esp_err_to_name(err));
+        ESP_LOGI(TAG, "subsystem=dac state=detected_init_failed phase=2");
+        return;
+    }
+    ESP_LOGI(TAG, "dac=ok profile_pending(phase 3)");
+    ESP_LOGI(TAG, "subsystem=dac state=initialized phase=2");
+}
+
 void app_main(void)
 {
+#ifdef CONFIG_MICHI_DAC_MOCK
+    ESP_LOGW(TAG, "MICHI_DAC_MOCK is ENABLED - this build fakes a DAC and "
+             "must NOT be used in production");
+#endif
     ESP_LOGI(TAG, "michi-music-stream firmware v%s target=%s",
              MICHI_FW_VERSION_STR, CONFIG_IDF_TARGET);
 
@@ -96,6 +146,14 @@ void app_main(void)
 
     const michi_board_info_t *info = michi_board_get_info();
     michi_board_selftest_t st = michi_board_self_test();
+
+    init_dac();
+
+    const michi_dac_caps_t *caps = michi_dac_get_caps();
+    snprintf(st.dac_model, sizeof(st.dac_model), "%s",
+             caps->detected ? caps->model : "");
+    st.dac_ok = caps->initialized;
+
     log_selftest_rows(info, &st);
 
     if (st.display_ok) {
@@ -110,7 +168,12 @@ void app_main(void)
 
     log_pending_subsystems();
 
-    ESP_LOGI(TAG, "boot=ok mode=diagnostic audio_available=false");
+    if (st.dac_ok) {
+        ESP_LOGI(TAG, "boot=ok mode=diagnostic audio_available=true "
+                 "(product tier lands in phase 3)");
+    } else {
+        ESP_LOGI(TAG, "boot=ok mode=diagnostic audio_available=false");
+    }
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(10000));

@@ -40,7 +40,8 @@ typedef struct {
     bool backlight_ok;     /*!< Backlight GPIO configured and on */
     bool wifi_supported;   /*!< Chip feature: Wi-Fi (not a connection check) */
     bool ble_supported;    /*!< Chip feature: BLE (not a connection check) */
-    bool dac_present;      /*!< Always false in phase 1; detection lands in phase 2 */
+    char dac_model[32];    /*!< DAC model from michi_dac_get_caps(), filled by app_main (BSP only renders) */
+    bool dac_ok;           /*!< DAC initialized, filled by app_main (BSP only renders) */
     bool overall;          /*!< chip + flash + psram + display + backlight all OK */
 } michi_board_selftest_t;
 

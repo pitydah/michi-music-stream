@@ -230,6 +230,12 @@ esp_err_t michi_board_init(void)
     s_fb = heap_caps_malloc(fb_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (s_fb == NULL) {
         ESP_LOGE(TAG, "PSRAM framebuffer allocation failed (%zu bytes): display disabled", fb_bytes);
+        /* Symmetry with the display-init failure path below: no framebuffer,
+         * no display, no reason to keep the backlight burning. */
+        if (gpio_set_level(bi->backlight_gpio, 0) != ESP_OK) {
+            ESP_LOGE(TAG, "backlight off failed after framebuffer allocation failure");
+        }
+        s_backlight_on = false;
         return ESP_ERR_NO_MEM;
     }
 
@@ -335,9 +341,6 @@ michi_board_selftest_t michi_board_self_test(void)
     st.display_ok = (s_panel != NULL) && (s_fb != NULL);
     st.backlight_ok = s_backlight_on;
 
-    /* DAC detection is not implemented until phase 2; never report a fake DAC. */
-    st.dac_present = false;
-
     st.overall = st.chip_ok && st.flash_ok && st.psram_ok &&
                  st.display_ok && st.backlight_ok;
     return st;
@@ -372,7 +375,6 @@ esp_err_t michi_board_display_boot_screen(const michi_board_info_t *info,
     const uint16_t white = 0xFFFF;
     const uint16_t green = 0x07E0;
     const uint16_t red = 0xF800;
-    const uint16_t yellow = 0xFFE0;
 
     memset(s_fb, 0, (size_t)info->display_width * info->display_height * sizeof(uint16_t));
 
@@ -387,7 +389,7 @@ esp_err_t michi_board_display_boot_screen(const michi_board_info_t *info,
 
     boot_screen_row(info, 48, "Board: Waveshare ESP32-S3-LCD-2", NULL, white, 0);
 
-    char line[32];
+    char line[40];
     snprintf(line, sizeof(line), "Flash: %" PRIu32 " MiB",
              info->flash_bytes_expected / (1024U * 1024U));
     boot_screen_row(info, 64, line, st->flash_ok ? "ok" : "FAIL", white,
@@ -402,7 +404,16 @@ esp_err_t michi_board_display_boot_screen(const michi_board_info_t *info,
                     white, st->wifi_supported ? green : red);
     boot_screen_row(info, 128, "BLE:", st->ble_supported ? "supported" : "not supported",
                     white, st->ble_supported ? green : red);
-    boot_screen_row(info, 144, "DAC: pending (phase 2)", NULL, yellow, 0);
+    /* DAC row: app_main fills dac_model/dac_ok from michi_dac_get_caps();
+     * the BSP only renders. Vocabulary matches the sibling rows (ok/FAIL);
+     * no model -> "DAC: none" with no status suffix. */
+    if (st->dac_model[0] != '\0') {
+        snprintf(line, sizeof(line), "DAC: %.24s", st->dac_model);
+        boot_screen_row(info, 144, line, st->dac_ok ? "ok" : "FAIL", white,
+                        st->dac_ok ? green : red);
+    } else {
+        boot_screen_row(info, 144, "DAC: none", NULL, white, 0);
+    }
     boot_screen_row(info, 160, "Result:", st->overall ? "PASS" : "DEGRADED", white,
                     st->overall ? green : red);
 

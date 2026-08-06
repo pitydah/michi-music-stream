@@ -18,6 +18,15 @@ menu "Michi Music Stream Hardware"
           continuity between the DAC SCL line and GPIO23 on your unit. Measure with
           the unit powered off.
 
+    config MICHI_DAC_I2C_SPEED_HZ
+        int "External DAC I2C bus speed (Hz)"
+        default 100000
+        help
+          I2C clock for the external DAC bus. Default is 100 kHz: the ESP32-S3
+          internal pull-ups (~45 kOhm) are marginal at 400 kHz, so 400000 is
+          only safe after measuring external pull-ups (2.2-4.7 kOhm) on SDA/SCL
+          - see README hardware validation.
+
     config MICHI_I2S_BCLK
         int "External DAC I2S BCLK pin"
         default 3
@@ -57,6 +66,23 @@ menu "Michi Music Stream Hardware"
           GPIO46 on your unit. Measure with the unit powered off. Note: this is an
           ESP32-S3 strapping pin; the external circuit must not hold it low during
           reset.
+
+    config MICHI_DAC_MOCK
+        bool "Register the mock DAC driver (tests/CI only)"
+        default n
+        help
+          When enabled, the michi_dac registry also contains a "mock" driver
+          whose probe outcome is controlled by MICHI_DAC_MOCK_PROBE_OK. Never
+          enabled by default: it exists so tests/CI of later phases can
+          exercise the DAC state machine without real hardware.
+
+    config MICHI_DAC_MOCK_PROBE_OK
+        bool "Mock DAC probe reports OK"
+        default y
+        depends on MICHI_DAC_MOCK
+        help
+          y: mock probe succeeds and the mock DAC binds during autodetection.
+          n: mock probe fails, simulating an absent DAC.
 
     config MICHI_LED_GPIO
         int "External LED (SK6812) data pin"
