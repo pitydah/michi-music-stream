@@ -69,6 +69,7 @@ typedef struct {
     bool lighting_cat_contour;        /* ALWAYS false: cat contour LED strip NOT implemented */
     /* Diagnostics */
     char firmware_version[16];        /* MICHI_FW_VERSION_STR */
+    char build_date[16];              /* MICHI_FW_BUILD_DATE (announced by the API, phase 4) */
     char board_model[32];             /* from board info */
 } michi_product_profile_t;
 

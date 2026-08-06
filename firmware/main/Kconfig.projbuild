@@ -1,5 +1,13 @@
 menu "Michi Music Stream Hardware"
 
+    config MICHI_DEVICE_ID
+        string "Device ID announced by the michi-link API"
+        default "michi-receiver-1"
+        help
+          Unique identifier of this unit, announced as device_id by
+          /api/v1/receiver/info and /api/v1/receiver/firmware (phase 4).
+          Change it per unit before pairing/registration (phase 10).
+
     config MICHI_DAC_I2C_SDA
         int "External DAC I2C SDA pin"
         default 22

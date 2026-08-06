@@ -13,6 +13,7 @@
 
 #include "michi_board.h"
 #include "michi_dac.h"
+#include "michi_http.h"
 #include "michi_product_profile.h"
 #include "michi_version.h"
 
@@ -188,6 +189,17 @@ void app_main(void)
         }
     } else {
         ESP_LOGW(TAG, "display unavailable, boot screen skipped (degraded mode)");
+    }
+
+    /* HTTP API (phase 4): read-only migrated endpoints (/info, /firmware).
+     * A failure is logged and boot continues - no halt. */
+    err = michi_http_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "michi_http_init failed: %s (API /info and /firmware unavailable)",
+                 esp_err_to_name(err));
+        ESP_LOGI(TAG, "subsystem=http state=failed phase=4");
+    } else {
+        ESP_LOGI(TAG, "subsystem=http state=ok phase=4");
     }
 
     log_pending_subsystems();

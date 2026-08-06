@@ -45,6 +45,22 @@ firmware/
         ├── include/
         │   └── michi_product_profile.h  # Profile struct + API
         └── michi_product_profile.c      # Derivation from caps + board
+    ├── michi_http/                # HTTP API layer (phase 4)
+    │   ├── CMakeLists.txt
+    │   ├── include/
+    │   │   └── michi_http.h       # Handler contract + checked JSON helpers
+    │   └── http_server.c          # /api/v1/receiver/info + /firmware
+    ├── michi_audio_output/        # I2S pipeline, SPSC ring (phase 4)
+    │   ├── CMakeLists.txt
+    │   ├── Kconfig                # MICHI_AUDIO_RING_BUFFER_KB (1 MB PSRAM)
+    │   ├── include/
+    │   │   └── michi_audio_output.h
+    │   └── michi_audio_output.c
+    └── michi_volume/              # Volume 0-100 clamped (phase 4)
+        ├── CMakeLists.txt
+        ├── include/
+        │   └── michi_volume.h
+        └── michi_volume.c
 ```
 
 At boot, every subsystem that does not exist yet is logged honestly as
@@ -60,10 +76,13 @@ idf.py build
 Build and flash configuration lives in `sdkconfig.defaults` (target, 16 MB flash, octal PSRAM,
 custom partition table, bootloader app rollback).
 
-External peripheral pins (DAC I2C/I2S, LED, pairing button) are configurable through
-`menuconfig` under **Michi Music Stream Hardware** (`main/Kconfig.projbuild`). The defaults
-target free GPIOs that do not collide with the board pinout; see
-[Hardware validation pending](#hardware-validation-pending) before trusting them.
+External peripheral pins (DAC I2C/I2S, LED, pairing button) and the
+`device_id` announced by the API (`MICHI_DEVICE_ID`) are configurable
+through `menuconfig` under **Michi Music Stream Hardware**
+(`main/Kconfig.projbuild`). The defaults target free GPIOs that do not
+collide with the board pinout; see
+[Hardware validation pending](#hardware-validation-pending) before trusting
+them.
 
 ## Partitions
 
@@ -289,6 +308,74 @@ sample_rates=... display=... lighting_rgb=... cat_contour=...` and the boot
 summary becomes `boot=ok mode=<tier> audio_available=<true|false>` (the
 phase-2 hardcoded `mode=diagnostic` is gone). The boot screen title renders
 `<product_name> v<version>` from the profile.
+
+## Phase 4 - P0 corrections
+
+The legacy prototype audit (`firmware/common`) found 12 P0 risks. Phase 4
+fixes them BY CONSTRUCTION in the new components that own them; the legacy
+code is NOT touched (it is deleted during the migration). Fixes that were
+already covered by earlier phases are documented as such.
+
+### P0 table
+
+| # | P0 risk (legacy) | Fixed by | Status |
+|---|------------------|----------|--------|
+| 1 | Use-after-free in `pair_confirm_handler` (cJSON pointers used after `cJSON_Delete`) | `michi_http` handler contract: copy ALL values into local buffers BEFORE delete; returning tree pointers is PROHIBITED. Phase-10 pairing handlers use this pattern | fixed-by-construction |
+| 2 | Use-after-free in `session_start_post_handler` | Same handler contract (phase-12 session handlers) | fixed-by-construction |
+| 3 | Partial HTTP body reads (`httpd_req_recv` once, truncated bodies) | `michi_http_read_body()`: full `Content-Length`, caller buffer IS the limit, bounded stall retries | fixed |
+| 4 | No JSON type/length validation (`->valuestring`/`->valueint` on anything) | Checked helpers `michi_http_json_get_string/int/bool()`: exact type + limit, fail-not-truncate | fixed |
+| 5 | Errors swallowed by `audio_output` (malloc/bind/i2s) | `michi_audio_output` propagates EVERY error (init/start/stop) and cleans up on the way out; no `ESP_ERROR_CHECK` | fixed |
+| 6 | Session marked active before audio started | `michi_audio_output_start()` returns an error; the phase-12 session layer only marks the session active when start returned `ESP_OK` | fixed |
+| 7 | Forced `vTaskDelete` of tasks / leaked I2S channel | Cooperative shutdown: run flag + `xTaskNotify` + `i2s_channel_disable` (unblocks in-flight writes) + join with timeout; tasks self-delete AFTER releasing resources; channel created (disabled) at init, enabled at start, DISABLED (not deleted) at stop, deleted only at deinit once no task may be alive - `start()` after `stop()` re-enables the live channel; handles NULLed | fixed |
+| 8 | Unsynchronized ring buffer (legacy 4 MB, no locking) | SPSC ring: one producer (session task) / one consumer (I2S task), ALL index updates under a portMUX critical section (choice documented in `michi_audio_output.h`); replaced by 1 MB PSRAM ring (`MICHI_AUDIO_RING_BUFFER_KB`) | fixed |
+| 9 | Unvalidated GPIO usage | Covered by the BSP: pins are Kconfig-driven (`Michi Music Stream Hardware` menu) and `michi_audio_output` validates every pin/rate/depth/channel before use | covered-by-phase-1 |
+| 10 | NVS without recovery | Covered by `app_main` (phase 0): `ESP_ERR_NVS_NO_FREE_PAGES`/`NEW_VERSION_FOUND` → erase + retry once, halt if still broken | covered-by-phase-0 |
+| 11 | 3 s blocking in the Wi-Fi event loop | Contract for `michi_wifi` (phase 9), documented below: `esp_event` handlers MUST NOT block (`vTaskDelay` is prohibited there; use `esp_timer`/queues) | fixed-by-construction (contract, phase 9) |
+| 12 | Volume response != applied value | `michi_volume` clamps 0-100 and the phase-12 handler MUST answer with `michi_volume_get()` (the real applied value, including the digital-gain fallback) | fixed |
+
+### HTTP API: `components/michi_http`
+
+Phase 4 serves the migrated read-only endpoints on port 80, no auth (same
+surface as the legacy prototype): `GET /api/v1/receiver/info` and
+`GET /api/v1/receiver/firmware`. `/info` is built entirely from
+`michi_product_profile_get()` (`service=michi-link`, `name`, `device_id`
+from `MICHI_DEVICE_ID`, `api_version=v1-lite` for compatibility - phase 12
+aligns it, `firmware{version,build_date}`, `type`=tier, `output{...}`,
+`supported_codecs`, `features`); the profile gained a `build_date` field
+from the single version source `michi_version.h`. `michi_http_init()`
+propagates errors (boot continues, logged). Pairing (phase 10) and
+session/volume (phase 12) endpoints are written with the handler contract
+in `michi_http.h`: parse → copy ALL values to local buffers → delete →
+process → respond; cJSON pointers never survive `cJSON_Delete` and no
+macro yields a cJSON pointer.
+
+### Audio output: `components/michi_audio_output`
+
+I2S master (standard mode) feeding the external DAC through a 1 MB PSRAM
+SPSC ring (`MICHI_AUDIO_RING_BUFFER_KB`, default 1024 - the unsynchronized
+4 MB legacy ring is replaced). NOT started at boot: a phase-12 session
+calls `start()` and only becomes active on `ESP_OK` (P0-6). All P0
+correctness patterns live here: full error propagation (P0-5), cooperative
+shutdown (P0-7), SPSC + critical sections (P0-8), pin/rate/depth
+ validation (P0-9), digital volume delegated to `michi_volume_apply()` in
+ the consumer task (P0-12). Startup prefill of `buffer_ms` prevents the
+ first underruns.
+
+### Volume: `components/michi_volume`
+
+0-100, clamped at the API boundary. Hardware path: `michi_dac_set_volume()`
+when the bound DAC has hardware volume and is initialized; on failure it
+falls back to digital gain so the value is STILL applied. Digital path:
+`michi_volume_apply()` (16-bit Q15 / 24-bit Q23 on 3-byte packed samples
+- the ESP32-S3 I2S 24-bit layout - integer math, no float).
+`michi_volume_get()` always returns the real
+applied value - the phase-12 handler must answer with it (P0-12).
+
+### Phase 9 contract (Wi-Fi event loop)
+
+`michi_wifi` handlers (phase 9) MUST NEVER block: `vTaskDelay` and
+blocking I/O are prohibited inside `esp_event` handlers - use `esp_timer`
+or a FreeRTOS queue to defer work. This is the P0-11 fix by construction.
 
 ## Hardware validation pending
 

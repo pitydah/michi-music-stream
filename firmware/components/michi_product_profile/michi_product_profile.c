@@ -146,6 +146,7 @@ esp_err_t michi_product_profile_refresh(void)
     p.lighting_cat_contour = false;
 
     copy_str(p.firmware_version, sizeof(p.firmware_version), MICHI_FW_VERSION_STR);
+    copy_str(p.build_date, sizeof(p.build_date), MICHI_FW_BUILD_DATE);
     copy_str(p.board_model, sizeof(p.board_model), info->model);
 
     s_profile = p;

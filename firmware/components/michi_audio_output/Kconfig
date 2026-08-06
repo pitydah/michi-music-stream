@@ -1,0 +1,18 @@
+menu "Michi Music Stream Audio"
+
+    config MICHI_AUDIO_RING_BUFFER_KB
+        int "Audio ring buffer size (KiB, allocated in PSRAM)"
+        default 1024
+        range 16 16384
+        help
+          Size of the SPSC ring between the network/session producer and the
+          I2S consumer task. Default 1024 = 1 MB in PSRAM. The 4 MB legacy
+          ring (unsynchronized, static) was replaced: 1 MB at 48 kHz/16-bit
+          stereo holds ~5.5 s, plenty for network jitter at the current
+          validation baseline. Larger values increase jitter tolerance at
+          the cost of PSRAM. Changes take effect on the next session start.
+          A ring_buffer_kb of 0 in michi_audio_output_config_t selects this
+          default (the option is used when the config is 0). The size must
+          be a power of two (16..16384 KiB): the ring indices are masked.
+
+endmenu
