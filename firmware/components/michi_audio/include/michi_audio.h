@@ -250,6 +250,40 @@ esp_err_t michi_audio_session_stop(void);
 bool michi_audio_session_active(void);
 
 /**
+ * @brief Get the SSRC of the current stream source (phase 12: the session
+ *        layer registers it; diagnostics expose it).
+ *
+ * The SSRC is registered from the FIRST packet accepted into the stream
+ * (ssrc_filter=0, the phase-12 default): before that moment, or after the
+ * session ends, there is no source and ESP_ERR_NOT_FOUND is returned.
+ *
+ * @param out_ssrc Receives the SSRC (network-order value as parsed from
+ *                 the RTP header).
+ * @return ESP_OK; ESP_ERR_INVALID_STATE before init; ESP_ERR_INVALID_ARG
+ *         on NULL out_ssrc; ESP_ERR_NOT_FOUND when no source is
+ *         registered yet (no session or no accepted packet).
+ */
+esp_err_t michi_audio_session_get_ssrc(uint32_t *out_ssrc);
+
+/**
+ * @brief Get the IP address of the current stream source as a dotted
+ *        string (phase 12: session info / diagnostics).
+ *
+ * Same registration semantics as michi_audio_session_get_ssrc(): the
+ * peer is the first packet accepted into the stream. The address is
+ * copied under the metrics lock and formatted with the reentrant
+ * ip4addr_ntoa_r - no shared static buffer.
+ *
+ * @param out     Buffer for the dotted IPv4 string.
+ * @param out_len Size of out (16 bytes hold the longest IPv4 string).
+ * @return ESP_OK; ESP_ERR_INVALID_STATE before init; ESP_ERR_INVALID_ARG
+ *         on NULL out / zero length; ESP_ERR_NOT_FOUND when no source is
+ *         registered yet; ESP_ERR_INVALID_SIZE when the buffer cannot
+ *         hold the string (never truncated).
+ */
+esp_err_t michi_audio_session_get_peer(char *out, size_t out_len);
+
+/**
  * @brief Session metrics (phase-14 diagnostics). Counter semantics:
  *  - received:  RTP packets accepted past parse/PT/SSRC filtering.
  *  - lost:      missing packets detected from received seq gaps (gap-1).

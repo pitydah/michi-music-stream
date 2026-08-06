@@ -21,6 +21,7 @@
 #include "michi_led.h"
 #include "michi_pairing.h"
 #include "michi_product_profile.h"
+#include "michi_session.h"
 #include "michi_state.h"
 #include "michi_version.h"
 #include "michi_wifi.h"
@@ -75,7 +76,7 @@ static void log_selftest_rows(const michi_board_info_t *info,
 static void log_pending_subsystems(void)
 {
     ESP_LOGI(TAG, "subsystem=bsp state=ok phase=1");
-    ESP_LOGW(TAG, "subsystem=api state=pending phase=12");
+    ESP_LOGI(TAG, "subsystem=api state=ok phase=12");
 }
 
 /* DAC phase 2 bring-up: init -> detect -> start. Honest at every step: no
@@ -262,6 +263,18 @@ void app_main(void)
             ESP_LOGW(TAG, "no DAC detected: I2S/DAC boot skipped "
                           "(profile stays diagnostic)");
         }
+    }
+
+    /* Session layer (phase 12): the single active session lifecycle
+     * (start/stop/patch) over the RTP engine. Must run after
+     * michi_audio_init() - it calls into the engine; the HTTP handlers
+     * (michi_http_init below) call into it at request time. On failure
+     * boot continues degraded - no sessions, the rest keeps working. */
+    err = michi_session_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "michi_session_init failed: %s (no sessions)",
+                 esp_err_to_name(err));
+        ESP_LOGI(TAG, "subsystem=session state=failed phase=12");
     }
 
     const michi_dac_caps_t *caps = michi_dac_get_caps();

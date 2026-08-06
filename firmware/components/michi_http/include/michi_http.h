@@ -13,15 +13,20 @@ extern "C" {
 #endif
 
 /**
- * @brief HTTP API layer (phase 4: P0-1/P0-2/P0-3/P0-4/P0-5 (shared with
- *        audio_output: error propagation) fixed by construction).
+ * @brief HTTP API layer (phases 4 + 12: the Michi Link Receiver API).
  *
- * Serves the migrated read-only endpoints on port 80:
- *  - GET /api/v1/receiver/info
- *  - GET /api/v1/receiver/firmware
+ * Serves on port 80:
+ *  - Phase 4 (no auth): GET /api/v1/receiver/info, GET /api/v1/receiver/firmware
+ *  - Phase 12: status, pairing challenge/confirm (button-opened window
+ *    only), controllers list/revoke, sessions (start/current/patch/stop),
+ *    now-playing, diagnostics, updates (501 until phase 13), plus the
+ *    v1-lite compatibility paths mapped onto the SAME handlers with the
+ *    SAME security (see firmware/README.md, Receiver API).
  *
- * Pairing (phase 10) and session/volume (phase 12) endpoints are written
- * with the SAME handler contract below; no handler may deviate from it.
+ * Every protected endpoint runs the Bearer gate (michi_pairing_validate_token
+ * + permission bit) BEFORE touching its body; the token value is never
+ * logged. All handlers follow the contract below; no handler may deviate
+ * from it.
  *
  * ------------------------------------------------------------------
  * Handler contract (P0-1/P0-2 fixed by construction)

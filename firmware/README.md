@@ -105,6 +105,11 @@ firmware/
         ├── include/
         │   └── michi_audio.h      # Session API, metrics, output ops abstraction
         └── michi_audio.c          # Session task: RTP -> jitter buffer -> pipeline
+    └── michi_session/             # Single active session lifecycle (phase 12)
+        ├── CMakeLists.txt
+        ├── include/
+        │   └── michi_session.h    # start/stop/patch/info + session credential
+        └── michi_session.c        # Contract validation, token, FSM events
 ```
 
 At boot, every subsystem that does not exist yet is logged honestly as
@@ -392,11 +397,12 @@ from `MICHI_DEVICE_ID`, `api_version=v1-lite` for compatibility - phase 12
 aligns it, `firmware{version,build_date}`, `type`=tier, `output{...}`,
 `supported_codecs`, `features`); the profile gained a `build_date` field
 from the single version source `michi_version.h`. `michi_http_init()`
-propagates errors (boot continues, logged). Pairing (phase 10) and
-session/volume (phase 12) endpoints are written with the handler contract
-in `michi_http.h`: parse → copy ALL values to local buffers → delete →
-process → respond; cJSON pointers never survive `cJSON_Delete` and no
-macro yields a cJSON pointer.
+propagates errors (boot continues, logged). Phase 12 adds the full
+receiver API on the same server (Bearer auth + permissions, sessions,
+pairing, diagnostics — see the Receiver API section below). Every
+handler follows the contract in `michi_http.h`: parse → copy ALL values
+to local buffers → delete → process → respond; cJSON pointers never
+survive `cJSON_Delete` and no macro yields a cJSON pointer.
 
 ### Audio output: `components/michi_audio_output`
 
@@ -496,6 +502,12 @@ state current when the event was dispatched - stamped by the FSM task).
 | `MICHI_EVENT_WIFI_DISCONNECTED` | in IDLE | IDLE → WIFI_CONNECTING |
 | `MICHI_EVENT_NETWORK_READY` | in WIFI_CONNECTING | WIFI_CONNECTING → IDLE |
 | `MICHI_EVENT_WIFI_PROV_FAILED` | in WIFI_CONNECTING | WIFI_CONNECTING → UNPROVISIONED |
+| `MICHI_EVENT_SESSION_STARTED` | in IDLE | IDLE → SESSION_PENDING |
+| `MICHI_EVENT_SESSION_STARTED` | in SESSION_PENDING | SESSION_PENDING → BUFFERING |
+| `MICHI_EVENT_SESSION_STARTED` | in BUFFERING | BUFFERING → PLAYING |
+| `MICHI_EVENT_SESSION_CLOSED` | in SESSION_PENDING / BUFFERING / PLAYING / PAUSED | → IDLE |
+| `MICHI_EVENT_SESSION_PAUSED` | in PLAYING | PLAYING → PAUSED |
+| `MICHI_EVENT_SESSION_RESUMED` | in PAUSED | PAUSED → PLAYING |
 
 The lookup is keyed on **(event, data, from)**: an event only matches the
 entry whose `from` equals the state current at dispatch time — that is why
@@ -516,11 +528,16 @@ applies; every applied transition emits `MICHI_EVENT_STATE_CHANGED`.
 `MICHI_EVENT_ERROR` (data: `esp_err_t`), `MICHI_EVENT_STATE_CHANGED` and
 the phase events (`MICHI_EVENT_WIFI_*` phase 9, `MICHI_EVENT_PAIRING_WINDOW_CLOSED`
 phase 10, `MICHI_EVENT_SESSION_*` phase 12, `MICHI_EVENT_UPDATE_*`
-phase 13) are declared now so consumers can register filters; their
-mappings arrive with their phases. `MICHI_EVENT_PAIRING_STARTED` is the
-exception: the physical button (phase 8) already maps it from IDLE and
-UNPROVISIONED, and `MICHI_EVENT_PAIRING_WINDOW_CLOSED` is mapped with the
-pairing flow (phase 10).
+phase 13) are declared so consumers can register filters; their
+mappings arrive with their phases. The session events are the exception
+alongside the pairing ones: `MICHI_EVENT_SESSION_STARTED` is posted once
+per lifecycle step (negotiated → engine starting → running) and the
+from-keyed lookup advances the chain IDLE → SESSION_PENDING → BUFFERING →
+PLAYING — the same pattern as `MICHI_EVENT_PAIRING_STARTED`.
+`MICHI_EVENT_SESSION_CLOSED` ends the session from any session state
+(four map entries), and `MICHI_EVENT_SESSION_PAUSED`/`RESUMED` switch
+between PLAYING and PAUSED (pause also stops the ENGINE — see the
+Sessions section).
 
 ### Boot flow
 
@@ -1107,13 +1124,16 @@ pairing: revoked controller=%s remaining=%u
 subsystem=pairing state=off phase=10
 ```
 
-### Phase 12 note
+### Phase 12 status
 
-The pairing HTTP endpoints (challenge/confirm/validate/revoke) arrive in
-phase 12. They will operate STRICTLY inside a button-opened window for
-challenge/confirm; token validation and permission checks apply at every
-protected endpoint via the constant-time registry scan. The elevated
-permissions stay un-granted; the grant-management flow is out of scope.
+The pairing HTTP endpoints (challenge/confirm/validate/revoke) are
+implemented in phase 12 (see Receiver API below). They operate STRICTLY
+inside a button-opened window for challenge/confirm; token validation and
+permission checks apply at every protected endpoint via the constant-time
+registry scan. The elevated permissions (controller admin, OTA) stay
+un-granted by default; the grant-management flow is out of scope — but
+the endpoints are ready and only become usable when a controller holds
+the bit.
 
 ## Audio engine: `components/michi_audio`
 
@@ -1154,9 +1174,14 @@ is **filtering only**, source *authentication* is a declared future meta.
 > meta — any host on the LAN can inject audio into the session port, force
 > overruns (drop-oldest) or corrupt the stream with malformed datagrams
 > (post-parse payload rejects are dropped, not fatal, but a hostile sender
-> can still starve the stream). The phase-12 API layer must add a
-> **source-IP allowlist and strict validation** before the engine is
-> reachable from the network.
+> can still starve the stream). Phase 12 registers the source (SSRC +
+> peer of the first accepted packet, exposed via
+> `michi_audio_session_get_ssrc/get_peer` and the API) and resume tries
+> to filter to a LIVE engine registration — but the registration dies
+> with the engine at pause, so a resumed session normally falls back to
+> first-seen (filter 0). This is registration, NOT authentication: a
+> source-IP allowlist and strict validation remain future work before the
+> engine is reachable from untrusted networks.
 
 ### Jitter buffer policies (16-bit seq, wrap-aware int16 diff)
 
@@ -1230,13 +1255,198 @@ ops `prepare()`), RTCP reception quality, clock drift correction, source
 authentication and multiroom sync. All are declared in `michi_audio.h`
 with the rejection/limitation behavior of this phase; none are faked.
 
-### Phase 12 note
+### Phase 12 status
 
 The session engine is idle at boot. Phase 12 (Michi Link Receiver API)
-starts/stops sessions with `michi_audio_session_start(port, ssrc_filter)`
-/ `michi_audio_session_stop()`, reads metrics for diagnostics and posts
-`MICHI_EVENT_SESSION_STARTED/CLOSED` (the engine itself does not post
-them).
+starts/stops sessions through `components/michi_session`, which calls
+`michi_audio_session_start(port, ssrc_filter=0)` /
+`michi_audio_session_stop()`, reads metrics for diagnostics and posts the
+`MICHI_EVENT_SESSION_*` events (the engine itself does not post them).
+Phase 12 also adds the source registration getters
+`michi_audio_session_get_ssrc()` / `michi_audio_session_get_peer()`: the
+first packet accepted into the stream seeds the source, exposed by the
+session info and diagnostics endpoints.
+
+## Sessions: `components/michi_session`
+
+The session layer (phase 12) owns the SINGLE active session the receiver
+can hold. It sits between the HTTP API and the RTP engine:
+
+- **One session at a time.** A `session_start` while one is active fails
+  with `session_active`; the controller must stop it first.
+- **Format validation against the profile / engine meta 1.**
+  `pcm_s16le`/48000/16/2 only; everything else is REJECTED explicitly
+  (`unsupported_format`, a log naming the requested values) — never
+  silently remapped. `pcm_s24le` is rejected as a declared-but-not-
+  implemented meta. The engine's own `prepare()` is the final authority.
+- **The session credential.** `session_start` issues a random 64-hex
+  session token (32 bytes of `esp_fill_random`). stop/patch require it,
+  validated in CONSTANT TIME (fixed-length XOR loop — single slot, so
+  there is nothing to hide about which slot matched). The token is
+  returned to the controller ONCE (in the start response) and is never
+  logged, never persisted, never re-exposed by `GET current`. The
+  `session_id` (`sess_` + 16 hex) is NOT a credential: it identifies the
+  session in heartbeats/diagnostics.
+- **Lifecycle → FSM events.** Start posts `SESSION_STARTED` three times,
+  driving IDLE → SESSION_PENDING → BUFFERING → PLAYING (BUFFERING is
+  modeled retrospectively: the engine's real prefill is internal, like
+  SELF_TEST at boot). Pause posts `SESSION_PAUSED` (PLAYING → PAUSED)
+  AND stops the engine (silence keeps the DAC clocks running, session
+  state retained); resume refreshes the engine SSRC live and passes it
+  as filter when a live registration exists — the registration dies
+  with the engine at pause, so a resumed session normally falls back to
+  first-seen (filter 0) — and posts `SESSION_RESUMED`. Stop
+  posts `SESSION_CLOSED` from any session state. Event posts are
+  best-effort (warn on failure): the session layer is the API's source of
+  truth, the FSM follows as far as the bus allows.
+- **Dead-engine reconciliation.** The engine task can self-terminate
+  (socket/bind failure, pipeline write rejection) with the session layer
+  still believing the session is active. `get_info()` and `start()`
+  detect it (engine inactive, outside the 250 ms post-start grace
+  window, not paused), clean the session (SESSION_CLOSED posted,
+  `session: cleaned dead engine session` logged): `start()` proceeds
+  with the new session, `get_info()` reports "no session".
+- **FSM reconciliation.** `get_info()` re-posts the missing
+  SESSION_STARTED chain steps from the current state when an active
+  session left the FSM short of PLAYING/PAUSED (from-keyed posts:
+  idempotent, self-healing — a dropped post is re-driven on the next
+  poll).
+- **Honesty rules (P0-12).** `buffer_ms` is clamped to the engine's
+  jitter capacity (50..`MICHI_AUDIO_JITTER_MAX_MS`) and the CLAMPED value
+  is stored and reported; volume is clamped 0-100 and the APPLIED value
+  (`michi_volume_get`) is stored and reported — never the request value.
+- **No persistence.** Sessions live in RAM; a reboot ends them.
+- **Threading.** All calls run in task context (the httpd task); a mutex
+  serializes. `stop()` — and `pause()` inside PATCH, which stops the
+  engine the same way — may block up to the engine's cooperative join
+  window (~2 s) by design (single session, single server task).
+
+```mermaid
+sequenceDiagram
+    participant C as Controller
+    participant API as HTTP API
+    participant S as michi_session
+    participant A as michi_audio
+    participant F as FSM
+    C->>API: POST /sessions (Bearer)
+    API->>S: michi_session_start(...)
+    S->>A: session_start(port, 0)
+    S->>F: SESSION_STARTED x3 (IDLE→PENDING→BUFFERING→PLAYING)
+    API-->>C: 200 {session_id, session_token}
+    C->>API: PATCH /sessions/current {paused:true, session_token}
+    API->>S: michi_session_patch(token, -1, &true)
+    S->>A: session_stop() (state retained)
+    S->>F: SESSION_PAUSED (PLAYING→PAUSED)
+    C->>API: DELETE /sessions/current (X-Michi-Session)
+    API->>S: michi_session_stop(token)
+    S->>A: session_stop()
+    S->>F: SESSION_CLOSED (→IDLE)
+```
+
+## Receiver API (phase 12): `components/michi_http`
+
+The full Michi Link Receiver API on port 80. Every protected endpoint
+runs the Bearer gate first (`michi_pairing_validate_token` — constant-
+time registry scan — plus the endpoint's permission bit) and answers
+`401 invalid_token` / `403 insufficient_permissions`; the token VALUE is
+never logged. All responses use the `{error:{code,message,details:{}}}`
+envelope for failures.
+
+### Endpoints
+
+| Endpoint | Method | Auth | Permission | Notes |
+|---|---|---|---|---|
+| `/api/v1/receiver/info` | GET | — | — | Product profile (phase 4) |
+| `/api/v1/receiver/firmware` | GET | — | — | Version/build/OTA flag (phase 4) |
+| `/api/v1/receiver/status` | GET | — | — | FSM state + session_active + tier + uptime |
+| `/api/v1/receiver/pairing/challenge` | POST | — | — | `initiator_id` in body; 409 `pairing_window_closed` without a button-opened window |
+| `/api/v1/receiver/pairing/confirm` | POST | — | — | `challenge` (+ alias `nonce`), `initiator_id`, `token` |
+| `/api/v1/receiver/controllers` | GET | Bearer | STATUS | Controller id list (no secrets) |
+| `/api/v1/receiver/controllers/{id}` | DELETE | Bearer | CONTROLLER_ADMIN | Individual revocation |
+| `/api/v1/receiver/sessions` | POST | Bearer | PLAYBACK | Start; returns `session_token` (issued once) |
+| `/api/v1/receiver/sessions/current` | GET | Bearer | STATUS | Info WITHOUT the session token |
+| `/api/v1/receiver/sessions/current` | PATCH | Bearer | PLAYBACK | `volume` / `paused`; token in body or `X-Michi-Session` |
+| `/api/v1/receiver/sessions/current` | DELETE | Bearer | PLAYBACK | Stop; token in `X-Michi-Session` header |
+| `/api/v1/receiver/now-playing` | PUT | Bearer | PLAYBACK | `source`/`title`/`artist` → display |
+| `/api/v1/receiver/diagnostics` | GET | Bearer | STATUS | Uptime, heap, PSRAM, wifi rssi, audio metrics, DAC |
+| `/api/v1/receiver/updates` | POST | Bearer | OTA | **501** `ota_not_implemented` — the service lands in phase 13 (auth verified, endpoint ready) |
+
+### Session contract
+
+- **Start** (`POST /sessions`): required `codec`, `sample_rate`,
+  `bit_depth`, `channels`, `stream_port` (1024-65535); optional
+  `buffer_ms` (default 250, range 50-`MICHI_AUDIO_JITTER_MAX_MS`),
+  `volume` (default: current, range 0-100). Out-of-range values are
+  rejected with 400 `invalid_request` naming the field (validated
+  BEFORE the narrowing casts — a wrapped port is never accepted), and
+  the session layer still clamps defensively. The v1-lite `transport`
+  must be `udp` when present; a client-provided `session_id` is ignored
+  (the receiver generates it). The OWNER is always the authenticated
+  controller id: a body owner claim would be spoofable and is
+  overridden. The response carries `session_token` — the ONLY
+  transmission of the credential. Errors: 409 `session_active` /
+  `audio_unavailable`, 400 `unsupported_format` (outside meta 1) /
+  `invalid_request`.
+- **Pause/resume** (`PATCH`): `volume` (clamped; the response reports
+  the APPLIED value) and/or `paused`. The session token comes from the
+  body (`session_token`) or the `X-Michi-Session` header. A wrong/missing
+  token → 401 `invalid_session_token`; no session → 404
+  `no_active_session`.
+- **Stop** (`DELETE`): the session token arrives in the
+  `X-Michi-Session` header (DELETE bodies are not part of the contract).
+  May take up to ~2 s (engine join window); a 500 `session_stop_failed`
+  means "retry".
+- **Pause is NOT engine-free**: pausing stops the RTP engine (the DAC
+  keeps playing silence, the session state is retained) and blocks up to
+  the ~2 s join window, like stop. A resumed session restarts on the
+  same port filtered to a LIVE engine SSRC if one is registered — the
+  registration dies with the engine at pause, so it normally falls back
+  to first-seen (filter 0). The stream state (jitter buffer) is NOT
+  retained across pause — declared behavior.
+
+### v1-lite compatibility (transition layer)
+
+The legacy paths stay operative, mapped onto the SAME handlers with the
+SAME security (they share the auth gates and the pairing/session
+components — there is no weaker path):
+
+| v1-lite path | Maps to | Behavior notes |
+|---|---|---|
+| `POST /pair/start` | pairing challenge | Body `initiator_id`; does NOT open the window — without the button it answers `pairing_window_closed` (security rule). Response is the phase-12 shape: `challenge` (was `nonce`) |
+| `POST /pair/confirm` | pairing confirm | Accepts `nonce` as alias of `challenge`. The token is NOT echoed back (legacy did — deviation, see below) |
+| `POST /session/start` | sessions start | Accepts `transport: udp`; the server-assigned `session_id` in the response is authoritative |
+| `POST /session/stop` | sessions stop | Body `session_id` (validated: 404 on mismatch) + session token in body or header |
+| `POST /heartbeat` | liveness | Bearer STATUS; responds `alive` with the ACTIVE server-side `session_id` (server truth) |
+| `POST /volume` | volume | Bearer VOLUME; clamps and reports the REAL applied value (P0-12) |
+
+Deliberate deviations from the v1-lite contract, documented: (1) the
+pairing response does NOT echo the token back (a secret must never be
+re-transmitted); (2) there is NO 90-second heartbeat timeout in phase 12
+— a session stays until explicitly stopped or the device reboots;
+(3) the receiver generates `session_id` (a client-provided id is
+ignored); (4) responses use the unified `{error:{...}}` envelope and the
+phase-12 field names.
+
+### Notes
+
+- **Pairing only via button**: no network call opens the pairing window.
+  Challenge/confirm work strictly inside a button-opened window; a
+  revoke/list runs on the registry directly (Bearer-gated).
+- **Updates → phase 13**: `POST /updates` verifies auth and answers an
+  honest 501. The OTA service (partition swap, status reporting) is
+  phase 13.
+- **Now-playing → display**: `PUT /now-playing` accepts metadata anytime
+  (no session required); the display renders it when the state screen
+  shows it. Oversize fields are rejected with 400 (never silently
+  truncated).
+- **Heartbeat semantics**: the response always carries the ACTIVE
+  session id (server truth); a mismatched client id is not an error —
+  the response lets the client discover the real id.
+- **Diagnostics**: audio metrics are engine counters (see the Audio
+  engine section); `wifi.rssi_dbm` is omitted when not connected;
+  `audio.ssrc` appears once a source was accepted into the stream.
+  `wifi.ssid` exposes the network NAME only (never the password) —
+  intentional, diagnostics are Bearer-gated (STATUS).
 
 ## Hardware validation pending
 

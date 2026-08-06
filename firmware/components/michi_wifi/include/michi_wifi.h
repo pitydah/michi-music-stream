@@ -122,6 +122,18 @@ bool michi_wifi_is_provisioned(void);
 const char *michi_wifi_get_ssid(void);
 
 /**
+ * @brief Get the current STA link RSSI in dBm (phase 12 diagnostics).
+ *
+ * Reads esp_wifi_sta_get_ap_info() live; no cached value.
+ *
+ * @param out_rssi Receives the RSSI in dBm (negative).
+ * @return ESP_OK; ESP_ERR_INVALID_STATE before init;
+ *         ESP_ERR_INVALID_ARG on NULL out_rssi; ESP_ERR_NOT_FOUND when
+ *         the STA is not connected to an AP.
+ */
+esp_err_t michi_wifi_get_rssi(int8_t *out_rssi);
+
+/**
  * @brief Shut the network subsystem down: provisioning stopped (with
  *        cooperative task join), reconnect timer cancelled, handlers
  *        unregistered, Wi-Fi stopped/deinitialized, mDNS retired.

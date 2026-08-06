@@ -1393,6 +1393,22 @@ const char *michi_wifi_get_ssid(void)
     return s_ssid_cache;
 }
 
+esp_err_t michi_wifi_get_rssi(int8_t *out_rssi)
+{
+    if (out_rssi == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) {
+        return ESP_ERR_NOT_FOUND; /* not connected: no link to measure */
+    }
+    *out_rssi = ap.rssi;
+    return ESP_OK;
+}
+
 esp_err_t michi_wifi_shutdown(void)
 {
     if (!s_initialized) {

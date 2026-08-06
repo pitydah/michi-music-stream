@@ -128,13 +128,29 @@ static const michi_event_map_t s_event_map[] = {
      * paired, attempt exhaustion, explicit close) returns the FSM from
      * PAIRING to IDLE. */
     { MICHI_EVENT_PAIRING_WINDOW_CLOSED, 0, true, MICHI_STATE_PAIRING,     MICHI_STATE_IDLE },
+    /* Phase 12 (sessions, michi_session): SESSION_STARTED is posted once
+     * per lifecycle step (negotiated -> engine starting -> running); the
+     * from-keyed lookup advances the chain one step per post, the same
+     * pattern as PAIRING_STARTED. BUFFERING is modeled retrospectively
+     * (the engine's real prefill is internal to michi_audio). CLOSED
+     * ends the session from any session state; PAUSED/RESUMED switch
+     * between PLAYING and PAUSED (pause stops the engine, state kept). */
+    { MICHI_EVENT_SESSION_STARTED, 0, true, MICHI_STATE_IDLE,            MICHI_STATE_SESSION_PENDING },
+    { MICHI_EVENT_SESSION_STARTED, 0, true, MICHI_STATE_SESSION_PENDING, MICHI_STATE_BUFFERING },
+    { MICHI_EVENT_SESSION_STARTED, 0, true, MICHI_STATE_BUFFERING,       MICHI_STATE_PLAYING },
+    { MICHI_EVENT_SESSION_CLOSED,  0, true, MICHI_STATE_SESSION_PENDING, MICHI_STATE_IDLE },
+    { MICHI_EVENT_SESSION_CLOSED,  0, true, MICHI_STATE_BUFFERING,       MICHI_STATE_IDLE },
+    { MICHI_EVENT_SESSION_CLOSED,  0, true, MICHI_STATE_PLAYING,         MICHI_STATE_IDLE },
+    { MICHI_EVENT_SESSION_CLOSED,  0, true, MICHI_STATE_PAUSED,          MICHI_STATE_IDLE },
+    { MICHI_EVENT_SESSION_PAUSED,  0, true, MICHI_STATE_PLAYING,         MICHI_STATE_PAUSED },
+    { MICHI_EVENT_SESSION_RESUMED, 0, true, MICHI_STATE_PAUSED,          MICHI_STATE_PLAYING },
 };
 
 /* Structural coverage: every s_event_map entry must have an
  * EVENT_MAP_TRANSITION_CHECK below. sizeof on a static array IS an integer
  * constant expression, so a new entry without its check fails this assert
  * at compile time. */
-#define MICHI_EVENT_MAP_CHECK_COUNT 10
+#define MICHI_EVENT_MAP_CHECK_COUNT 19
 _Static_assert(sizeof(s_event_map) / sizeof(s_event_map[0]) ==
                    MICHI_EVENT_MAP_CHECK_COUNT,
                "every event map entry needs a transition check");
@@ -162,6 +178,15 @@ EVENT_MAP_TRANSITION_CHECK(6, s_evmap_check_6);
 EVENT_MAP_TRANSITION_CHECK(7, s_evmap_check_7);
 EVENT_MAP_TRANSITION_CHECK(8, s_evmap_check_8);
 EVENT_MAP_TRANSITION_CHECK(9, s_evmap_check_9);
+EVENT_MAP_TRANSITION_CHECK(10, s_evmap_check_10);
+EVENT_MAP_TRANSITION_CHECK(11, s_evmap_check_11);
+EVENT_MAP_TRANSITION_CHECK(12, s_evmap_check_12);
+EVENT_MAP_TRANSITION_CHECK(13, s_evmap_check_13);
+EVENT_MAP_TRANSITION_CHECK(14, s_evmap_check_14);
+EVENT_MAP_TRANSITION_CHECK(15, s_evmap_check_15);
+EVENT_MAP_TRANSITION_CHECK(16, s_evmap_check_16);
+EVENT_MAP_TRANSITION_CHECK(17, s_evmap_check_17);
+EVENT_MAP_TRANSITION_CHECK(18, s_evmap_check_18);
 #undef EVENT_MAP_TRANSITION_CHECK
 
 typedef struct {

@@ -85,9 +85,17 @@ typedef enum {
     MICHI_EVENT_PAIRING_STARTED,   /*!< data: 0 */
     MICHI_EVENT_PAIRING_WINDOW_CLOSED, /*!< data: 0 */
 
-    /* Phase 12 (sessions/API): emitted by the session layer. */
+    /* Phase 12 (sessions/API): emitted by the session layer (michi_session).
+     * SESSION_STARTED is posted once per lifecycle step (negotiated ->
+     * engine starting -> running) - the from-keyed map entries advance
+     * IDLE -> SESSION_PENDING -> BUFFERING -> PLAYING. SESSION_CLOSED
+     * ends the session from any session state (-> IDLE). PAUSED/RESUMED
+     * switch between PLAYING and PAUSED (pause stops the engine and
+     * retains the session state). */
     MICHI_EVENT_SESSION_STARTED,   /*!< data: 0 */
     MICHI_EVENT_SESSION_CLOSED,    /*!< data: 0 */
+    MICHI_EVENT_SESSION_PAUSED,    /*!< data: 0 */
+    MICHI_EVENT_SESSION_RESUMED,   /*!< data: 0 */
 
     /* Phase 13 (OTA update). */
     MICHI_EVENT_UPDATE_AVAILABLE,  /*!< data: 0 */

@@ -27,6 +27,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "lwip/ip4_addr.h"
 #include "lwip/sockets.h"
 
 #include "esp_err.h"
@@ -110,6 +111,17 @@ static volatile bool s_session_run = false;    /* cooperative: read by the task 
 static volatile bool s_session_done = false;   /* set by the task before self-delete */
 static volatile bool s_session_active = false; /* task bound the socket */
 static volatile TaskHandle_t s_session_task = NULL;
+
+/* Stream source registration (phase 12): the first packet accepted into
+ * the stream seeds the source. Written by the session task under s_lock
+ * (single writer), read by michi_audio_session_get_ssrc/get_peer from the
+ * API task. Kept OUT of session_t on purpose: session_t is owned and
+ * freed by the session task, these snapshots must survive it. Cleared at
+ * session_start; stale values are guarded by s_session_active. */
+static volatile bool s_session_ssrc_valid = false;
+static volatile uint32_t s_session_ssrc;
+static volatile bool s_session_peer_valid = false;
+static struct in_addr s_session_peer; /* guarded by s_session_peer_valid */
 
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static michi_audio_metrics_t s_metrics;
@@ -454,8 +466,23 @@ static void session_recv(session_t *s)
 
     m_add(&s_metrics.received, 1);
 
+    /* Source registration (phase 12): the first packet ACCEPTED into the
+     * stream seeds the peer + SSRC snapshots for the session layer. A
+     * packet rejected by stream_policy (e.g. payload geometry) never
+     * registers; the next accepted one overwrites. */
+    const bool was_unseeded = !s->ssrc_valid;
     if (!stream_policy(s, &pkt)) {
         return; /* dropped by the policy (metrics already updated) */
+    }
+    if (was_unseeded) {
+        portENTER_CRITICAL(&s_lock);
+        s_session_peer = from.sin_addr;
+        s_session_ssrc = pkt.ssrc;
+        s_session_ssrc_valid = true;
+        s_session_peer_valid = true;
+        portEXIT_CRITICAL(&s_lock);
+        ESP_LOGI(TAG, "session: source registered ssrc=0x%08" PRIx32,
+                 pkt.ssrc);
     }
 
     m_set(&s_metrics.last_seq, pkt.seq);
@@ -842,6 +869,8 @@ esp_err_t michi_audio_session_start(uint16_t port, uint32_t ssrc_filter)
 
     portENTER_CRITICAL(&s_lock);
     memset(&s_metrics, 0, sizeof(s_metrics)); /* fresh counters per session */
+    s_session_ssrc_valid = false;             /* source registered by the first accepted packet */
+    s_session_peer_valid = false;
     portEXIT_CRITICAL(&s_lock);
 
     session_t *s = heap_caps_calloc(1, sizeof(*s), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -924,6 +953,46 @@ esp_err_t michi_audio_session_stop(void)
 bool michi_audio_session_active(void)
 {
     return s_session_active;
+}
+
+esp_err_t michi_audio_session_get_ssrc(uint32_t *out_ssrc)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (out_ssrc == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_session_active || !s_session_ssrc_valid) {
+        /* Honest: no session, or no packet accepted yet (ssrc_filter=0
+         * registers on the FIRST accepted packet). */
+        return ESP_ERR_NOT_FOUND;
+    }
+    portENTER_CRITICAL(&s_lock);
+    *out_ssrc = s_session_ssrc;
+    portEXIT_CRITICAL(&s_lock);
+    return ESP_OK;
+}
+
+esp_err_t michi_audio_session_get_peer(char *out, size_t out_len)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (out == NULL || out_len == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_session_active || !s_session_peer_valid) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    struct in_addr peer;
+    portENTER_CRITICAL(&s_lock);
+    peer = s_session_peer;
+    portEXIT_CRITICAL(&s_lock);
+    if (ip4addr_ntoa_r((const ip4_addr_t *)&peer, out, (int)out_len) == NULL) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    return ESP_OK;
 }
 
 esp_err_t michi_audio_get_metrics(michi_audio_metrics_t *out)
