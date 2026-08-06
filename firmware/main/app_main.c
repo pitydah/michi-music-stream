@@ -13,6 +13,7 @@
 #include "nvs_flash.h"
 
 #include "michi_board.h"
+#include "michi_button.h"
 #include "michi_dac.h"
 #include "michi_display.h"
 #include "michi_http.h"
@@ -71,7 +72,6 @@ static void log_selftest_rows(const michi_board_info_t *info,
 static void log_pending_subsystems(void)
 {
     ESP_LOGI(TAG, "subsystem=bsp state=ok phase=1");
-    ESP_LOGW(TAG, "subsystem=button state=pending phase=8");
     ESP_LOGW(TAG, "subsystem=network state=pending phase=9");
     ESP_LOGW(TAG, "subsystem=audio state=pending phase=11");
     ESP_LOGW(TAG, "subsystem=api state=pending phase=12");
@@ -160,6 +160,17 @@ void app_main(void)
         ESP_LOGE(TAG, "michi_led_init failed: %s (no status LEDs)",
                  esp_err_to_name(err));
         ESP_LOGI(TAG, "subsystem=led state=failed phase=7");
+    }
+
+    /* Pairing button (phase 8): debounced physical button that ONLY posts
+     * events (pairing / recovery / factory reset); the ISR records edges
+     * and timestamps, the debounce task runs the actions. On failure boot
+     * continues degraded - no button, everything else keeps working. */
+    err = michi_button_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "michi_button_init failed: %s (no pairing button)",
+                 esp_err_to_name(err));
+        ESP_LOGI(TAG, "subsystem=button state=failed phase=8");
     }
 
     err = init_nvs();

@@ -86,12 +86,17 @@ static const uint32_t s_transitions[MICHI_STATE_COUNT] = {
 };
 
 /* Event -> transition mapping. `any_data` ignores the payload; otherwise
- * data must match exactly. `from` is the state the event must arrive in: a
- * mismatched arrival is out-of-contract, logged and dropped (no transition;
- * the event itself is still broadcast). SELF_TEST_DONE carries the self-test
- * overall result as data for observers, but ANY data drives SELF_TEST->IDLE:
- * the result is surfaced by app_main's log, and RECOVERABLE_ERROR has no
- * boot path - it is reserved for runtime producers arriving from phase 9. */
+ * data must match exactly. `from` is the state the event must arrive in:
+ * the lookup keys on it, so an event only matches the entry whose `from`
+ * equals the state current at dispatch time - several entries may share an
+ * id (PAIRING_STARTED from IDLE and from UNPROVISIONED); the from key picks
+ * the reachable one. An event with no entry for the current state is
+ * out-of-contract: no transition, the event itself is still broadcast to
+ * observers and a warn is logged. SELF_TEST_DONE carries the self-test
+ * overall result as data for observers, but ANY data drives
+ * SELF_TEST->IDLE: the result is surfaced by app_main's log, and
+ * RECOVERABLE_ERROR has no boot path - it is reserved for runtime producers
+ * arriving from phase 9. */
 typedef struct {
     michi_event_id_t id;
     uint32_t data;
@@ -101,16 +106,21 @@ typedef struct {
 } michi_event_map_t;
 
 static const michi_event_map_t s_event_map[] = {
-    { MICHI_EVENT_BOOT_COMPLETE,  0, true, MICHI_STATE_BOOTING,           MICHI_STATE_SELF_TEST },
-    { MICHI_EVENT_SELF_TEST_DONE, 0, true, MICHI_STATE_SELF_TEST,         MICHI_STATE_IDLE },
-    { MICHI_EVENT_RECOVER,        0, true, MICHI_STATE_RECOVERABLE_ERROR, MICHI_STATE_IDLE },
+    { MICHI_EVENT_BOOT_COMPLETE,   0, true, MICHI_STATE_BOOTING,           MICHI_STATE_SELF_TEST },
+    { MICHI_EVENT_SELF_TEST_DONE,  0, true, MICHI_STATE_SELF_TEST,         MICHI_STATE_IDLE },
+    { MICHI_EVENT_RECOVER,         0, true, MICHI_STATE_RECOVERABLE_ERROR, MICHI_STATE_IDLE },
+    /* Phase 8 (physical pairing button, michi_button): the same event
+     * arrives from two source states; the from-keyed lookup keeps both
+     * entries reachable. */
+    { MICHI_EVENT_PAIRING_STARTED, 0, true, MICHI_STATE_IDLE,             MICHI_STATE_PAIRING },
+    { MICHI_EVENT_PAIRING_STARTED, 0, true, MICHI_STATE_UNPROVISIONED,    MICHI_STATE_PAIRING },
 };
 
 /* Structural coverage: every s_event_map entry must have an
  * EVENT_MAP_TRANSITION_CHECK below. sizeof on a static array IS an integer
  * constant expression, so a new entry without its check fails this assert
  * at compile time. */
-#define MICHI_EVENT_MAP_CHECK_COUNT 3
+#define MICHI_EVENT_MAP_CHECK_COUNT 5
 _Static_assert(sizeof(s_event_map) / sizeof(s_event_map[0]) ==
                    MICHI_EVENT_MAP_CHECK_COUNT,
                "every event map entry needs a transition check");
@@ -131,6 +141,8 @@ _Static_assert(sizeof(s_event_map) / sizeof(s_event_map[0]) ==
 EVENT_MAP_TRANSITION_CHECK(0, s_evmap_check_0);
 EVENT_MAP_TRANSITION_CHECK(1, s_evmap_check_1);
 EVENT_MAP_TRANSITION_CHECK(2, s_evmap_check_2);
+EVENT_MAP_TRANSITION_CHECK(3, s_evmap_check_3);
+EVENT_MAP_TRANSITION_CHECK(4, s_evmap_check_4);
 #undef EVENT_MAP_TRANSITION_CHECK
 
 typedef struct {
@@ -218,11 +230,19 @@ static void apply_transition(michi_state_t target, michi_state_t from)
     dispatch_observers(&ev);
 }
 
-static const michi_event_map_t *find_event_map(michi_event_id_t id, uint32_t data)
+/* Lookup keyed on (id, data, from): an event only matches the entry whose
+ * `from` is the state current at dispatch time. Several entries may share
+ * an id (PAIRING_STARTED from IDLE and from UNPROVISIONED); the from key
+ * picks the reachable one - a first-match lookup would make the second
+ * entry unreachable. */
+static const michi_event_map_t *find_event_map(michi_event_id_t id,
+                                               uint32_t data,
+                                               michi_state_t from)
 {
     for (size_t i = 0; i < sizeof(s_event_map) / sizeof(s_event_map[0]); i++) {
         const michi_event_map_t *m = &s_event_map[i];
-        if (m->id == id && (m->any_data || m->data == data)) {
+        if (m->id == id && m->from == from &&
+            (m->any_data || m->data == data)) {
             return m;
         }
     }
@@ -292,23 +312,19 @@ static void state_task(void *arg)
         ev.from = (uint32_t)s_current;
         dispatch_observers(&ev);
 
-        const michi_event_map_t *m = find_event_map(ev.id, ev.data);
+        const michi_event_map_t *m = find_event_map(ev.id, ev.data,
+                                                     s_current);
         if (m == NULL) {
             if (map_exists_for_id(ev.id)) {
-                ESP_LOGW(TAG, "state: event=%d data=%u has no mapping, broadcast only",
-                         (int)ev.id, (unsigned)ev.data);
+                ESP_LOGW(TAG, "state: event=%d data=%u has no mapping from %s, broadcast only",
+                         (int)ev.id, (unsigned)ev.data, state_name(s_current));
             }
             continue;
         }
-        if (m->from != s_current) {
-            ESP_LOGW(TAG, "state: event=%d data=%u dropped: expected from=%s actual from=%s",
-                     (int)ev.id, (unsigned)ev.data, state_name(m->from),
-                     state_name(s_current));
-            continue;
-        }
-        /* Same authority as request(): the mapping must not bypass the
-         * transition table, so the (from, target) pairs of s_event_map stay
-         * validated against s_transitions at dispatch time. */
+        /* The from-keyed lookup guarantees m->from == s_current; the
+         * remaining authority check is the transition table: the mapping
+         * must not bypass s_transitions, so the (from, target) pairs of
+         * s_event_map stay validated at dispatch time. */
         if (!transition_valid(s_current, m->target)) {
             ESP_LOGW(TAG, "state: event=%d data=%u dropped: transition to=%s from=%s not in table",
                      (int)ev.id, (unsigned)ev.data, state_name(m->target),

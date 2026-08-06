@@ -14,7 +14,7 @@ menu "Michi Music Stream Hardware"
         help
           Camera SCCB SDA pin; the camera interface is not populated on this unit,
           reusing it forfeits the camera. REQUIRES physical validation: measure
-          continuity between the DAC SDA line and GPIO21.
+          continuity between the DAC SDA line and GPIO21 with the unit powered off.
 
     config MICHI_DAC_I2C_SCL
         int "External DAC I2C SCL pin"
@@ -22,7 +22,7 @@ menu "Michi Music Stream Hardware"
         help
           Camera SCCB SCL pin; the camera interface is not populated on this unit,
           reusing it forfeits the camera. REQUIRES physical validation: measure
-          continuity between the DAC SCL line and GPIO16.
+          continuity between the DAC SCL line and GPIO16 with the unit powered off.
 
     config MICHI_DAC_I2C_SPEED_HZ
         int "External DAC I2C bus speed (Hz)"
@@ -66,7 +66,9 @@ menu "Michi Music Stream Hardware"
         default -1
         help
           GPIO46 is input-only on ESP32-S3 so MCLK cannot be driven; the PCM5122
-          PLL synthesizes clocks from BCK/LRCK. Set to -1 to disable.
+          PLL synthesizes clocks from BCK/LRCK. Set to -1 to disable. If your unit
+          wires an MCLK line to another pin, measure continuity with the unit
+          powered off before updating this value.
 
     config MICHI_DAC_MOCK
         bool "Register the mock DAC driver (tests/CI only)"
@@ -91,7 +93,7 @@ menu "Michi Music Stream Hardware"
         help
           Camera HREF pin; camera interface not populated, reuse forfeits the
           camera. REQUIRES physical validation: measure continuity between the
-          SK6812 data line and GPIO4.
+          SK6812 data line and GPIO4 with the unit powered off.
 
     config MICHI_BUTTON_GPIO
         int "External pairing button pin"
@@ -99,6 +101,7 @@ menu "Michi Music Stream Hardware"
         help
           Camera PWDN pin; camera interface not populated, reuse forfeits the
           camera. Active low to GND, requires a pull-up. REQUIRES physical
-          validation.
+          validation: measure continuity between the button pin and GPIO17, and
+          verify the pull-up, with the unit powered off.
 
 endmenu

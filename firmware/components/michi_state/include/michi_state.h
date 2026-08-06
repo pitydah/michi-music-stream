@@ -13,8 +13,9 @@ extern "C" {
  *
  * The single coordinator of the universal firmware: one current state, one
  * FreeRTOS queue, one FSM task. Every subsystem that changes product behavior
- * (display phase 6, LED phase 7, network phase 9, audio phase 11, API
- * phase 12) reacts to the events broadcast here; the scattered booleans of
+ * (display phase 6, LED phase 7, button phase 8, network phase 9, audio
+ * phase 11, API phase 12) reacts to the events broadcast here; the
+ * scattered booleans of
  * the legacy firmware are replaced by this unique source of truth.
  *
  * Contract:
@@ -68,7 +69,10 @@ typedef enum {
     MICHI_EVENT_WIFI_CONNECTED,    /*!< data: 0 */
     MICHI_EVENT_WIFI_DISCONNECTED, /*!< data: 0 */
 
-    /* Phase 10 (pairing): emitted by the pairing flow. */
+    /* Phase 8 (pairing): MICHI_EVENT_PAIRING_STARTED is emitted by the
+     * physical button (michi_button) and drives IDLE/UNPROVISIONED ->
+     * PAIRING; MICHI_EVENT_PAIRING_CLOSED is emitted by the pairing flow
+     * (phase 10, mapping with it). */
     MICHI_EVENT_PAIRING_STARTED,   /*!< data: 0 */
     MICHI_EVENT_PAIRING_CLOSED,    /*!< data: 0 */
 

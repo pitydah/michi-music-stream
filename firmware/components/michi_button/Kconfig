@@ -1,0 +1,67 @@
+menu "Michi Music Stream Button"
+
+    config MICHI_BUTTON_DEBOUNCE_MS
+        int "Debounce window (ms)"
+        default 20
+        range 5 200
+        help
+          Stable-window debounce: an edge (press/release) is confirmed only
+          after the pin stays at the same level for this long
+          (DEBOUNCE_MS/POLL_MS consecutive samples). 20 ms rejects the
+          bounce of a typical tactile button; contacts that bounce longer
+          need a larger window.
+
+    config MICHI_BUTTON_LONG_PRESS_MS
+        int "Long press threshold (ms)"
+        default 5000
+        range 500 30000
+        help
+          Press duration (measured edge-to-edge from the ISR timestamps) at
+          or above which the press counts as LONG and runs
+          MICHI_BUTTON_LONG_PRESS_ACTION instead of pairing. 5 s is long
+          enough that a normal pairing tap can never trip it, short enough
+          to be practical as a recovery/factory-reset gesture.
+
+    choice MICHI_BUTTON_LONG_PRESS_ACTION
+        prompt "Long press action"
+        default MICHI_BUTTON_LONG_PRESS_RECOVERY
+        help
+          What a long press (>= MICHI_BUTTON_LONG_PRESS_MS) does. Both
+          actions are ignored while the FSM is in BOOTING, SELF_TEST or
+          UPDATING.
+
+        config MICHI_BUTTON_LONG_PRESS_RECOVERY
+            bool "Recovery: post MICHI_EVENT_RECOVER"
+            help
+              Posts MICHI_EVENT_RECOVER, which drives RECOVERABLE_ERROR ->
+              IDLE (event mapping in michi_state). Safe in every state; the
+              FSM only applies it from RECOVERABLE_ERROR.
+
+        config MICHI_BUTTON_LONG_PRESS_FACTORY_RESET
+            bool "Factory reset: erase NVS + restart"
+            help
+              Erases the NVS partition (network profile, DAC override,
+              device id, ...) and restarts. DESTRUCTIVE: all stored
+              settings are lost. Blocked while UPDATING so a long press
+              can never brick an OTA in progress.
+    endchoice
+
+    config MICHI_BUTTON_POLL_MS
+        int "Debounce task poll period (ms)"
+        default 10
+        range 1 100
+        help
+          Sampling period of the debounce task. 10 ms gives sub-tick
+          resolution for the press duration while keeping the task at 100
+          samples/s of a single GPIO read.
+
+    config MICHI_BUTTON_TASK_STACK_BYTES
+        int "Debounce task stack (bytes)"
+        default 3072
+        range 2048 16384
+        help
+          Stack of the debounce task (ESP-IDF xTaskCreate takes bytes).
+          The task polls one GPIO and posts events, so the default is
+          generous.
+
+endmenu

@@ -69,6 +69,12 @@ firmware/
     │   ├── include/
     │   │   └── michi_led.h        # init / shutdown
     │   └── michi_led.c            # Observer -> pattern -> animation task
+    ├── michi_button/              # Physical pairing button (phase 8)
+    │   ├── CMakeLists.txt
+    │   ├── Kconfig                # Debounce, long press, task stack
+    │   ├── include/
+    │   │   └── michi_button.h     # init / shutdown
+    │   └── michi_button.c         # Minimal ISR -> debounce task
     ├── michi_audio_output/        # I2S pipeline, SPSC ring (phase 4)
     │   ├── CMakeLists.txt
     │   ├── Kconfig                # MICHI_AUDIO_RING_BUFFER_KB (1 MB PSRAM)
@@ -137,7 +143,7 @@ Pinout verified against the official Waveshare demo (phase 1 only brings up the 
 | microSD CS             | 41   | reserved (shares LCD SPI bus)  |
 | Board I2C SDA (IMU)    | 48   | reserved (QMI8658 IMU onboard; no driver in phase 1) |
 | Board I2C SCL (IMU)    | 47   | reserved (QMI8658 IMU onboard; no driver in phase 1) |
-| Camera (15 pins)       | 8,21,16,2,7,10,14,11,15,13,12,6,4,9,17 | reserved, unused |
+| Camera (15 pins)       | 8,21,16,2,7,10,14,11,15,13,12,6,4,9,17 | 4 pins reused (21,16,4,17), see below — rest reserved, unused |
 | USB D-/D+              | 19,20| reserved                       |
 | UART console (bridge)  | 43,44| reserved                       |
 | BOOT button            | 0    | reserved                       |
@@ -463,6 +469,15 @@ state current when the event was dispatched - stamped by the FSM task).
 | `MICHI_EVENT_BOOT_COMPLETE` | in BOOTING | BOOTING → SELF_TEST |
 | `MICHI_EVENT_SELF_TEST_DONE` | in SELF_TEST (any data) | SELF_TEST → IDLE |
 | `MICHI_EVENT_RECOVER` | in RECOVERABLE_ERROR | RECOVERABLE_ERROR → IDLE |
+| `MICHI_EVENT_PAIRING_STARTED` | in IDLE | IDLE → PAIRING |
+| `MICHI_EVENT_PAIRING_STARTED` | in UNPROVISIONED | UNPROVISIONED → PAIRING |
+
+The lookup is keyed on **(event, data, from)**: an event only matches the
+entry whose `from` equals the state current at dispatch time — that is why
+`MICHI_EVENT_PAIRING_STARTED` has two entries (phase 8, physical button):
+both are reachable from their own source state. An event with no entry for
+the current state is still broadcast to observers, with a warn (no
+transition).
 
 `MICHI_EVENT_SELF_TEST_DONE` carries the self-test overall result as data
 (1=ok, 0=degraded) for observers, but any data drives SELF_TEST → IDLE:
@@ -474,16 +489,18 @@ onwards — no boot path enters it.
 applies; every applied transition emits `MICHI_EVENT_STATE_CHANGED`.
 
 `MICHI_EVENT_ERROR` (data: `esp_err_t`), `MICHI_EVENT_STATE_CHANGED` and
-the phase events (`MICHI_EVENT_WIFI_*` phase 9, `MICHI_EVENT_PAIRING_*`
+the phase events (`MICHI_EVENT_WIFI_*` phase 9, `MICHI_EVENT_PAIRING_CLOSED`
 phase 10, `MICHI_EVENT_SESSION_*` phase 12, `MICHI_EVENT_UPDATE_*`
 phase 13) are declared now so consumers can register filters; their
-mappings arrive with their phases.
+mappings arrive with their phases. `MICHI_EVENT_PAIRING_STARTED` is the
+exception: the physical button (phase 8) already maps it from IDLE and
+UNPROVISIONED.
 
 ### Boot flow
 
-`state_init → display_init → led_init → nvs → board → self_test → dac →
-profile → http → boot screen → BOOT_COMPLETE (→ SELF_TEST) →
-SELF_TEST_DONE (→ IDLE)`.
+`state_init → display_init → led_init → button_init → nvs → board →
+self_test → dac → profile → http → boot screen → BOOT_COMPLETE (→
+SELF_TEST) → SELF_TEST_DONE (→ IDLE)`.
 The boot screen is rendered **before** the boot events so it covers
 BOOTING/SELF_TEST and is never painted over by the dynamic display screens
 (phase 6), which take over as soon as the FSM reaches a stable state.
@@ -501,7 +518,9 @@ observer (`subsystem=state state=failed`). If `michi_display_init()` fails,
 boot also continues degraded: no dynamic screens, the BSP boot screen still
 shows (`subsystem=display state=failed phase=6`). If `michi_led_init()`
 fails, boot also continues degraded: no status LEDs, everything else keeps
-working (`subsystem=led state=failed phase=7`).
+working (`subsystem=led state=failed phase=7`). If `michi_button_init()`
+fails, boot also continues degraded: no pairing button, everything else
+keeps working (`subsystem=button state=failed phase=8`).
 
 ### Observer contract
 
@@ -681,6 +700,72 @@ continues degraded — no status LEDs, everything else keeps working
 (`MICHI_LED_GPIO`, camera HREF) is still pending physical validation** —
 measure continuity between the SK6812 data input and GPIO4 with the unit
 powered off before trusting it (camera interface forfeited — see below).
+
+## Button: `components/michi_button`
+
+Phase 8 adds the physical pairing button on `MICHI_BUTTON_GPIO` (default
+**GPIO17**, camera PWDN — the camera is not populated on this unit, reuse
+forfeits it). Active low to GND, internal pull-up enabled. Scope: the
+component **only posts events** — the pairing protocol itself is phase 10.
+
+### Architecture: minimal ISR → debounce task
+
+```mermaid
+flowchart LR
+    BTN["button (active low)"] -->|ANYEDGE ISR| ISR["GPIO ISR service handler<br/>(edge level + timestamp ONLY)"]
+    ISR -->|s_edge under portMUX| DT["debounce task<br/>(prio 2, 10 ms poll)"]
+    DT -->|short press, in IDLE/UNPROVISIONED| FSM1["post PAIRING_STARTED"]
+    DT -->|long press, recovery| FSM2["post RECOVER"]
+    DT -->|long press, factory_reset| NVS["nvs_flash_erase + esp_restart"]
+```
+
+The ISR handler contains **NO logic**: it records the edge level and the
+`esp_timer_get_time()` timestamp in a volatile struct under a portMUX
+critical section, and returns. Everything else happens in the debounce
+task (priority 2): it polls `gpio_get_level` every
+`MICHI_BUTTON_POLL_MS` (10 ms), confirms an edge only after
+`MICHI_BUTTON_DEBOUNCE_MS` (20 ms) of consecutive equal samples
+(N = DEBOUNCE/POLL = 2 samples — a glitch shorter than the window can
+never produce enough consecutive samples), and measures the press duration
+edge-to-edge from the ISR timestamps (sub-tick accuracy, debounce window
+excluded).
+
+### Actions (task context, NEVER the ISR)
+
+| Press | Action |
+|-------|--------|
+| short (< `MICHI_BUTTON_LONG_PRESS_MS`) | `michi_state_post(MICHI_EVENT_PAIRING_STARTED, 0)` — only in **IDLE** or **UNPROVISIONED**; any other state logs the rejection (`rejected_state=...`, the FSM would drop the event anyway) |
+| long (>= 5000 ms) | `MICHI_BUTTON_LONG_PRESS_ACTION`: `recovery` (default) → `michi_state_post(MICHI_EVENT_RECOVER, 0)` (only from RECOVERABLE_ERROR); `factory_reset` → `nvs_flash_erase()` + 200 ms log flush + `esp_restart()` |
+
+**Anti-accidental protection**: both actions are ignored while the FSM is
+in **BOOTING, SELF_TEST or UPDATING**
+(`button: press_ms=... action=... ignored_state=UPDATING`) — a factory
+reset during OTA could brick the unit. The FSM additionally rejects any
+invalid transition by its own transition table; the button's state gates
+(the IDLE/UNPROVISIONED pairing gate, the RECOVERABLE_ERROR recovery gate)
+exist so the logs stay honest instead of showing FSM-level rejects.
+
+### Shutdown
+
+`michi_button_shutdown()` removes the ISR handler, stops the debounce task
+cooperatively (flag + notification + join with timeout — the same pattern
+as the LED animation task) and uninstalls the GPIO ISR service **only if
+this component installed it**: `gpio_install_isr_service()` is global — a
+second installer gets `ESP_ERR_INVALID_STATE` and the service is shared,
+so uninstalling it under another component would silently kill that
+component's handlers.
+
+Init: `michi_button_init()` right after `michi_led_init()`; a failure
+continues degraded — no pairing button, everything else keeps working
+(`subsystem=button state=failed phase=8`). Success logs
+`subsystem=button state=ok phase=8`. Kconfig (component menu): debounce
+window (20 ms), long-press threshold (5000 ms), long-press action choice
+(recovery | factory_reset), poll period (10 ms), task stack (3072).
+
+**GPIO17 (camera PWDN) is still pending physical validation** — measure
+continuity between the button pin and GPIO17 (and to GND while pressed),
+and confirm the pull-up, with the unit powered off before trusting it
+(camera interface forfeited — see below).
 
 ## Hardware validation pending
 
