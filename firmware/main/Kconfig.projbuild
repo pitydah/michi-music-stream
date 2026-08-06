@@ -10,21 +10,19 @@ menu "Michi Music Stream Hardware"
 
     config MICHI_DAC_I2C_SDA
         int "External DAC I2C SDA pin"
-        default 22
+        default 21
         help
-          External DAC (PCM5122) I2C data pin. Default 22 is a free GPIO with no
-          Waveshare ESP32-S3-LCD-2 collision. REQUIRES physical validation: measure
-          continuity between the DAC SDA line and GPIO22 on your unit. Measure with
-          the unit powered off.
+          Camera SCCB SDA pin; the camera interface is not populated on this unit,
+          reusing it forfeits the camera. REQUIRES physical validation: measure
+          continuity between the DAC SDA line and GPIO21.
 
     config MICHI_DAC_I2C_SCL
         int "External DAC I2C SCL pin"
-        default 23
+        default 16
         help
-          External DAC (PCM5122) I2C clock pin. Default 23 is a free GPIO with no
-          Waveshare ESP32-S3-LCD-2 collision. REQUIRES physical validation: measure
-          continuity between the DAC SCL line and GPIO23 on your unit. Measure with
-          the unit powered off.
+          Camera SCCB SCL pin; the camera interface is not populated on this unit,
+          reusing it forfeits the camera. REQUIRES physical validation: measure
+          continuity between the DAC SCL line and GPIO16.
 
     config MICHI_DAC_I2C_SPEED_HZ
         int "External DAC I2C bus speed (Hz)"
@@ -65,15 +63,10 @@ menu "Michi Music Stream Hardware"
 
     config MICHI_I2S_MCLK
         int "External DAC I2S MCLK pin"
-        default 46
+        default -1
         help
-          Optional master clock for the external DAC. The PCM5122 has an internal
-          PLL, so MCLK can be left unconnected; set to -1 to disable it. Default 46
-          is a free GPIO with no Waveshare ESP32-S3-LCD-2 collision. REQUIRES
-          physical validation: measure continuity between the DAC MCLK line and
-          GPIO46 on your unit. Measure with the unit powered off. Note: this is an
-          ESP32-S3 strapping pin; the external circuit must not hold it low during
-          reset.
+          GPIO46 is input-only on ESP32-S3 so MCLK cannot be driven; the PCM5122
+          PLL synthesizes clocks from BCK/LRCK. Set to -1 to disable.
 
     config MICHI_DAC_MOCK
         bool "Register the mock DAC driver (tests/CI only)"
@@ -94,21 +87,18 @@ menu "Michi Music Stream Hardware"
 
     config MICHI_LED_GPIO
         int "External LED (SK6812) data pin"
-        default 24
+        default 4
         help
-          Data pin for the external SK6812 LED strip (M5Stack U003). Default 24 is
-          a free GPIO with no Waveshare ESP32-S3-LCD-2 collision. REQUIRES physical
-          validation: measure continuity between the LED data line and GPIO24 on
-          your unit. Measure with the unit powered off.
+          Camera HREF pin; camera interface not populated, reuse forfeits the
+          camera. REQUIRES physical validation: measure continuity between the
+          SK6812 data line and GPIO4.
 
     config MICHI_BUTTON_GPIO
         int "External pairing button pin"
-        default 25
+        default 17
         help
-          External pairing button input, active low to GND. Default 25 is a free
-          GPIO with no Waveshare ESP32-S3-LCD-2 collision. REQUIRES physical
-          validation: measure continuity between the button pin and GPIO25, and
-          verify the button pulls the pin to GND when pressed. Measure with the
-          unit powered off.
+          Camera PWDN pin; camera interface not populated, reuse forfeits the
+          camera. Active low to GND, requires a pull-up. REQUIRES physical
+          validation.
 
 endmenu

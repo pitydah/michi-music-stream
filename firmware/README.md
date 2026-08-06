@@ -143,7 +143,8 @@ Pinout verified against the official Waveshare demo (phase 1 only brings up the 
 | BOOT button            | 0    | reserved                       |
 | PSRAM (octal)          | 33-37| in use (PSRAM + framebuffer)   |
 | Flash                 | 26-32| in use                          |
-| Free GPIOs             | 3,5,18,22,23,24,25,46 | external peripherals (below) |
+| Free GPIOs             | 3,5,18 | external peripherals (below) |
+| Camera pins reused (camera not populated) | 21,16,4,17 | external peripherals (below) |
 
 ### External peripherals (proposal — physical validation pending)
 
@@ -153,14 +154,17 @@ validated on the real unit** before use — see [Hardware validation pending](#h
 
 | Peripheral            | Signal        | Default GPIO | Kconfig symbol          |
 |-----------------------|---------------|--------------|-------------------------|
-| DAC PCM5122           | I2C SDA       | 22           | `MICHI_DAC_I2C_SDA`     |
-| DAC PCM5122           | I2C SCL       | 23           | `MICHI_DAC_I2C_SCL`     |
+| DAC PCM5122           | I2C SDA       | 21           | `MICHI_DAC_I2C_SDA`     |
+| DAC PCM5122           | I2C SCL       | 16           | `MICHI_DAC_I2C_SCL`     |
 | DAC PCM5122           | I2S BCLK      | 3            | `MICHI_I2S_BCLK`        |
 | DAC PCM5122           | I2S LRCK      | 18           | `MICHI_I2S_LRCK`        |
 | DAC PCM5122           | I2S DIN       | 5            | `MICHI_I2S_DIN`         |
-| DAC PCM5122           | I2S MCLK      | 46 (optional)| `MICHI_I2S_MCLK`        |
-| LED SK6812 (U003)     | Data          | 24           | `MICHI_LED_GPIO`        |
-| Pairing button        | Input (low)   | 25           | `MICHI_BUTTON_GPIO`     |
+| DAC PCM5122           | I2S MCLK      | -1 (not driven, PLL) | `MICHI_I2S_MCLK` |
+| LED SK6812 (U003)     | Data          | 4            | `MICHI_LED_GPIO`        |
+| Pairing button        | Input (low)   | 17           | `MICHI_BUTTON_GPIO`     |
+
+Pins 21, 16, 4 and 17 are camera-interface pins (SCCB SDA/SCL, HREF, PWDN); the
+camera is not populated on this unit, so reusing them forfeits the camera.
 
 MCLK is optional: the PCM5122 has an internal PLL, so it can be left unconnected
 (set `MICHI_I2S_MCLK` to `-1`).
@@ -684,9 +688,11 @@ Phase 1 assigns default pins from free GPIOs, but **no cable was measured**. Bef
 enabling any consumer (DAC in phase 2, LED in phase 7, button in phase 8), validate
 with a multimeter in continuity mode (unit powered off):
 
-1. **DAC I2C**: probe the DAC `SDA` line against GPIO22 and the DAC `SCL` line
-   against GPIO23. Both must beep. If your DAC board was pre-wired to other pins,
-   update `MICHI_DAC_I2C_SDA`/`MICHI_DAC_I2C_SCL` in `menuconfig`.
+1. **DAC I2C**: probe the DAC `SDA` line against GPIO21 and the DAC `SCL` line
+   against GPIO16. Both must beep. If your DAC board was pre-wired to other pins,
+   update `MICHI_DAC_I2C_SDA`/`MICHI_DAC_I2C_SCL` in `menuconfig`. GPIO21/16 are
+   camera-interface pins (SCCB SDA/SCL); the camera is not populated on this unit,
+   so reusing them forfeits the camera — confirm continuity on your unit first.
 2. **DAC I2C pull-ups**: measure the SDA/SCL line voltage with the unit powered
    on: both must sit near 3.3 V with the DAC connected. The bus defaults to
    **100 kHz** (`MICHI_DAC_I2C_SPEED_HZ`); internal ESP32 pull-ups (~45 kOhm)
@@ -699,11 +705,13 @@ with a multimeter in continuity mode (unit powered off):
    differently, the scan still finds it. An I2C scan of `0x4D`–`0x4F` with an
    external tool is the definitive physical test.
 4. **DAC I2S**: probe DAC `BCLK`→GPIO3, `LRCK`→GPIO18, `DIN`→GPIO5. Each must beep.
-   MCLK: only if you wire it (probe `MCLK`→GPIO46, else keep `-1`). The PCM5122 PLL
-   makes MCLK optional; the PCM5102A has no MCLK pin at all.
-5. **LED**: probe the SK6812 data input → GPIO24. Must beep.
-6. **Pairing button**: probe the button pin → GPIO25 and verify continuity to GND
-   when pressed (active low).
+   MCLK: not driven. GPIO46 is input-only on the ESP32-S3 and cannot output a
+   clock, so keep `-1` and let the PCM5122 PLL synthesize clocks from BCK/LRCK.
+5. **LED**: probe the SK6812 data input → GPIO4 (camera HREF pin; camera not
+   populated, reuse forfeits the camera). Must beep.
+6. **Pairing button**: probe the button pin → GPIO17 (camera PWDN pin; camera not
+   populated, reuse forfeits the camera) and verify continuity to GND when pressed
+   (active low). The pin needs a pull-up.
 7. **Display sanity (visual)**: on first boot the screen must show the boot screen
    with white text on black; if colors look inverted, flip the
    `esp_lcd_panel_invert_color` call in `board_waveshare_s3_lcd2.c`.
