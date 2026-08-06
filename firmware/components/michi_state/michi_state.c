@@ -114,13 +114,23 @@ static const michi_event_map_t s_event_map[] = {
      * entries reachable. */
     { MICHI_EVENT_PAIRING_STARTED, 0, true, MICHI_STATE_IDLE,             MICHI_STATE_PAIRING },
     { MICHI_EVENT_PAIRING_STARTED, 0, true, MICHI_STATE_UNPROVISIONED,    MICHI_STATE_PAIRING },
+    /* Phase 9 (network, michi_wifi): MICHI_EVENT_WIFI_CONNECTED is
+     * broadcast-only (observers see the L2 link); the mapped events below
+     * drive the unprovisioned -> connecting -> ready cycle. The reconnect
+     * with backoff lives in michi_wifi (esp_timer one-shot, P0-11): the
+     * FSM only sees the DISCONNECTED event, never the raw wifi events
+     * from the esp_event handlers. */
+    { MICHI_EVENT_WIFI_PROVISIONED,  0, true, MICHI_STATE_UNPROVISIONED,  MICHI_STATE_WIFI_CONNECTING },
+    { MICHI_EVENT_WIFI_DISCONNECTED, 0, true, MICHI_STATE_IDLE,           MICHI_STATE_WIFI_CONNECTING },
+    { MICHI_EVENT_NETWORK_READY,     0, true, MICHI_STATE_WIFI_CONNECTING, MICHI_STATE_IDLE },
+    { MICHI_EVENT_WIFI_PROV_FAILED,  0, true, MICHI_STATE_WIFI_CONNECTING, MICHI_STATE_UNPROVISIONED },
 };
 
 /* Structural coverage: every s_event_map entry must have an
  * EVENT_MAP_TRANSITION_CHECK below. sizeof on a static array IS an integer
  * constant expression, so a new entry without its check fails this assert
  * at compile time. */
-#define MICHI_EVENT_MAP_CHECK_COUNT 5
+#define MICHI_EVENT_MAP_CHECK_COUNT 9
 _Static_assert(sizeof(s_event_map) / sizeof(s_event_map[0]) ==
                    MICHI_EVENT_MAP_CHECK_COUNT,
                "every event map entry needs a transition check");
@@ -143,6 +153,10 @@ EVENT_MAP_TRANSITION_CHECK(1, s_evmap_check_1);
 EVENT_MAP_TRANSITION_CHECK(2, s_evmap_check_2);
 EVENT_MAP_TRANSITION_CHECK(3, s_evmap_check_3);
 EVENT_MAP_TRANSITION_CHECK(4, s_evmap_check_4);
+EVENT_MAP_TRANSITION_CHECK(5, s_evmap_check_5);
+EVENT_MAP_TRANSITION_CHECK(6, s_evmap_check_6);
+EVENT_MAP_TRANSITION_CHECK(7, s_evmap_check_7);
+EVENT_MAP_TRANSITION_CHECK(8, s_evmap_check_8);
 #undef EVENT_MAP_TRANSITION_CHECK
 
 typedef struct {

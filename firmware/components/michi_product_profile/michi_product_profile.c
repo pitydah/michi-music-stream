@@ -148,6 +148,10 @@ esp_err_t michi_product_profile_refresh(void)
     copy_str(p.firmware_version, sizeof(p.firmware_version), MICHI_FW_VERSION_STR);
     copy_str(p.build_date, sizeof(p.build_date), MICHI_FW_BUILD_DATE);
     copy_str(p.board_model, sizeof(p.board_model), info->model);
+    /* HTTP API contract version, mirrored from michi_http's /info
+     * announcement ("v1-lite"); the mDNS TXT (phase 9) reads THIS field so
+     * the string exists once. */
+    copy_str(p.api_version, sizeof(p.api_version), "v1-lite");
 
     s_profile = p;
     return ESP_OK;

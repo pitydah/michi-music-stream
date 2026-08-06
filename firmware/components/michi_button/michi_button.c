@@ -1,3 +1,4 @@
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -24,9 +25,12 @@
 
 /* Consecutive stable samples required to confirm an edge: N = DEBOUNCE/POLL
  * rounded up. The stable window is (N-1) poll periods (first-to-last
- * sample), so a glitch shorter than the debounce window cannot confirm an
- * edge (needs N consecutive samples). POLL >= DEBOUNCE would make N = 1
- * (debounce disabled): init clamps N to 2 and logs a warning. */
+ * sample). Honest guarantee: a glitch shorter than ONE POLL PERIOD appears
+ * in at most one sample and can never confirm an edge (N >= 2); a bounce
+ * longer than the poll period but shorter than the debounce window CAN
+ * fill N consecutive samples - the rejection guarantee is poll-period
+ * granularity, not the full debounce window. POLL >= DEBOUNCE would make
+ * N = 1 (debounce disabled): init clamps N to 2 and logs a warning. */
 #define MICHI_BUTTON_DEBOUNCE_SAMPLES \
     ((CONFIG_MICHI_BUTTON_DEBOUNCE_MS + CONFIG_MICHI_BUTTON_POLL_MS - 1) / \
      CONFIG_MICHI_BUTTON_POLL_MS)
@@ -64,8 +68,10 @@ static int64_t s_boot_time;
 /* FSM state at the press confirmation (F1: the release action requires the
  * press to have started OUTSIDE the protected states). */
 static volatile michi_state_t s_press_state = MICHI_STATE_BOOTING;
-/* Boot elapsed at the press confirmation, ms (F4: factory-reset arm). */
-static uint32_t s_press_boot_elapsed;
+/* Boot elapsed at the press confirmation, ms (F4: factory-reset arm).
+ * int64_t: esp_timer_get_time() is int64_t, and a uint32_t cast would wrap
+ * at 49.7 days of uptime (F8 follow-up). */
+static int64_t s_press_boot_elapsed;
 /* Consecutive samples required to confirm an edge; 2 when the Kconfig
  * values make the debounce impossible (POLL >= DEBOUNCE, see init). */
 static int s_debounce_samples = MICHI_BUTTON_DEBOUNCE_SAMPLES;
@@ -133,9 +139,9 @@ static void handle_long_press(uint32_t press_ms, michi_state_t st)
      * ~0 elapsed). Recovery is deliberately NOT armed. */
     if (s_press_boot_elapsed < CONFIG_MICHI_BUTTON_FACTORY_ARM_MS) {
         ESP_LOGW(TAG, "button: factory_reset ignored arm_window=%u ms "
-                 "(press_elapsed=%u ms)",
+                 "(press_elapsed=%" PRId64 " ms)",
                  (unsigned)CONFIG_MICHI_BUTTON_FACTORY_ARM_MS,
-                 (unsigned)s_press_boot_elapsed);
+                 s_press_boot_elapsed);
         return;
     }
     const esp_err_t err = nvs_flash_erase();
@@ -197,17 +203,21 @@ static void button_task(void *arg)
     int64_t press_t_us = 0;
 
     for (;;) {
+        /* Stop check + join notify under the mux (F8 follow-up): the
+         * shutdown caller registers s_done_notify and clears it under the
+         * same mux before returning, so a notify issued while holding the
+         * mux can never hit a stale (freed) handle - the joiner is either
+         * still waiting or has already cleared the target. */
         portENTER_CRITICAL(&s_edge_mux);
         const bool stop = s_stop;
-        const TaskHandle_t done = s_done_notify;
-        portEXIT_CRITICAL(&s_edge_mux);
-
         if (stop) {
-            if (done != NULL) {
-                xTaskNotifyGive(done);
+            if (s_done_notify != NULL) {
+                xTaskNotifyGive(s_done_notify);
             }
+            portEXIT_CRITICAL(&s_edge_mux);
             vTaskDelete(NULL);
         }
+        portEXIT_CRITICAL(&s_edge_mux);
 
         const int level = gpio_get_level(CONFIG_MICHI_BUTTON_GPIO);
         if (level == candidate) {
@@ -238,7 +248,7 @@ static void button_task(void *arg)
                     portENTER_CRITICAL(&s_edge_mux);
                     s_press_state = michi_state_get();
                     s_press_boot_elapsed =
-                        (uint32_t)((esp_timer_get_time() - s_boot_time) / 1000);
+                        (esp_timer_get_time() - s_boot_time) / 1000;
                     portEXIT_CRITICAL(&s_edge_mux);
                 } else {
                     ESP_LOGD(TAG, "button: press anchor discarded (edge "
@@ -248,8 +258,13 @@ static void button_task(void *arg)
             } else {
                 /* Stable release: duration between the two confirmed edges,
                  * both ISR-timestamped (sub-tick accuracy, debounce window
-                 * excluded). */
-                if (press_t_us != 0 && edge.t_us > press_t_us) {
+                 * excluded). Symmetric gate (F8 follow-up): the release
+                 * requires the ISR record to be a REAL release edge
+                 * (edge.level == 1), mirroring the press path's
+                 * edge.level == 0 anchor check - a stale or coalesced
+                 * record cannot fire an action. */
+                if (press_t_us != 0 && edge.level == 1 &&
+                    edge.t_us > press_t_us) {
                     const uint32_t press_ms =
                         (uint32_t)((edge.t_us - press_t_us) / 1000);
                     /* Re-check the pin right before firing: if it bounced

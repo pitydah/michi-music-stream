@@ -71,6 +71,7 @@ typedef struct {
     char firmware_version[16];        /* MICHI_FW_VERSION_STR */
     char build_date[16];              /* MICHI_FW_BUILD_DATE (announced by the API, phase 4) */
     char board_model[32];             /* from board info */
+    char api_version[8];              /* HTTP API contract version announced by michi_http ("v1-lite"); mDNS TXT (phase 9) reads it from here - no duplicated strings */
 } michi_product_profile_t;
 
 /**

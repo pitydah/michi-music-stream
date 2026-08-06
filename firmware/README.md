@@ -75,6 +75,13 @@ firmware/
     │   ├── include/
     │   │   └── michi_button.h     # init / shutdown
     │   └── michi_button.c         # Minimal ISR -> debounce task
+    ├── michi_wifi/                # Wi-Fi STA + BLE provisioning + mDNS (phase 9)
+    │   ├── CMakeLists.txt
+    │   ├── idf_component.yml      # espressif/mdns ^1.0.3 (managed; no in-tree mdns in v5.3)
+    │   ├── Kconfig                # Reconnect backoff, PoP, service prefix
+    │   ├── include/
+    │   │   └── michi_wifi.h       # init / provisioning / erase / shutdown
+    │   └── michi_wifi.c           # Non-blocking handlers + esp_timer backoff + prov task
     ├── michi_audio_output/        # I2S pipeline, SPSC ring (phase 4)
     │   ├── CMakeLists.txt
     │   ├── Kconfig                # MICHI_AUDIO_RING_BUFFER_KB (1 MB PSRAM)
@@ -99,7 +106,8 @@ idf.py build
 ```
 
 Build and flash configuration lives in `sdkconfig.defaults` (target, 16 MB flash, octal PSRAM,
-custom partition table, bootloader app rollback).
+custom partition table, bootloader app rollback, BT enabled with the
+NimBLE host for the phase-9 BLE provisioning transport).
 
 External peripheral pins (DAC I2C/I2S, LED, pairing button) and the
 `device_id` announced by the API (`MICHI_DEVICE_ID`) are configurable
@@ -359,7 +367,7 @@ already covered by earlier phases are documented as such.
 | 8 | Unsynchronized ring buffer (legacy 4 MB, no locking) | SPSC ring: one producer (session task) / one consumer (I2S task), ALL index updates under a portMUX critical section (choice documented in `michi_audio_output.h`); replaced by 1 MB PSRAM ring (`MICHI_AUDIO_RING_BUFFER_KB`) | fixed |
 | 9 | Unvalidated GPIO usage | Covered by the BSP: pins are Kconfig-driven (`Michi Music Stream Hardware` menu) and `michi_audio_output` validates every pin/rate/depth/channel before use | covered-by-phase-1 |
 | 10 | NVS without recovery | Covered by `app_main` (phase 0): `ESP_ERR_NVS_NO_FREE_PAGES`/`NEW_VERSION_FOUND` → erase + retry once, halt if still broken | covered-by-phase-0 |
-| 11 | 3 s blocking in the Wi-Fi event loop | Contract for `michi_wifi` (phase 9), documented below: `esp_event` handlers MUST NOT block (`vTaskDelay` is prohibited there; use `esp_timer`/queues) | fixed-by-construction (contract, phase 9) |
+| 11 | 3 s blocking in the Wi-Fi event loop | `michi_wifi` (phase 9): `esp_event` handlers MUST NOT block (`vTaskDelay` is prohibited there); the reconnect with exponential backoff runs on a one-shot `esp_timer` and the BLE bring-up in the provisioning task | fixed-by-construction (phase 9) |
 | 12 | Volume response != applied value | `michi_volume` clamps 0-100 and the phase-12 handler MUST answer with `michi_volume_get()` (the real applied value, including the digital-gain fallback) | fixed |
 
 ### HTTP API: `components/michi_http`
@@ -471,6 +479,10 @@ state current when the event was dispatched - stamped by the FSM task).
 | `MICHI_EVENT_RECOVER` | in RECOVERABLE_ERROR | RECOVERABLE_ERROR → IDLE |
 | `MICHI_EVENT_PAIRING_STARTED` | in IDLE | IDLE → PAIRING |
 | `MICHI_EVENT_PAIRING_STARTED` | in UNPROVISIONED | UNPROVISIONED → PAIRING |
+| `MICHI_EVENT_WIFI_PROVISIONED` | in UNPROVISIONED | UNPROVISIONED → WIFI_CONNECTING |
+| `MICHI_EVENT_WIFI_DISCONNECTED` | in IDLE | IDLE → WIFI_CONNECTING |
+| `MICHI_EVENT_NETWORK_READY` | in WIFI_CONNECTING | WIFI_CONNECTING → IDLE |
+| `MICHI_EVENT_WIFI_PROV_FAILED` | in WIFI_CONNECTING | WIFI_CONNECTING → UNPROVISIONED |
 
 The lookup is keyed on **(event, data, from)**: an event only matches the
 entry whose `from` equals the state current at dispatch time — that is why
@@ -498,9 +510,9 @@ UNPROVISIONED.
 
 ### Boot flow
 
-`state_init → display_init → led_init → button_init → nvs → board →
-self_test → dac → profile → http → boot screen → BOOT_COMPLETE (→
-SELF_TEST) → SELF_TEST_DONE (→ IDLE)`.
+`state_init → display_init → led_init → button_init → nvs → wifi →
+board → self_test → dac → profile → http → boot screen →
+BOOT_COMPLETE (→ SELF_TEST) → SELF_TEST_DONE (→ IDLE)`.
 The boot screen is rendered **before** the boot events so it covers
 BOOTING/SELF_TEST and is never painted over by the dynamic display screens
 (phase 6), which take over as soon as the FSM reaches a stable state.
@@ -520,7 +532,9 @@ shows (`subsystem=display state=failed phase=6`). If `michi_led_init()`
 fails, boot also continues degraded: no status LEDs, everything else keeps
 working (`subsystem=led state=failed phase=7`). If `michi_button_init()`
 fails, boot also continues degraded: no pairing button, everything else
-keeps working (`subsystem=button state=failed phase=8`).
+keeps working (`subsystem=button state=failed phase=8`). If
+`michi_wifi_init()` fails, boot also continues degraded: no network,
+everything else keeps working (`subsystem=wifi state=failed phase=9`).
 
 ### Observer contract
 
@@ -725,8 +739,8 @@ critical section, and returns. Everything else happens in the debounce
 task (priority 2): it polls `gpio_get_level` every
 `MICHI_BUTTON_POLL_MS` (10 ms) and confirms an edge only after N
 consecutive equal samples, N = DEBOUNCE/POLL rounded up (2 here; the
-stable window is (N-1) poll periods — a glitch shorter than the debounce
-window cannot confirm an edge (needs N consecutive samples)), and measures
+stable window is (N-1) poll periods — a glitch shorter than one poll
+period cannot confirm an edge (it can never fill N consecutive samples), and measures
 the press duration edge-to-edge from the ISR timestamps (sub-tick
 accuracy, debounce window excluded).
 
@@ -772,6 +786,149 @@ period (10 ms), task stack (3072).
 continuity between the button pin and GPIO17 (and to GND while pressed),
 and confirm the pull-up, with the unit powered off before trusting it
 (camera interface forfeited — see below).
+
+## WiFi & provisioning: `components/michi_wifi`
+
+Phase 9 brings the device onto the network: Wi-Fi STA with reconnect
+backoff, **BLE provisioning** (no credentials ever compiled in) and mDNS
+announcements. It is the implementation of the P0-11 contract (non-blocking
+`esp_event` handlers).
+
+### Hard rules
+
+- **Credentials live ONLY in the NVS `wifi` namespace** (keys `ssid`,
+  `password`, `device_name`, `region`). Kconfig has NO Wi-Fi credentials;
+  the only compiled-in secret is the provisioning proof-of-possession
+  `MICHI_PROV_POP` (see below). The password is **never logged, not
+  partially**: every log carries only the SSID. Verified by grepping the
+  build tree for `CONFIG_MICHI_WIFI_SSID`/`CONFIG_MICHI_WIFI_PASSWORD` —
+  zero hits (the legacy `firmware/common`, `standard/`, `hifi/` builds
+  still carry them and are untouched, out of scope).
+- **Non-blocking event handlers (P0-11)**: `esp_event` handlers only post
+  FSM events and set flags. The reconnect with exponential backoff runs
+  on a one-shot `esp_timer`; the blocking BLE bring-up
+  (`esp_bt_controller_enable`) runs in the provisioning task
+  (`MICHI_WIFI_TASK_STACK_BYTES`, default 6144).
+- **FSM is the single state owner**: `michi_wifi` only posts the phase-9
+  events or requests states, it never writes the state.
+
+### Boot flow
+
+```mermaid
+flowchart TD
+    BOOT["init(): NVS 'wifi' has creds?"] -->|yes| C["esp_wifi_start + connect<br/>boot plan CONNECT"]
+    BOOT -->|no| P["boot plan PROVISION<br/>(BLE service starts once the FSM lands)<br/>subsystem=wifi state=unprovisioned"]
+    C --> IDLE["FSM reaches IDLE (boot events)"]
+    P --> IDLE
+    IDLE -->|CONNECT| WC["request WIFI_CONNECTING"]
+    IDLE -->|PROVISION| UN["request UNPROVISIONED"]
+    UN -->|wifi_prov_mgr + NimBLE<br/>service MICHI-PROV_XXXX| BLE["BLE provisioning<br/>SECURITY_1 (SRP6a) + PoP"]
+    BLE -->|CRED_RECV| NR1["post WIFI_PROVISIONED<br/>UNPROVISIONED → WIFI_CONNECTING"]
+    NR1 --> GOTIP["STA_GOT_IP"]
+    GOTIP -->|post NETWORK_READY| R["WIFI_CONNECTING → IDLE<br/>+ mDNS advertise"]
+    R --> DIS["STA_DISCONNECTED"]
+    DIS -->|in IDLE| NR2["post WIFI_DISCONNECTED<br/>IDLE → WIFI_CONNECTING"]
+    NR2 --> BK["esp_timer backoff<br/>BASE·2^n (5s, 10s, 20s)"]
+    BK -->|n < RETRY_MAX| GOTIP
+    BK -->|n ≥ RETRY_MAX| ERR["MICHI_EVENT_ERROR +<br/>request RECOVERABLE_ERROR<br/>(recovery: long press / reboot)"]
+```
+
+`michi_wifi_init()` runs after `init_nvs()` (the credentials live in NVS)
+and before the boot events, so the FSM is still BOOTING: the state
+placement is deferred to a `MICHI_EVENT_STATE_CHANGED` observer that acts
+when the FSM first reaches IDLE. A boot race (the client provisions before
+the FSM settles) is covered by flag replay: the observer and the
+`STA_GOT_IP` handler re-post `WIFI_PROVISIONED`/`NETWORK_READY` in order
+from the `s_creds_received`/`s_network_ready` flags, so the queue always
+orders UNPROVISIONED → WIFI_CONNECTING → IDLE.
+
+### BLE provisioning (wifi_prov_mgr)
+
+- Transport: **BLE with the NimBLE host** (`CONFIG_BT_ENABLED=y`,
+  `CONFIG_BT_NIMBLE_ENABLED=y` in `sdkconfig.defaults`; the BTDM mode
+  overrides of the official example are ESP32-classic only and do not
+  exist for the ESP32-S3 controller — verified against
+  `espressif/idf:release-v5.3`).
+- Security: `WIFI_PROV_SECURITY_1` (SRP6a) with the
+  `MICHI_PROV_POP` proof-of-possession — **honest warning**: the default
+  `michi123` is a factory secret compiled into the firmware; change it
+  before production (anyone on BLE range could otherwise provision the
+  device).
+- Service name: `MICHI_PROV_SERVICE_NAME_PREFIX` + the last 4 hex digits
+  of the STA MAC (e.g. `MICHI-PROV_4CAB`); keep prefix + 4 ≤ 31 bytes
+  (BLE name limit).
+- Custom endpoint **`michi-device-info`** (JSON
+  `{"device_name": ..., "region": ...}`): device identity delivered by
+  the client, persisted with the credentials into the `wifi` namespace.
+  API note: v5.3 removed the old `wifi_prov_mgr_set_custom_endpoint()` —
+  the current API is `wifi_prov_mgr_endpoint_create()` +
+  `wifi_prov_mgr_endpoint_register()` (`wifi_provisioning/manager.h`).
+- Event semantics used (v5.3 `wifi_prov_cb_event_t`): `CRED_RECV` =
+  credentials received and applied (FSM moves to WIFI_CONNECTING),
+  `CRED_SUCCESS` = the device CONNECTED to the AP — only then the
+  credentials are proven good and are **persisted** (the session stays
+  open for client retries after `CRED_FAIL`).
+- WiFi stack persistence: wifi_prov stores with `WIFI_STORAGE_FLASH`, so
+  `michi_wifi_erase_credentials()` also calls `esp_wifi_restore()` —
+  without it the manager would still see the old config and refuse a new
+  provisioning (`wifi_prov_mgr_is_provisioned()` reads the driver
+  config). The erase stops and joins an active provisioning session
+  first (the wipe never races the persist) and restarts the automatic
+  provisioning cycle afterwards. The factory reset (phase 8 button)
+  erases ALL of NVS and restarts; the API-level erase only removes the
+  network profile while the device keeps running.
+- Automatic retry: after a failed provisioning session (10-min client
+  timeout, bring-up error or NVS persist failure) the BLE service
+  restarts after `MICHI_PROV_RETRY_MS` (default 30 s), max 3 retries;
+  exhausted sessions log clearly and land on `unprovisioned` — the
+  pairing button long press (recovery action) restarts the cycle.
+  Phase 10 will coordinate its pairing flow with this provisioning.
+- NVS margin: the `wifi` namespace shares the 24 KB `nvs` partition
+  with every other subsystem; a full NVS makes the credential persist
+  fail, which is treated as a real provisioning failure (credentials NOT
+  marked as applied, automatic retry kicks in).
+
+### Reconnect with backoff
+
+`STA_DISCONNECTED` → `MDNS retire` → post `WIFI_DISCONNECTED` (only when
+the FSM is in IDLE — the retry attempts already run in WIFI_CONNECTING) →
+arm a one-shot `esp_timer` with `MICHI_WIFI_RECONNECT_BASE_MS · 2^attempt`
+(5 s / 10 s / 20 s with the defaults, capped at 5 min). After
+`MICHI_WIFI_RETRY_MAX` (default 3) failed attempts: `MICHI_EVENT_ERROR`
+broadcast (data `ESP_ERR_WIFI_NOT_CONNECT`) + `RECOVERABLE_ERROR` request.
+Recovery: physical button long press (`MICHI_EVENT_RECOVER`; the wifi
+layer re-arms the connect on the next `RECOVER`, resetting the retry
+counter) or reboot. The retry counter resets on every `STA_GOT_IP`. A
+failed `esp_wifi_connect()` (no `DISCONNECTED` event follows) also
+advances the backoff chain, so a stuck connect never dies silently; if
+the chain exhausts while the FSM is still booting (BOOTING/SELF_TEST
+cannot land on RECOVERABLE_ERROR, the request is dropped), the
+STATE_CHANGED observer re-arms it when WIFI_CONNECTING is reached with no
+pending attempt.
+
+### mDNS
+
+Advertised on `STA_GOT_IP`, retired on `STA_DISCONNECTED`:
+`_michi-receiver._tcp` on port 80 with TXT keys `name`, `tier`,
+`api_version`, `fw_version`, `board` — every value read FROM
+`michi_product_profile_get()` (no duplicated product strings; the profile
+gained the `api_version` field mirroring the HTTP contract "v1-lite").
+Hostname: `michi-` + last 4 MAC hex digits. mdns is a **managed
+component** (`espressif/mdns ^1.0.3` in `idf_component.yml`): the v5.3 IDF
+tree no longer ships an in-tree mdns, and the registry version uses
+`mdns_free()` instead of the old `mdns_stop()`.
+
+### Logs
+
+key=value, password-free. `subsystem=wifi` states in phase 9 (the real
+set): `ok` (init done), `connecting` (STA connect), `connected` (IP
+obtained), `provisioning` (BLE session up), `provisioned` (credentials
+proven and persisted), `provisioning_failed` (client-side, retryable),
+`unprovisioned` (boot without credentials / after erase), `failed` (init
+failure or retry chain exhausted), `off` (shutdown) — always with
+`phase=9`. Retry logs emit `retry=%u`: `wifi: state=connecting retry=%u`,
+`wifi: ssid=%s retry=%u backoff_ms=%lld`, `wifi: ssid=%s ip=%s retry=0`,
+`wifi: disconnected reason=%d`.
 
 ## Hardware validation pending
 

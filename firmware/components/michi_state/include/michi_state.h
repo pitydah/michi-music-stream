@@ -65,9 +65,15 @@ typedef enum {
     MICHI_EVENT_ERROR,             /*!< subsystem error: data=esp_err_t (broadcast only) */
     MICHI_EVENT_RECOVER,           /*!< retry after RECOVERABLE_ERROR; drives RECOVERABLE_ERROR->IDLE */
 
-    /* Phase 9 (network): emitted by michi_wifi; mapping in phase 9. */
-    MICHI_EVENT_WIFI_CONNECTED,    /*!< data: 0 */
-    MICHI_EVENT_WIFI_DISCONNECTED, /*!< data: 0 */
+    /* Phase 9 (network): emitted by michi_wifi; the four mapped events
+     * below cover the unprovisioned -> connecting -> ready cycle and its
+     * failure paths (map entries in michi_state.c). MICHI_EVENT_WIFI_*
+     * events carry data 0. */
+    MICHI_EVENT_WIFI_CONNECTED,    /*!< L2 link up (broadcast only, no mapping) */
+    MICHI_EVENT_WIFI_DISCONNECTED, /*!< L2 link down; drives IDLE -> WIFI_CONNECTING (reconnect) */
+    MICHI_EVENT_WIFI_PROVISIONED,  /*!< credentials received (BLE provisioning); drives UNPROVISIONED -> WIFI_CONNECTING */
+    MICHI_EVENT_WIFI_PROV_FAILED,  /*!< provisioning failed or credentials erased; drives WIFI_CONNECTING -> UNPROVISIONED */
+    MICHI_EVENT_NETWORK_READY,     /*!< IP obtained (STA_GOT_IP); drives WIFI_CONNECTING -> IDLE */
 
     /* Phase 8 (pairing): MICHI_EVENT_PAIRING_STARTED is emitted by the
      * physical button (michi_button) and drives IDLE/UNPROVISIONED ->

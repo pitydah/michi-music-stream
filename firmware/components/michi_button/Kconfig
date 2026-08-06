@@ -11,8 +11,11 @@ menu "Michi Music Stream Button"
           after N consecutive equal samples, N = DEBOUNCE/POLL rounded up.
           The stable window is (N-1) poll periods; POLL must be < DEBOUNCE
           or the debounce is disabled (init clamps N to 2 and logs a
-          warning). 20 ms rejects the bounce of a typical tactile button;
-          contacts that bounce longer need a larger window.
+          warning). Honest guarantee: glitches shorter than one poll period
+          are rejected (they cannot fill N consecutive samples); a bounce
+          longer than the poll period can confirm an edge if it spans the
+          whole stable window - contacts that bounce long need a larger
+          window.
 
     config MICHI_BUTTON_LONG_PRESS_MS
         int "Long press threshold (ms)"

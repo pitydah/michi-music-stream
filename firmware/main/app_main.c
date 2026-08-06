@@ -21,6 +21,7 @@
 #include "michi_product_profile.h"
 #include "michi_state.h"
 #include "michi_version.h"
+#include "michi_wifi.h"
 
 static const char *TAG = "michi_app";
 
@@ -72,7 +73,6 @@ static void log_selftest_rows(const michi_board_info_t *info,
 static void log_pending_subsystems(void)
 {
     ESP_LOGI(TAG, "subsystem=bsp state=ok phase=1");
-    ESP_LOGW(TAG, "subsystem=network state=pending phase=9");
     ESP_LOGW(TAG, "subsystem=audio state=pending phase=11");
     ESP_LOGW(TAG, "subsystem=api state=pending phase=12");
 }
@@ -192,6 +192,20 @@ void app_main(void)
             esp_task_wdt_reset();
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
+    }
+
+    /* Network subsystem (phase 9): Wi-Fi STA + BLE provisioning +
+     * mDNS. Runs AFTER init_nvs() (the credentials live in the NVS
+     * "wifi" namespace) and BEFORE the boot events: the FSM is still
+     * BOOTING, and michi_wifi places itself (WIFI_CONNECTING or
+     * UNPROVISIONED) through its STATE_CHANGED observer once the FSM
+     * reaches IDLE. On failure boot continues degraded - no network,
+     * everything else keeps working. */
+    err = michi_wifi_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "michi_wifi_init failed: %s (no network)",
+                 esp_err_to_name(err));
+        ESP_LOGI(TAG, "subsystem=wifi state=failed phase=9");
     }
 
     err = michi_board_init();

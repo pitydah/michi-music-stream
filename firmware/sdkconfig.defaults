@@ -6,3 +6,10 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+# Phase 9: BLE provisioning transport (wifi_prov_mgr + protocomm_ble).
+# NimBLE host; symbols verified against ESP-IDF release-v5.3 (the
+# wifi_prov_mgr example uses exactly these two - the BTDM_CTRL_MODE_*
+# overrides of that example are ESP32-classic only and do not exist for
+# the ESP32-S3 controller).
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
