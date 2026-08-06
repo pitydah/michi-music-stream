@@ -6,27 +6,34 @@
 extern "C" {
 #endif
 
-/**
- * @brief Physical pairing button (phase 8): debounced edge detection on
- *        MICHI_BUTTON_GPIO (default GPIO17, camera PWDN, active low).
+/* Physical pairing button (phase 8): debounced edge detection on
+ * MICHI_BUTTON_GPIO (default GPIO17, camera PWDN, active low).
  *
  * Architecture (see firmware/README.md, Button section):
  * - The GPIO ISR service handler ONLY records the edge level + timestamp
  *   (esp_timer_get_time) in a volatile struct under a portMUX critical
  *   section. It contains NO logic: no debounce, no pairing, no state posts.
  * - The debounce task (priority 2, MICHI_BUTTON_POLL_MS tick) polls
- *   gpio_get_level, requires MICHI_BUTTON_DEBOUNCE_MS of stable samples
- *   (DEBOUNCE/POLL consecutive equal readings) to confirm a press (stable
- *   low) or a release (stable high), and measures the press duration
- *   edge-to-edge from the ISR-recorded timestamps (sub-tick accuracy).
+ *   gpio_get_level and requires N consecutive equal samples to confirm a
+ *   press (stable low) or a release (stable high), N = DEBOUNCE/POLL
+ *   rounded up (the stable window is (N-1) poll periods; init clamps N to
+ *   2 and logs a warning when POLL >= DEBOUNCE). The press duration is
+ *   measured edge-to-edge from the ISR-recorded timestamps (sub-tick
+ *   accuracy); the pin level is re-checked right before an action fires,
+ *   so a mid-window bounce aborts the release.
  * - All actions run in the task, NEVER in the ISR: a short press
  *   (< MICHI_BUTTON_LONG_PRESS_MS) posts MICHI_EVENT_PAIRING_STARTED when
  *   the FSM is in IDLE or UNPROVISIONED (the pairing protocol itself is
  *   phase 10 - this component only posts events). A long press runs
  *   MICHI_BUTTON_LONG_PRESS_ACTION: recovery (post MICHI_EVENT_RECOVER,
- *   default) or factory_reset (nvs_flash_erase + esp_restart). Both
- *   actions are ignored while the FSM is in BOOTING, SELF_TEST or
- *   UPDATING (a factory reset during OTA could brick the unit).
+ *   default) or factory_reset (nvs_flash_erase + esp_restart). Posts are
+ *   retried once after 50 ms on ESP_ERR_TIMEOUT, then dropped and logged.
+ * - Anti-accidental gates: actions are ignored unless the FSM state at the
+ *   press confirmation AND at the release are both outside BOOTING,
+ *   SELF_TEST and UPDATING (a press held through boot, or started during
+ *   OTA, must never fire on release). A factory reset additionally requires
+ *   the press to have started at least MICHI_BUTTON_FACTORY_ARM_MS after
+ *   boot (boot-hold / stuck-pin protection); recovery is not armed.
  */
 
 /**
@@ -34,15 +41,20 @@ extern "C" {
  *        edge ISR handler (records edge + timestamp only) and the debounce
  *        task.
  *
+ * The ISR handler is IRAM-safe (it only calls gpio_get_level,
+ * esp_timer_get_time and portENTER_CRITICAL_ISR/portEXIT_CRITICAL_ISR - no
+ * flash access), so the GPIO ISR service is installed with
+ * ESP_INTR_FLAG_IRAM; if another component already installed the service,
+ * it is reused - the handler stays safe under either service, and shutdown
+ * will NOT uninstall it.
+ *
  * Must be called after michi_state_init(). Safe to call once; repeated
  * calls return ESP_OK (idempotent). On failure app_main continues degraded:
  * no pairing button, everything else keeps working.
  *
  * @return ESP_OK; raw driver errors from gpio_config/gpio_install_isr_service
  *         are propagated unchanged (e.g. ESP_ERR_INVALID_ARG for an invalid
- *         GPIO); ESP_ERR_NO_MEM if the task cannot be created. If another
- *         component already installed the GPIO ISR service, it is reused
- *         (shutdown will NOT uninstall it).
+ *         GPIO); ESP_ERR_NO_MEM if the task cannot be created.
  */
 esp_err_t michi_button_init(void);
 
@@ -53,13 +65,15 @@ esp_err_t michi_button_init(void);
  *
  * Idempotent: a second call when the subsystem is already off returns
  * ESP_OK. Safe to call from any task; the caller must not be the debounce
- * task. If the task does not stop within the join timeout the ISR handler
- * is left registered and ESP_ERR_TIMEOUT is returned (the task may still be
- * running and sampling).
+ * task. NOT safe for concurrent shutdown callers: a second shutdown while
+ * one is in progress returns ESP_ERR_INVALID_STATE - serialize externally.
+ * On join timeout the ISR handler is left registered, the join target is
+ * cleared (the live task never notifies a stale handle) and the task may
+ * still be running and sampling.
  *
  * @return ESP_OK; ESP_ERR_TIMEOUT if the debounce task did not stop within
- *         the join timeout; ESP_ERR_INVALID_STATE only if called from the
- *         debounce task itself.
+ *         the join timeout; ESP_ERR_INVALID_STATE if called from the
+ *         debounce task itself or while another shutdown is in progress.
  */
 esp_err_t michi_button_shutdown(void);
 

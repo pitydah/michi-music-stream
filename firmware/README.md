@@ -723,24 +723,29 @@ The ISR handler contains **NO logic**: it records the edge level and the
 `esp_timer_get_time()` timestamp in a volatile struct under a portMUX
 critical section, and returns. Everything else happens in the debounce
 task (priority 2): it polls `gpio_get_level` every
-`MICHI_BUTTON_POLL_MS` (10 ms), confirms an edge only after
-`MICHI_BUTTON_DEBOUNCE_MS` (20 ms) of consecutive equal samples
-(N = DEBOUNCE/POLL = 2 samples — a glitch shorter than the window can
-never produce enough consecutive samples), and measures the press duration
-edge-to-edge from the ISR timestamps (sub-tick accuracy, debounce window
-excluded).
+`MICHI_BUTTON_POLL_MS` (10 ms) and confirms an edge only after N
+consecutive equal samples, N = DEBOUNCE/POLL rounded up (2 here; the
+stable window is (N-1) poll periods — a glitch shorter than the debounce
+window cannot confirm an edge (needs N consecutive samples)), and measures
+the press duration edge-to-edge from the ISR timestamps (sub-tick
+accuracy, debounce window excluded).
 
 ### Actions (task context, NEVER the ISR)
 
 | Press | Action |
 |-------|--------|
-| short (< `MICHI_BUTTON_LONG_PRESS_MS`) | `michi_state_post(MICHI_EVENT_PAIRING_STARTED, 0)` — only in **IDLE** or **UNPROVISIONED**; any other state logs the rejection (`rejected_state=...`, the FSM would drop the event anyway) |
-| long (>= 5000 ms) | `MICHI_BUTTON_LONG_PRESS_ACTION`: `recovery` (default) → `michi_state_post(MICHI_EVENT_RECOVER, 0)` (only from RECOVERABLE_ERROR); `factory_reset` → `nvs_flash_erase()` + 200 ms log flush + `esp_restart()` |
+| short (< `MICHI_BUTTON_LONG_PRESS_MS`) | `michi_state_post(MICHI_EVENT_PAIRING_STARTED, 0)` — only in **IDLE** or **UNPROVISIONED**; any other state logs the rejection (`state=...`, the FSM would drop the event anyway) |
+| long (>= `MICHI_BUTTON_LONG_PRESS_MS`) | `MICHI_BUTTON_LONG_PRESS_ACTION`: `recovery` (default) → `michi_state_post(MICHI_EVENT_RECOVER, 0)` (only from RECOVERABLE_ERROR); `factory_reset` → `nvs_flash_erase()` + `esp_restart()` immediately (no log-flush delay: the log is already in the UART FIFO) |
+| factory-reset arm window | `MICHI_BUTTON_FACTORY_ARM_MS` (default 10000 ms): the factory reset runs only if the press **started** at least this long after boot (boot-hold / stuck-pin protection); recovery is NOT armed |
 
-**Anti-accidental protection**: both actions are ignored while the FSM is
-in **BOOTING, SELF_TEST or UPDATING**
-(`button: press_ms=... action=... ignored_state=UPDATING`) — a factory
-reset during OTA could brick the unit. The FSM additionally rejects any
+**Anti-accidental protection**: both actions are ignored unless the FSM
+was NOT in **BOOTING, SELF_TEST or UPDATING** at the press confirmation
+AND is still outside those states at the release
+(`button: action=ignored press_state=... release_state=...`) — a press
+held through boot, or started during OTA, can never fire its action on
+release (a factory reset during OTA could brick the unit). A factory reset
+is additionally gated by the `MICHI_BUTTON_FACTORY_ARM_MS` arm window
+(see table above). The FSM additionally rejects any
 invalid transition by its own transition table; the button's state gates
 (the IDLE/UNPROVISIONED pairing gate, the RECOVERABLE_ERROR recovery gate)
 exist so the logs stay honest instead of showing FSM-level rejects.
@@ -760,7 +765,8 @@ continues degraded — no pairing button, everything else keeps working
 (`subsystem=button state=failed phase=8`). Success logs
 `subsystem=button state=ok phase=8`. Kconfig (component menu): debounce
 window (20 ms), long-press threshold (5000 ms), long-press action choice
-(recovery | factory_reset), poll period (10 ms), task stack (3072).
+(recovery | factory_reset), factory-reset arm window (10000 ms), poll
+period (10 ms), task stack (3072).
 
 **GPIO17 (camera PWDN) is still pending physical validation** — measure
 continuity between the button pin and GPIO17 (and to GND while pressed),

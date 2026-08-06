@@ -15,8 +15,8 @@ extern "C" {
  * FreeRTOS queue, one FSM task. Every subsystem that changes product behavior
  * (display phase 6, LED phase 7, button phase 8, network phase 9, audio
  * phase 11, API phase 12) reacts to the events broadcast here; the
- * scattered booleans of
- * the legacy firmware are replaced by this unique source of truth.
+ * scattered booleans of the legacy firmware are replaced by this unique
+ * source of truth.
  *
  * Contract:
  * - State changes ONLY happen through michi_state_request() (validated

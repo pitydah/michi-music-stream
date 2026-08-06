@@ -1,15 +1,18 @@
 menu "Michi Music Stream Button"
 
+    comment "Short press posts MICHI_EVENT_PAIRING_STARTED only in IDLE or UNPROVISIONED. The firmware enables the INTERNAL pull-up on MICHI_BUTTON_GPIO (active low to GND)."
+
     config MICHI_BUTTON_DEBOUNCE_MS
         int "Debounce window (ms)"
         default 20
-        range 5 200
+        range 10 200
         help
           Stable-window debounce: an edge (press/release) is confirmed only
-          after the pin stays at the same level for this long
-          (DEBOUNCE_MS/POLL_MS consecutive samples). 20 ms rejects the
-          bounce of a typical tactile button; contacts that bounce longer
-          need a larger window.
+          after N consecutive equal samples, N = DEBOUNCE/POLL rounded up.
+          The stable window is (N-1) poll periods; POLL must be < DEBOUNCE
+          or the debounce is disabled (init clamps N to 2 and logs a
+          warning). 20 ms rejects the bounce of a typical tactile button;
+          contacts that bounce longer need a larger window.
 
     config MICHI_BUTTON_LONG_PRESS_MS
         int "Long press threshold (ms)"
@@ -43,17 +46,34 @@ menu "Michi Music Stream Button"
               Erases the NVS partition (network profile, DAC override,
               device id, ...) and restarts. DESTRUCTIVE: all stored
               settings are lost. Blocked while UPDATING so a long press
-              can never brick an OTA in progress.
+              can never brick an OTA in progress; additionally armed by
+              MICHI_BUTTON_FACTORY_ARM_MS so a press held through power-on
+              can never erase NVS.
     endchoice
+
+    config MICHI_BUTTON_FACTORY_ARM_MS
+        int "Factory reset arm window (ms)"
+        default 10000
+        range 0 300000
+        help
+          A factory reset runs only if the press STARTED at least this many
+          milliseconds after boot (measured with esp_timer_get_time()
+          against the button init reference). A button held through
+          power-on, or a stuck pin, would otherwise confirm a "press" with
+          ~0 ms elapsed as soon as the FSM leaves the protected states and
+          erase NVS. 0 disables the arm window. Recovery is NOT gated by
+          the arm window.
 
     config MICHI_BUTTON_POLL_MS
         int "Debounce task poll period (ms)"
         default 10
-        range 1 100
+        range 1 50
         help
           Sampling period of the debounce task. 10 ms gives sub-tick
           resolution for the press duration while keeping the task at 100
-          samples/s of a single GPIO read.
+          samples/s of a single GPIO read. Must be < MICHI_BUTTON_DEBOUNCE_MS:
+          POLL >= DEBOUNCE disables the debounce (N would be 1; init clamps
+          N to 2 and logs a warning).
 
     config MICHI_BUTTON_TASK_STACK_BYTES
         int "Debounce task stack (bytes)"
