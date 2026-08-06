@@ -62,6 +62,13 @@ firmware/
     │   ├── include/
     │   │   └── michi_display.h    # init, now-playing update, redraw
     │   └── michi_display.c        # Observer -> queue -> render task
+    ├── michi_led/                 # SK6812 status LEDs, M5Stack U003 (phase 7)
+    │   ├── CMakeLists.txt
+    │   ├── idf_component.yml      # espressif/led_strip ^2.4.0 (managed)
+    │   ├── Kconfig                # LED count, brightness cap, task stack
+    │   ├── include/
+    │   │   └── michi_led.h        # init / shutdown
+    │   └── michi_led.c            # Observer -> pattern -> animation task
     ├── michi_audio_output/        # I2S pipeline, SPSC ring (phase 4)
     │   ├── CMakeLists.txt
     │   ├── Kconfig                # MICHI_AUDIO_RING_BUFFER_KB (1 MB PSRAM)
@@ -470,8 +477,9 @@ mappings arrive with their phases.
 
 ### Boot flow
 
-`state_init → display_init → nvs → board → self_test → dac → profile →
-http → boot screen → BOOT_COMPLETE (→ SELF_TEST) → SELF_TEST_DONE (→ IDLE)`.
+`state_init → display_init → led_init → nvs → board → self_test → dac →
+profile → http → boot screen → BOOT_COMPLETE (→ SELF_TEST) →
+SELF_TEST_DONE (→ IDLE)`.
 The boot screen is rendered **before** the boot events so it covers
 BOOTING/SELF_TEST and is never painted over by the dynamic display screens
 (phase 6), which take over as soon as the FSM reaches a stable state.
@@ -487,7 +495,9 @@ before the events are posted, so observers must not expect to observe it. If
 unavailable - all events will be dropped` is logged and no event reaches an
 observer (`subsystem=state state=failed`). If `michi_display_init()` fails,
 boot also continues degraded: no dynamic screens, the BSP boot screen still
-shows (`subsystem=display state=failed phase=6`).
+shows (`subsystem=display state=failed phase=6`). If `michi_led_init()`
+fails, boot also continues degraded: no status LEDs, everything else keeps
+working (`subsystem=led state=failed phase=7`).
 
 ### Observer contract
 
@@ -591,6 +601,82 @@ continues degraded (no dynamic screens, boot screen still shows,
 `subsystem=display state=ok phase=6`. Kconfig: render task stack
 (`MICHI_DISPLAY_TASK_STACK_BYTES`, 4096) and render queue length
 (`MICHI_DISPLAY_QUEUE_LEN`, 4).
+
+## LED: `components/michi_led`
+
+Phase 7 drives the **three SK6812 status LEDs of the M5Stack U003** through
+one RMT `led_strip` channel (managed component `espressif/led_strip`
+`^2.4.0` in `idf_component.yml`; the build resolves **2.5.5**). Scope
+restriction: **the cat-contour strip is NOT implemented** — no extra GPIO,
+no second channel, no driver; the only mention anywhere is
+`lighting_cat_contour=false` in the product profile.
+
+### Architecture: observer → pattern → animation task
+
+```mermaid
+flowchart LR
+    FSM["michi_state FSM task"] -->|STATE_CHANGED| OBS["LED observer<br/>(pattern only)"]
+    OBS -->|s_pattern / s_param| PAT["volatile pattern<br/>(portMUX)"]
+    PAT -->|read each tick| AT["animation task<br/>(50 ms tick)"]
+    AT -->|set_pixel x3 + refresh| STRIP["SK6812 via RMT"]
+```
+
+The LED observer runs on the FSM task, so it ONLY updates a volatile
+pattern (pattern id + period param + base color) under a short portMUX
+critical section. It NEVER touches the strip: RMT writes are slow, which
+would violate the observer MUST-NOT-block contract (phase 5) and stall the
+event bus. The animation task (priority 3, **50 ms tick**) is the **only**
+strip consumer: it reads the pattern snapshot, computes the three pixel
+colors from a **precomputed 64-entry sine LUT** (generated offline — no
+`math.h` in the tick) and calls `led_strip_set_pixel` ×3 +
+`led_strip_refresh` per tick; the refresh is **synchronous** (~0.25 ms per
+tick), bounded and confined to the animation task — the observer (FSM task)
+never blocks — and the only delay is the tick itself
+(`ulTaskNotifyTake`, which a shutdown notification interrupts immediately).
+
+### Patterns by state
+
+Every pattern period is expressed in 50 ms ticks. All SOLID patterns use
+the dim envelope (~35%); pulses and the sweep reach the full brightness
+cap at their peak (all still software-capped, see below).
+
+| State | Pattern | Color |
+|-------|---------|-------|
+| BOOTING, SELF_TEST | solid (dim) | white |
+| UNPROVISIONED | slow pulse (2.4 s) | blue |
+| PROVISIONING | fast pulse (0.8 s) | blue |
+| WIFI_CONNECTING | pulse (1.6 s) | orange |
+| IDLE | solid (dim) | blue |
+| PAIRING | sweep — traveling brightness wave across the 3 LEDs (0.6 s per wave) | blue |
+| SESSION_PENDING, BUFFERING | solid (dim) | yellow |
+| PLAYING | solid (dim) | green |
+| PAUSED | slow blink (1.2 s on / off) | green dim |
+| UPDATING | rising brightness ramp, cyclic (3 s, OTA progress) | white |
+| RECOVERABLE_ERROR, FATAL_ERROR | solid (dim) | red |
+| unknown / out of range | off (defensive) | — |
+
+### Brightness cap and shutdown
+
+Every color is scaled in software by
+`MICHI_LED_MAX_BRIGHTNESS_PCT/100` (default **25%**) before reaching the
+strip — SK6812 at full output is blinding in a dark room, and the cap
+applies to EVERY pattern (pulses included) with no hardware configuration.
+`MICHI_LED_COUNT` (default 3) and `MICHI_LED_TASK_STACK_BYTES` (default
+3072) complete the LED Kconfig menu.
+
+`michi_led_shutdown()` is cooperative: flag + notification + join with
+timeout; the task clears the strip (`led_strip_clear` + `refresh`) and
+deletes itself, then shutdown releases the strip (`led_strip_del`). If the
+join times out the strip is leaked rather than freed under a live task
+(warn logged).
+
+Init: `michi_led_init()` right after `michi_display_init()`; a failure
+continues degraded — no status LEDs, everything else keeps working
+(`subsystem=led state=failed phase=7`). Success logs
+`subsystem=led state=ok phase=7`. **GPIO 4
+(`MICHI_LED_GPIO`, camera HREF) is still pending physical validation** —
+measure continuity between the SK6812 data input and GPIO4 with the unit
+powered off before trusting it (camera interface forfeited — see below).
 
 ## Hardware validation pending
 

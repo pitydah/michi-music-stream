@@ -16,6 +16,7 @@
 #include "michi_dac.h"
 #include "michi_display.h"
 #include "michi_http.h"
+#include "michi_led.h"
 #include "michi_product_profile.h"
 #include "michi_state.h"
 #include "michi_version.h"
@@ -70,7 +71,6 @@ static void log_selftest_rows(const michi_board_info_t *info,
 static void log_pending_subsystems(void)
 {
     ESP_LOGI(TAG, "subsystem=bsp state=ok phase=1");
-    ESP_LOGW(TAG, "subsystem=led state=pending phase=7");
     ESP_LOGW(TAG, "subsystem=button state=pending phase=8");
     ESP_LOGW(TAG, "subsystem=network state=pending phase=9");
     ESP_LOGW(TAG, "subsystem=audio state=pending phase=11");
@@ -149,6 +149,17 @@ void app_main(void)
         ESP_LOGE(TAG, "michi_display_init failed: %s (no dynamic screens)",
                  esp_err_to_name(err));
         ESP_LOGI(TAG, "subsystem=display state=failed phase=6");
+    }
+
+    /* LED subsystem (phase 7): SK6812 status LEDs (M5Stack U003) driven by
+     * the animation task. The observer never touches the strip (MUST-NOT-
+     * block contract); on failure boot continues degraded - no status
+     * LEDs, everything else keeps working. */
+    err = michi_led_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "michi_led_init failed: %s (no status LEDs)",
+                 esp_err_to_name(err));
+        ESP_LOGI(TAG, "subsystem=led state=failed phase=7");
     }
 
     err = init_nvs();
