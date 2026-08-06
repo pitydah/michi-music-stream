@@ -99,7 +99,7 @@ void app_main(void)
     log_selftest_rows(info, &st);
 
     if (st.display_ok) {
-        err = michi_board_display_boot_screen(&st);
+        err = michi_board_display_boot_screen(info, &st);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "boot screen render failed: %s (continuing degraded)",
                      esp_err_to_name(err));

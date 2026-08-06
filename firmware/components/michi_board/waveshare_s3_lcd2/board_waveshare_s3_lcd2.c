@@ -55,7 +55,8 @@ static const michi_board_info_t s_board_info = {
 static esp_lcd_panel_io_handle_t s_panel_io = NULL;
 static esp_lcd_panel_handle_t s_panel = NULL;
 static uint16_t *s_fb = NULL;
-static bool s_backlight_ok = false;
+static bool s_backlight_on = false;
+static bool s_spi_bus_inited = false;
 static bool s_inited = false;
 
 static void draw_pixel(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, int x, int y, uint16_t color)
@@ -98,16 +99,16 @@ static esp_err_t init_backlight(void)
     esp_err_t err = gpio_config(&io);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "backlight gpio_config failed: %s", esp_err_to_name(err));
-        s_backlight_ok = false;
+        s_backlight_on = false;
         return err;
     }
     err = gpio_set_level(s_board_info.backlight_gpio, 1);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "backlight on failed: %s", esp_err_to_name(err));
-        s_backlight_ok = false;
+        s_backlight_on = false;
         return err;
     }
-    s_backlight_ok = true;
+    s_backlight_on = true;
     return ESP_OK;
 }
 
@@ -128,6 +129,7 @@ static esp_err_t init_display(void)
         ESP_LOGE(TAG, "spi_bus_initialize failed: %s", esp_err_to_name(err));
         return err;
     }
+    s_spi_bus_inited = true;
 
     esp_lcd_panel_io_spi_config_t io_config = {
         .dc_gpio_num = bi->lcd_dc,
@@ -143,6 +145,7 @@ static esp_err_t init_display(void)
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_lcd_new_panel_io_spi failed: %s", esp_err_to_name(err));
         spi_bus_free(MICHI_LCD_HOST);
+        s_spi_bus_inited = false;
         return err;
     }
 
@@ -157,28 +160,54 @@ static esp_err_t init_display(void)
         esp_lcd_panel_io_del(s_panel_io);
         s_panel_io = NULL;
         spi_bus_free(MICHI_LCD_HOST);
+        s_spi_bus_inited = false;
         return err;
     }
 
     err = esp_lcd_panel_reset(s_panel);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_lcd_panel_reset failed: %s", esp_err_to_name(err));
+        esp_lcd_panel_del(s_panel);
+        s_panel = NULL;
+        esp_lcd_panel_io_del(s_panel_io);
+        s_panel_io = NULL;
+        spi_bus_free(MICHI_LCD_HOST);
+        s_spi_bus_inited = false;
         return err;
     }
     err = esp_lcd_panel_init(s_panel);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_lcd_panel_init failed: %s", esp_err_to_name(err));
+        esp_lcd_panel_del(s_panel);
+        s_panel = NULL;
+        esp_lcd_panel_io_del(s_panel_io);
+        s_panel_io = NULL;
+        spi_bus_free(MICHI_LCD_HOST);
+        s_spi_bus_inited = false;
         return err;
     }
-    /* ST7789T3 on this module renders with inverted color data; verified visually. */
+    // Polarity per official Waveshare demo (Arduino_GFX IPS=true -> INVON). Final check
+    // on real hardware: see README hardware-validation step 5.
     err = esp_lcd_panel_invert_color(s_panel, true);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_lcd_panel_invert_color failed: %s", esp_err_to_name(err));
+        esp_lcd_panel_del(s_panel);
+        s_panel = NULL;
+        esp_lcd_panel_io_del(s_panel_io);
+        s_panel_io = NULL;
+        spi_bus_free(MICHI_LCD_HOST);
+        s_spi_bus_inited = false;
         return err;
     }
     err = esp_lcd_panel_disp_on_off(s_panel, true);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_lcd_panel_disp_on_off failed: %s", esp_err_to_name(err));
+        esp_lcd_panel_del(s_panel);
+        s_panel = NULL;
+        esp_lcd_panel_io_del(s_panel_io);
+        s_panel_io = NULL;
+        spi_bus_free(MICHI_LCD_HOST);
+        s_spi_bus_inited = false;
         return err;
     }
     return ESP_OK;
@@ -193,14 +222,14 @@ esp_err_t michi_board_init(void)
 
     esp_err_t err = init_backlight();
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "backlight init failed (%s), continuing degraded", esp_err_to_name(err));
+        ESP_LOGE(TAG, "backlight init failed: %s", esp_err_to_name(err));
+        return err;
     }
 
     size_t fb_bytes = (size_t)bi->display_width * bi->display_height * sizeof(uint16_t);
     s_fb = heap_caps_malloc(fb_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (s_fb == NULL) {
         ESP_LOGE(TAG, "PSRAM framebuffer allocation failed (%zu bytes): display disabled", fb_bytes);
-        s_inited = true;
         return ESP_ERR_NO_MEM;
     }
 
@@ -208,9 +237,12 @@ esp_err_t michi_board_init(void)
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "display init failed (%s): display disabled, continuing degraded",
                  esp_err_to_name(err));
+        if (gpio_set_level(bi->backlight_gpio, 0) != ESP_OK) {
+            ESP_LOGE(TAG, "backlight off failed after display init failure");
+        }
+        s_backlight_on = false;
         heap_caps_free(s_fb);
         s_fb = NULL;
-        s_inited = true;
         return err;
     }
 
@@ -223,23 +255,38 @@ esp_err_t michi_board_init(void)
 esp_err_t michi_board_shutdown(void)
 {
     if (s_panel != NULL) {
-        esp_lcd_panel_disp_on_off(s_panel, false);
-        esp_lcd_panel_del(s_panel);
+        esp_err_t err = esp_lcd_panel_disp_on_off(s_panel, false);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "panel disp_on_off(false) failed: %s", esp_err_to_name(err));
+        }
+        err = esp_lcd_panel_del(s_panel);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "esp_lcd_panel_del failed: %s", esp_err_to_name(err));
+        }
         s_panel = NULL;
     }
     if (s_panel_io != NULL) {
-        esp_lcd_panel_io_del(s_panel_io);
+        esp_err_t err = esp_lcd_panel_io_del(s_panel_io);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "esp_lcd_panel_io_del failed: %s", esp_err_to_name(err));
+        }
         s_panel_io = NULL;
     }
-    spi_bus_free(MICHI_LCD_HOST);
+    if (s_spi_bus_inited) {
+        spi_bus_free(MICHI_LCD_HOST);
+        s_spi_bus_inited = false;
+    }
     if (s_fb != NULL) {
         heap_caps_free(s_fb);
         s_fb = NULL;
     }
-    if (s_backlight_ok) {
-        gpio_set_level(s_board_info.backlight_gpio, 0);
+    if (s_backlight_on) {
+        esp_err_t err = gpio_set_level(s_board_info.backlight_gpio, 0);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "backlight off failed: %s", esp_err_to_name(err));
+        }
     }
-    s_backlight_ok = false;
+    s_backlight_on = false;
     s_inited = false;
     ESP_LOGI(TAG, "board shutdown complete");
     return ESP_OK;
@@ -286,7 +333,7 @@ michi_board_selftest_t michi_board_self_test(void)
     st.psram_ok = (psram_size == bi->psram_bytes_expected);
 
     st.display_ok = (s_panel != NULL) && (s_fb != NULL);
-    st.backlight_ok = s_backlight_ok;
+    st.backlight_ok = s_backlight_on;
 
     /* DAC detection is not implemented until phase 2; never report a fake DAC. */
     st.dac_present = false;
@@ -315,40 +362,48 @@ static void boot_screen_row(const michi_board_info_t *bi, int y, const char *lab
     }
 }
 
-esp_err_t michi_board_display_boot_screen(const michi_board_selftest_t *st)
+esp_err_t michi_board_display_boot_screen(const michi_board_info_t *info,
+                                          const michi_board_selftest_t *st)
 {
     if (s_panel == NULL || s_fb == NULL) {
         ESP_LOGW(TAG, "display unavailable, boot screen not rendered");
         return ESP_ERR_INVALID_STATE;
     }
-    const michi_board_info_t *bi = &s_board_info;
     const uint16_t white = 0xFFFF;
     const uint16_t green = 0x07E0;
     const uint16_t red = 0xF800;
     const uint16_t yellow = 0xFFE0;
 
-    memset(s_fb, 0, (size_t)bi->display_width * bi->display_height * sizeof(uint16_t));
+    memset(s_fb, 0, (size_t)info->display_width * info->display_height * sizeof(uint16_t));
 
     char title[48];
     snprintf(title, sizeof(title), "Michi Music Stream v%s", MICHI_FW_VERSION_STR);
-    int title_x = ((int)bi->display_width - (int)strlen(title) * MICHI_TEXT_SPACING) / 2;
+    int title_x = ((int)info->display_width - (int)strlen(title) * MICHI_TEXT_SPACING) / 2;
     if (title_x < 0) {
         title_x = 0;
     }
-    draw_text(s_fb, bi->display_width, bi->display_height, title_x, 20, title,
+    draw_text(s_fb, info->display_width, info->display_height, title_x, 20, title,
               white, 0x0000);
 
-    boot_screen_row(bi, 48, "Board: Waveshare ESP32-S3-LCD-2", NULL, white, 0);
-    boot_screen_row(bi, 64, "Flash: 16 MiB", st->flash_ok ? "OK" : "FAIL", white,
+    boot_screen_row(info, 48, "Board: Waveshare ESP32-S3-LCD-2", NULL, white, 0);
+
+    char line[32];
+    snprintf(line, sizeof(line), "Flash: %" PRIu32 " MiB",
+             info->flash_bytes_expected / (1024U * 1024U));
+    boot_screen_row(info, 64, line, st->flash_ok ? "ok" : "FAIL", white,
                     st->flash_ok ? green : red);
-    boot_screen_row(bi, 80, "PSRAM: 8 MiB", st->psram_ok ? "OK" : "FAIL", white,
+    snprintf(line, sizeof(line), "PSRAM: %" PRIu32 " MiB",
+             info->psram_bytes_expected / (1024U * 1024U));
+    boot_screen_row(info, 80, line, st->psram_ok ? "ok" : "FAIL", white,
                     st->psram_ok ? green : red);
-    boot_screen_row(bi, 96, "Display:", st->display_ok ? "OK" : "FAIL", white,
+    boot_screen_row(info, 96, "Display:", st->display_ok ? "ok" : "FAIL", white,
                     st->display_ok ? green : red);
-    boot_screen_row(bi, 112, "WiFi: supported", NULL, white, 0);
-    boot_screen_row(bi, 128, "BLE: supported", NULL, white, 0);
-    boot_screen_row(bi, 144, "DAC: pending (phase 2)", NULL, yellow, 0);
-    boot_screen_row(bi, 160, "Result:", st->overall ? "PASS" : "DEGRADED", white,
+    boot_screen_row(info, 112, "WiFi:", st->wifi_supported ? "supported" : "not supported",
+                    white, st->wifi_supported ? green : red);
+    boot_screen_row(info, 128, "BLE:", st->ble_supported ? "supported" : "not supported",
+                    white, st->ble_supported ? green : red);
+    boot_screen_row(info, 144, "DAC: pending (phase 2)", NULL, yellow, 0);
+    boot_screen_row(info, 160, "Result:", st->overall ? "PASS" : "DEGRADED", white,
                     st->overall ? green : red);
 
     return flush_fb();

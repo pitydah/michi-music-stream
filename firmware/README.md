@@ -80,8 +80,8 @@ Pinout verified against the official Waveshare demo (phase 1 only brings up the 
 | LCD RST                | -    | not wired (unused)             |
 | LCD backlight          | 1    | initialized (active high, on)  |
 | microSD CS             | 41   | reserved (shares LCD SPI bus)  |
-| Board I2C SDA (IMU)    | 48   | reserved (bus defined, no IMU) |
-| Board I2C SCL (IMU)    | 47   | reserved (bus defined, no IMU) |
+| Board I2C SDA (IMU)    | 48   | reserved (QMI8658 IMU onboard; no driver in phase 1) |
+| Board I2C SCL (IMU)    | 47   | reserved (QMI8658 IMU onboard; no driver in phase 1) |
 | Camera (15 pins)       | 8,21,16,2,7,10,14,11,15,13,12,6,4,9,17 | reserved, unused |
 | USB D-/D+              | 19,20| reserved                       |
 | UART console (bridge)  | 43,44| reserved                       |

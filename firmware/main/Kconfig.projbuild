@@ -6,7 +6,8 @@ menu "Michi Music Stream Hardware"
         help
           External DAC (PCM5122) I2C data pin. Default 22 is a free GPIO with no
           Waveshare ESP32-S3-LCD-2 collision. REQUIRES physical validation: measure
-          continuity between the DAC SDA line and GPIO22 on your unit.
+          continuity between the DAC SDA line and GPIO22 on your unit. Measure with
+          the unit powered off.
 
     config MICHI_DAC_I2C_SCL
         int "External DAC I2C SCL pin"
@@ -14,7 +15,8 @@ menu "Michi Music Stream Hardware"
         help
           External DAC (PCM5122) I2C clock pin. Default 23 is a free GPIO with no
           Waveshare ESP32-S3-LCD-2 collision. REQUIRES physical validation: measure
-          continuity between the DAC SCL line and GPIO23 on your unit.
+          continuity between the DAC SCL line and GPIO23 on your unit. Measure with
+          the unit powered off.
 
     config MICHI_I2S_BCLK
         int "External DAC I2S BCLK pin"
@@ -22,7 +24,9 @@ menu "Michi Music Stream Hardware"
         help
           I2S bit clock to the external DAC. Default 3 is a free GPIO with no
           Waveshare ESP32-S3-LCD-2 collision. REQUIRES physical validation: measure
-          continuity between the DAC BCLK line and GPIO3 on your unit.
+          continuity between the DAC BCLK line and GPIO3 on your unit. Measure with
+          the unit powered off. Note: this is an ESP32-S3 strapping pin; the external
+          circuit must not hold it low during reset.
 
     config MICHI_I2S_LRCK
         int "External DAC I2S LRCK pin"
@@ -31,6 +35,7 @@ menu "Michi Music Stream Hardware"
           I2S left/right clock to the external DAC. Default 18 is a free GPIO with
           no Waveshare ESP32-S3-LCD-2 collision. REQUIRES physical validation:
           measure continuity between the DAC LRCK line and GPIO18 on your unit.
+          Measure with the unit powered off.
 
     config MICHI_I2S_DIN
         int "External DAC I2S DIN pin"
@@ -38,7 +43,8 @@ menu "Michi Music Stream Hardware"
         help
           I2S serial data to the external DAC. Default 5 is a free GPIO with no
           Waveshare ESP32-S3-LCD-2 collision. REQUIRES physical validation: measure
-          continuity between the DAC DIN line and GPIO5 on your unit.
+          continuity between the DAC DIN line and GPIO5 on your unit. Measure with
+          the unit powered off.
 
     config MICHI_I2S_MCLK
         int "External DAC I2S MCLK pin"
@@ -48,7 +54,9 @@ menu "Michi Music Stream Hardware"
           PLL, so MCLK can be left unconnected; set to -1 to disable it. Default 46
           is a free GPIO with no Waveshare ESP32-S3-LCD-2 collision. REQUIRES
           physical validation: measure continuity between the DAC MCLK line and
-          GPIO46 on your unit.
+          GPIO46 on your unit. Measure with the unit powered off. Note: this is an
+          ESP32-S3 strapping pin; the external circuit must not hold it low during
+          reset.
 
     config MICHI_LED_GPIO
         int "External LED (SK6812) data pin"
@@ -57,7 +65,7 @@ menu "Michi Music Stream Hardware"
           Data pin for the external SK6812 LED strip (M5Stack U003). Default 24 is
           a free GPIO with no Waveshare ESP32-S3-LCD-2 collision. REQUIRES physical
           validation: measure continuity between the LED data line and GPIO24 on
-          your unit.
+          your unit. Measure with the unit powered off.
 
     config MICHI_BUTTON_GPIO
         int "External pairing button pin"
@@ -66,6 +74,7 @@ menu "Michi Music Stream Hardware"
           External pairing button input, active low to GND. Default 25 is a free
           GPIO with no Waveshare ESP32-S3-LCD-2 collision. REQUIRES physical
           validation: measure continuity between the button pin and GPIO25, and
-          verify the button pulls the pin to GND when pressed.
+          verify the button pulls the pin to GND when pressed. Measure with the
+          unit powered off.
 
 endmenu
