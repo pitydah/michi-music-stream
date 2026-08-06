@@ -18,6 +18,7 @@
 #include "michi_display.h"
 #include "michi_http.h"
 #include "michi_led.h"
+#include "michi_pairing.h"
 #include "michi_product_profile.h"
 #include "michi_state.h"
 #include "michi_version.h"
@@ -206,6 +207,18 @@ void app_main(void)
         ESP_LOGE(TAG, "michi_wifi_init failed: %s (no network)",
                  esp_err_to_name(err));
         ESP_LOGI(TAG, "subsystem=wifi state=failed phase=9");
+    }
+
+    /* Pairing & security (phase 10): controller registry (tokens stored
+     * as SHA-256 digests only) + the button-authorized pairing window.
+     * The window opens ONLY from the physical button (michi_button); the
+     * phase-12 HTTP handlers operate strictly inside it. On failure boot
+     * continues degraded - no pairing, everything else keeps working. */
+    err = michi_pairing_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "michi_pairing_init failed: %s (no pairing)",
+                 esp_err_to_name(err));
+        ESP_LOGI(TAG, "subsystem=pairing state=failed phase=10");
     }
 
     err = michi_board_init();

@@ -15,6 +15,7 @@
 #include "nvs_flash.h"
 
 #include "michi_button.h"
+#include "michi_pairing.h"
 #include "michi_state.h"
 
 #define TAG "michi_button"
@@ -120,6 +121,18 @@ static void handle_short_press(uint32_t press_ms, michi_state_t st)
 {
     if (st == MICHI_STATE_IDLE || st == MICHI_STATE_UNPROVISIONED) {
         ESP_LOGI(TAG, "button: press_ms=%u action=pairing", (unsigned)press_ms);
+        /* Phase 10: the physical press is the ONLY authority that opens
+         * the pairing window. PAIRING_STARTED is posted ONLY when the
+         * window actually opened: posting it anyway would strand the FSM
+         * in PAIRING (no window -> no challenge, no close event -> no
+         * PAIRING -> IDLE transition). On failure the press is a no-op
+         * (logged): the next press retries. */
+        const esp_err_t err = michi_pairing_open_window();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "button: pairing window open failed err=%s",
+                     esp_err_to_name(err));
+            return;
+        }
         post_with_retry(MICHI_EVENT_PAIRING_STARTED, 0);
         return;
     }

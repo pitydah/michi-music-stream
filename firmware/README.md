@@ -82,6 +82,12 @@ firmware/
     │   ├── include/
     │   │   └── michi_wifi.h       # init / provisioning / erase / shutdown
     │   └── michi_wifi.c           # Non-blocking handlers + esp_timer backoff + prov task
+    ├── michi_pairing/             # Pairing & security (phase 10)
+    │   ├── CMakeLists.txt
+    │   ├── Kconfig                # Window seconds, max controllers, rate limits
+    │   ├── include/
+    │   │   └── michi_pairing.h    # Window/challenge/confirm/validate/revoke API
+    │   └── michi_pairing.c        # Hashed-token registry + button-authorized window
     ├── michi_audio_output/        # I2S pipeline, SPSC ring (phase 4)
     │   ├── CMakeLists.txt
     │   ├── Kconfig                # MICHI_AUDIO_RING_BUFFER_KB (1 MB PSRAM)
@@ -479,6 +485,7 @@ state current when the event was dispatched - stamped by the FSM task).
 | `MICHI_EVENT_RECOVER` | in RECOVERABLE_ERROR | RECOVERABLE_ERROR → IDLE |
 | `MICHI_EVENT_PAIRING_STARTED` | in IDLE | IDLE → PAIRING |
 | `MICHI_EVENT_PAIRING_STARTED` | in UNPROVISIONED | UNPROVISIONED → PAIRING |
+| `MICHI_EVENT_PAIRING_WINDOW_CLOSED` | in PAIRING | PAIRING → IDLE |
 | `MICHI_EVENT_WIFI_PROVISIONED` | in UNPROVISIONED | UNPROVISIONED → WIFI_CONNECTING |
 | `MICHI_EVENT_WIFI_DISCONNECTED` | in IDLE | IDLE → WIFI_CONNECTING |
 | `MICHI_EVENT_NETWORK_READY` | in WIFI_CONNECTING | WIFI_CONNECTING → IDLE |
@@ -501,17 +508,18 @@ onwards — no boot path enters it.
 applies; every applied transition emits `MICHI_EVENT_STATE_CHANGED`.
 
 `MICHI_EVENT_ERROR` (data: `esp_err_t`), `MICHI_EVENT_STATE_CHANGED` and
-the phase events (`MICHI_EVENT_WIFI_*` phase 9, `MICHI_EVENT_PAIRING_CLOSED`
+the phase events (`MICHI_EVENT_WIFI_*` phase 9, `MICHI_EVENT_PAIRING_WINDOW_CLOSED`
 phase 10, `MICHI_EVENT_SESSION_*` phase 12, `MICHI_EVENT_UPDATE_*`
 phase 13) are declared now so consumers can register filters; their
 mappings arrive with their phases. `MICHI_EVENT_PAIRING_STARTED` is the
 exception: the physical button (phase 8) already maps it from IDLE and
-UNPROVISIONED.
+UNPROVISIONED, and `MICHI_EVENT_PAIRING_WINDOW_CLOSED` is mapped with the
+pairing flow (phase 10).
 
 ### Boot flow
 
 `state_init → display_init → led_init → button_init → nvs → wifi →
-board → self_test → dac → profile → http → boot screen →
+pairing → board → self_test → dac → profile → http → boot screen →
 BOOT_COMPLETE (→ SELF_TEST) → SELF_TEST_DONE (→ IDLE)`.
 The boot screen is rendered **before** the boot events so it covers
 BOOTING/SELF_TEST and is never painted over by the dynamic display screens
@@ -748,7 +756,7 @@ accuracy, debounce window excluded).
 
 | Press | Action |
 |-------|--------|
-| short (< `MICHI_BUTTON_LONG_PRESS_MS`) | `michi_state_post(MICHI_EVENT_PAIRING_STARTED, 0)` — only in **IDLE** or **UNPROVISIONED**; any other state logs the rejection (`state=...`, the FSM would drop the event anyway) |
+| short (< `MICHI_BUTTON_LONG_PRESS_MS`) | `michi_pairing_open_window()` + `michi_state_post(MICHI_EVENT_PAIRING_STARTED, 0)` — only in **IDLE** or **UNPROVISIONED**; any other state logs the rejection (`state=...`, the FSM would drop the event anyway). `PAIRING_STARTED` is posted ONLY when the window actually opened (a failed open is logged `pairing window open failed err=...` and the press is a no-op: posting anyway would strand the FSM in PAIRING with no window to close it) |
 | long (>= `MICHI_BUTTON_LONG_PRESS_MS`) | `MICHI_BUTTON_LONG_PRESS_ACTION`: `recovery` (default) → `michi_state_post(MICHI_EVENT_RECOVER, 0)` (only from RECOVERABLE_ERROR); `factory_reset` → `nvs_flash_erase()` + `esp_restart()` immediately (no log-flush delay: the log is already in the UART FIFO) |
 | factory-reset arm window | `MICHI_BUTTON_FACTORY_ARM_MS` (default 10000 ms): the factory reset runs only if the press **started** at least this long after boot (boot-hold / stuck-pin protection); recovery is NOT armed |
 
@@ -929,6 +937,177 @@ failure or retry chain exhausted), `off` (shutdown) — always with
 `phase=9`. Retry logs emit `retry=%u`: `wifi: state=connecting retry=%u`,
 `wifi: ssid=%s retry=%u backoff_ms=%lld`, `wifi: ssid=%s ip=%s retry=0`,
 `wifi: disconnected reason=%d`.
+
+## Pairing & security: `components/michi_pairing`
+
+Phase 10 adds the controller registry and the pairing window: the
+protocol that lets a controller (app/remote) authenticate with the
+device. It is a **from-scratch implementation** — the legacy
+`firmware/common/pairing.c` pattern (predictable `rand()` nonces, tokens
+stored in plaintext, window openable over HTTP) is deliberately NOT
+copied.
+
+### Hard rules
+
+1. **The physical button is the ONLY authority that opens the window.**
+   `michi_pairing_open_window()` is called exclusively from the button
+   path (`michi_button`, task context, in `handle_short_press`). There is
+   NO network-visible API that opens it; the phase-12 HTTP handlers can
+   only request/confirm challenges INSIDE a window already opened by the
+   button. (The legacy window-open-over-HTTP hole cannot recur.)
+2. **Cryptographic challenges**: 16 bytes from `esp_fill_random()` encoded
+   as 32 hex chars, bound to the current window AND to the initiator id
+   that requested it (single-slot: one active challenge per window; a new
+   `get_challenge` overwrites the previous challenge+owner pair, and
+   `confirm` only accepts the id that issued it). The challenge dies with
+   the window.
+3. **Tokens are stored as SHA-256 digests only** (`mbedtls_sha256`,
+   mbedTLS 3.6 of IDF 5.3): the receiver never sees a recoverable
+   credential. Validation = digest of the presented token compared in
+   constant time against the stored digest.
+4. **Constant-time comparisons** via `mbedtls_ct_memcmp`
+   (`mbedtls/constant_time.h`, available and unguarded in IDF 5.3 —
+   verified) for both the challenge and the token digests.
+5. **Per-controller permission bitmask** (see table below); new pairings
+   get `STATUS|PLAYBACK|VOLUME|SETTINGS`. The elevated bits are
+   documented as NOT granted by default — a grant-management flow is a
+   future phase.
+6. **Rate limiting per window**: max `MICHI_PAIRING_MAX_CHALLENGES_PER_WINDOW`
+   (3) challenge issues and max `MICHI_PAIRING_MAX_CONFIRM_ATTEMPTS` (5)
+   failed confirmations; exceeding the confirm limit CLOSES the window
+   (log + `MICHI_EVENT_PAIRING_WINDOW_CLOSED`, FSM PAIRING → IDLE) —
+   anti brute force. Attempts contract: every failed confirmation
+   consumes one attempt EXCEPT a malformed initiator id and
+   no-proof-issued (no challenge issued for the window), which are
+   rejected without consuming — they are not authentication attempts.
+7. **Zero secrets in logs**: challenge, token and digest VALUES are never
+   logged — only controller ids (not secret) and counters. Enforced by
+   design: no log format string in the component contains
+   `token`/`challenge`/`nonce`/`hash` (the verification grep passes; the
+   spec-proposed `challenge_count`/`confirm_failures` fields were renamed
+   `issued`/`failed` for exactly this reason).
+8. **Individual revocation**: `michi_pairing_revoke(controller_id)`.
+9. **Expiration**: `MICHI_PAIRING_WINDOW_SECONDS` (default 120) enforced
+   by a one-shot `esp_timer`; expiry, success, exhaustion and explicit
+   close all post `MICHI_EVENT_PAIRING_WINDOW_CLOSED` (PAIRING → IDLE).
+
+### Flow: button → window → challenge → confirm
+
+```mermaid
+sequenceDiagram
+    participant B as Button task
+    participant P as michi_pairing
+    participant F as FSM
+    participant N as NVS
+    participant C as Controller (phase 12 HTTP)
+
+    B->>P: michi_pairing_open_window()
+    P-->>N: (timer armed, 120 s)
+    B->>F: post PAIRING_STARTED (only if the window opened)
+    F->>F: IDLE/UNPROVISIONED → PAIRING
+    C->>P: get_challenge(initiator_id) (window open?)
+    P-->>C: 32-hex challenge bound to initiator_id (esp_fill_random, max 3/window)
+    C->>P: confirm(challenge, initiator_id, token)
+    P->>P: ct-compare challenge; id == challenge owner; digest token (SHA-256)
+    P-->>N: nvs_set_blob + commit (digest, perms, created)
+    P-->>C: controller_id + MICHI_PERM_DEFAULT
+    P->>F: post WINDOW_CLOSED (window closed)
+    F->>F: PAIRING → IDLE
+    Note over C,P: later: validate_token(token) → constant-time<br/>digest scan → controller + permissions
+```
+
+### Permissions
+
+| Bit | Macro | Meaning | Granted by default |
+|-----|-------|---------|--------------------|
+| 0x1 | `MICHI_PERM_STATUS` | Read status/state | yes |
+| 0x2 | `MICHI_PERM_PLAYBACK` | Start/stop/pause playback | yes |
+| 0x4 | `MICHI_PERM_VOLUME` | Read/set volume | yes |
+| 0x8 | `MICHI_PERM_SETTINGS` | Read/change device settings | yes |
+| 0x10 | `MICHI_PERM_CONTROLLER_ADMIN` | Manage controllers (revoke, list) | **no** |
+| 0x20 | `MICHI_PERM_OTA` | Trigger/authorize OTA | **no** |
+| 0x40 | `MICHI_PERM_FACTORY_RESET` | Trigger factory reset | **no** |
+
+`MICHI_PERM_DEFAULT` (STATUS|PLAYBACK|VOLUME|SETTINGS) is granted at
+pairing time; re-pairing an existing controller id rotates its credential
+and re-grants the default set.
+
+### Registry and persistence
+
+The registry lives in the NVS `michi_pairing` namespace as ONE versioned
+blob (key `controllers`, `MICHI_PAIRING_BLOB_VERSION = 1`): a 8-byte
+header (u32 version + u32 count) followed by up to
+`MICHI_PAIRING_MAX_CONTROLLERS` (8) fixed 80-byte entries, field order:
+`{controller_id[32], digest[32], created_unix, permissions, reserved}`
+(created_unix is an int64 — the header keeps it 8-aligned; `reserved` is
+explicit tail padding so the persisted bytes are deterministic, no
+uninitialized padding). Slots `[count..MAX)` are always zeroed before
+persisting (no revoked digests retained on flash), and the layout is
+`_Static_assert`-guarded in `michi_pairing.c`. Every mutation (confirm,
+revoke) rewrites the whole blob with `nvs_set_blob` + `nvs_commit`,
+propagates NVS errors, and only applies the in-RAM copy after the write
+succeeds. A missing, truncated or foreign-version blob starts EMPTY
+(warn logged) — a bad store never blocks boot; a single corrupt entry
+(id not NUL-terminated within 31 chars) is dropped and logged without
+rejecting the whole store. `created_unix` is uptime-seconds since boot
+until a wall-clock source lands. The registry shares the 24 KB `nvs`
+partition with the `wifi` and `dac` namespaces.
+
+### Constant-time validation
+
+`michi_pairing_validate_token()` digests the presented token and compares
+it with `mbedtls_ct_memcmp` against **every slot** with **no early
+return** — including empty slots (compared against a fixed zero digest) —
+so the timing neither reveals which controller matched nor how many are
+stored. Trade-off: O(MAX_CONTROLLERS) comparisons per validation
+(8 × 32-byte comparisons: negligible).
+
+### Rate limiting and expiry
+
+- Per window: 3 challenge issues max (`issued_limit_reached` warn);
+  5 failed confirmations max. Every failed confirmation — wrong
+  challenge (constant-time mismatch), id vs. challenge-owner mismatch,
+  malformed credentials — consumes one attempt EXCEPT a malformed
+  initiator id and no-proof-issued, which are rejected without consuming
+  (they are not authentication attempts); the attempt that EXCEEDS the
+  limit closes the window (`window=closed reason=attempts_exhausted`,
+  `ESP_ERR_TIMEOUT`).
+- `michi_pairing_is_window_open()` also reports false once the deadline
+  passed but the one-shot timer has not fired yet; the timer owns the
+  close + FSM event, so there is exactly one close path per window. The
+  expiry callback re-validates the deadline under the mutex before
+  closing, so a stale callback (timer fired, window re-opened before the
+  callback ran — `esp_timer_stop` on a fired one-shot is a no-op) never
+  closes the fresh window.
+
+### Logs
+
+key=value, secret-free (verification: no log format string in the
+component contains `token`/`challenge`/`nonce`/`hash`):
+
+```
+subsystem=pairing state=ok phase=10
+pairing: init mutex_failed err=%s
+pairing: init timer_failed err=%s
+pairing: loaded controllers=%u
+pairing: store_corrupt controllers=0 (starting empty)
+pairing: store_corrupt_entry slot=%u (dropped)
+pairing: window=open seconds=%u
+pairing: window=active issued=%u owner=%s
+pairing: window=closed reason=%s issued=%u failed=%u   (reason: paired|expired|requested|reopened|shutdown|attempts_exhausted)
+pairing: confirm_failed reason=%s failed=%u            (reason: no_proof_issued|id_mismatch|malformed_request|proof_mismatch|digest_failed)
+pairing: paired controller=%s permissions=%u
+pairing: revoked controller=%s remaining=%u
+subsystem=pairing state=off phase=10
+```
+
+### Phase 12 note
+
+The pairing HTTP endpoints (challenge/confirm/validate/revoke) arrive in
+phase 12. They will operate STRICTLY inside a button-opened window for
+challenge/confirm; token validation and permission checks apply at every
+protected endpoint via the constant-time registry scan. The elevated
+permissions stay un-granted; the grant-management flow is out of scope.
 
 ## Hardware validation pending
 

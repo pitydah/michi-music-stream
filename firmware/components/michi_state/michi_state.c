@@ -124,13 +124,17 @@ static const michi_event_map_t s_event_map[] = {
     { MICHI_EVENT_WIFI_DISCONNECTED, 0, true, MICHI_STATE_IDLE,           MICHI_STATE_WIFI_CONNECTING },
     { MICHI_EVENT_NETWORK_READY,     0, true, MICHI_STATE_WIFI_CONNECTING, MICHI_STATE_IDLE },
     { MICHI_EVENT_WIFI_PROV_FAILED,  0, true, MICHI_STATE_WIFI_CONNECTING, MICHI_STATE_UNPROVISIONED },
+    /* Phase 10 (pairing, michi_pairing): any window close (expiry,
+     * paired, attempt exhaustion, explicit close) returns the FSM from
+     * PAIRING to IDLE. */
+    { MICHI_EVENT_PAIRING_WINDOW_CLOSED, 0, true, MICHI_STATE_PAIRING,     MICHI_STATE_IDLE },
 };
 
 /* Structural coverage: every s_event_map entry must have an
  * EVENT_MAP_TRANSITION_CHECK below. sizeof on a static array IS an integer
  * constant expression, so a new entry without its check fails this assert
  * at compile time. */
-#define MICHI_EVENT_MAP_CHECK_COUNT 9
+#define MICHI_EVENT_MAP_CHECK_COUNT 10
 _Static_assert(sizeof(s_event_map) / sizeof(s_event_map[0]) ==
                    MICHI_EVENT_MAP_CHECK_COUNT,
                "every event map entry needs a transition check");
@@ -157,6 +161,7 @@ EVENT_MAP_TRANSITION_CHECK(5, s_evmap_check_5);
 EVENT_MAP_TRANSITION_CHECK(6, s_evmap_check_6);
 EVENT_MAP_TRANSITION_CHECK(7, s_evmap_check_7);
 EVENT_MAP_TRANSITION_CHECK(8, s_evmap_check_8);
+EVENT_MAP_TRANSITION_CHECK(9, s_evmap_check_9);
 #undef EVENT_MAP_TRANSITION_CHECK
 
 typedef struct {

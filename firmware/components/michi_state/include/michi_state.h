@@ -13,8 +13,9 @@ extern "C" {
  *
  * The single coordinator of the universal firmware: one current state, one
  * FreeRTOS queue, one FSM task. Every subsystem that changes product behavior
- * (display phase 6, LED phase 7, button phase 8, network phase 9, audio
- * phase 11, API phase 12) reacts to the events broadcast here; the
+ * (display phase 6, LED phase 7, button phase 8, network phase 9,
+ * pairing phase 10, audio phase 11, API phase 12) reacts to the events
+ * broadcast here; the
  * scattered booleans of the legacy firmware are replaced by this unique
  * source of truth.
  *
@@ -75,12 +76,14 @@ typedef enum {
     MICHI_EVENT_WIFI_PROV_FAILED,  /*!< provisioning failed or credentials erased; drives WIFI_CONNECTING -> UNPROVISIONED */
     MICHI_EVENT_NETWORK_READY,     /*!< IP obtained (STA_GOT_IP); drives WIFI_CONNECTING -> IDLE */
 
-    /* Phase 8 (pairing): MICHI_EVENT_PAIRING_STARTED is emitted by the
+    /* Phase 8/10 (pairing): MICHI_EVENT_PAIRING_STARTED is emitted by the
      * physical button (michi_button) and drives IDLE/UNPROVISIONED ->
-     * PAIRING; MICHI_EVENT_PAIRING_CLOSED is emitted by the pairing flow
-     * (phase 10, mapping with it). */
+     * PAIRING; MICHI_EVENT_PAIRING_WINDOW_CLOSED is emitted by the
+     * pairing flow (phase 10, michi_pairing) whenever the button-opened
+     * window closes (expiry, successful pairing, attempt exhaustion,
+     * explicit close) and drives PAIRING -> IDLE. */
     MICHI_EVENT_PAIRING_STARTED,   /*!< data: 0 */
-    MICHI_EVENT_PAIRING_CLOSED,    /*!< data: 0 */
+    MICHI_EVENT_PAIRING_WINDOW_CLOSED, /*!< data: 0 */
 
     /* Phase 12 (sessions/API): emitted by the session layer. */
     MICHI_EVENT_SESSION_STARTED,   /*!< data: 0 */

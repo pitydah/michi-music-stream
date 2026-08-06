@@ -22,12 +22,15 @@ extern "C" {
  *   accuracy); the pin level is re-checked right before an action fires,
  *   so a mid-window bounce aborts the release.
  * - All actions run in the task, NEVER in the ISR: a short press
- *   (< MICHI_BUTTON_LONG_PRESS_MS) posts MICHI_EVENT_PAIRING_STARTED when
- *   the FSM is in IDLE or UNPROVISIONED (the pairing protocol itself is
- *   phase 10 - this component only posts events). A long press runs
- *   MICHI_BUTTON_LONG_PRESS_ACTION: recovery (post MICHI_EVENT_RECOVER,
- *   default) or factory_reset (nvs_flash_erase + esp_restart). Posts are
- *   retried once after 50 ms on ESP_ERR_TIMEOUT, then dropped and logged.
+ *   (< MICHI_BUTTON_LONG_PRESS_MS) opens the pairing window
+ *   (michi_pairing_open_window, phase 10 - the physical press is the
+ *   ONLY authority that opens it, there is no network-visible way) and
+ *   posts MICHI_EVENT_PAIRING_STARTED when the FSM is in IDLE or
+ *   UNPROVISIONED. A long press runs MICHI_BUTTON_LONG_PRESS_ACTION:
+ *   recovery (post MICHI_EVENT_RECOVER, default) or factory_reset
+ *   (nvs_flash_erase + esp_restart). Posts are retried once after 50 ms
+ *   on ESP_ERR_TIMEOUT, then dropped and logged; a window-open failure
+ *   is logged without breaking the post.
  * - Anti-accidental gates: actions are ignored unless the FSM state at the
  *   press confirmation AND at the release are both outside BOOTING,
  *   SELF_TEST and UPDATING (a press held through boot, or started during
