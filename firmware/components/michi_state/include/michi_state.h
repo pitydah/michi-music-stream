@@ -83,8 +83,9 @@ typedef enum {
     MICHI_EVENT_UPDATE_FAILED,     /*!< data: esp_err_t */
 
     /* Internal, not postable: posted ONLY by michi_state_request(); post()
-     * and post_from_isr() reject it (and any id past the enum) with
-     * ESP_ERR_INVALID_ARG. */
+     * and post_from_isr() reject it (and MICHI_EVENT_STATE_CHANGED) with
+     * ESP_ERR_INVALID_ARG. Ids in the gap between the last domain event and
+     * this marker are postable but broadcast-only (no transition mapping). */
     MICHI_EVENT_TRANSITION_REQUEST = 0x100,
 } michi_event_id_t;
 
@@ -130,17 +131,30 @@ esp_err_t michi_state_init(void);
  * Broadcast to matching observers; if the event has a mapping it may also
  * drive a state transition (validated against the transition table).
  *
- * @param id   Event id (MICHI_EVENT_TRANSITION_REQUEST and ids past the enum
- *             are rejected).
+ * Id contract:
+ * - ids >= MICHI_EVENT_TRANSITION_REQUEST are rejected with
+ *   ESP_ERR_INVALID_ARG (the transition-request event is internal to
+ *   michi_state_request(), and the range past it is reserved);
+ * - ids in the gap between the last declared domain event and
+ *   MICHI_EVENT_TRANSITION_REQUEST are postable but have no mapping:
+ *   broadcast-only (observers see them, no transition);
+ * - MICHI_EVENT_STATE_CHANGED is broadcast-only FROM THE FSM: post() and
+ *   post_from_isr() enforce the contract by rejecting it with
+ *   ESP_ERR_INVALID_ARG - a posted STATE_CHANGED would be dispatched with
+ *   a non-authoritative from/data and corrupt the observers' view.
+ *
+ * @param id   Event id (see contract above).
  * @param data Event payload.
  * @return ESP_OK; ESP_ERR_INVALID_STATE before init; ESP_ERR_TIMEOUT when
  *         the queue is full (event dropped); ESP_ERR_INVALID_ARG for the
- *         internal reserved event ids.
+ *         reserved internal event ids (incl. MICHI_EVENT_STATE_CHANGED).
  */
 esp_err_t michi_state_post(michi_event_id_t id, uint32_t data);
 
 /**
  * @brief ISR-safe variant of michi_state_post() (e.g. pairing button, F8).
+ *
+ * Same id contract as post(); never blocks.
  *
  * @return Same as post(); never blocks.
  */

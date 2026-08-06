@@ -67,8 +67,9 @@ static void draw_pixel(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, int x, int y,
     fb[(size_t)y * fb_w + (size_t)x] = color;
 }
 
-static void draw_text(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, int x, int y,
-                      const char *str, uint16_t fg, uint16_t bg)
+void michi_board_display_draw_text(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                                   int x, int y, const char *str,
+                                   uint16_t fg, uint16_t bg)
 {
     for (const char *p = str; *p != '\0'; p++) {
         unsigned char c = (unsigned char)*p;
@@ -356,10 +357,10 @@ static esp_err_t flush_fb(void)
 static void boot_screen_row(const michi_board_info_t *bi, int y, const char *label,
                             const char *status, uint16_t label_color, uint16_t status_color)
 {
-    draw_text(s_fb, bi->display_width, bi->display_height, 8, y, label,
+    michi_board_display_draw_text(s_fb, bi->display_width, bi->display_height, 8, y, label,
               label_color, 0x0000);
     if (status != NULL) {
-        draw_text(s_fb, bi->display_width, bi->display_height,
+        michi_board_display_draw_text(s_fb, bi->display_width, bi->display_height,
                   8 + (int)strlen(label) * MICHI_TEXT_SPACING, y, status,
                   status_color, 0x0000);
     }
@@ -387,7 +388,7 @@ esp_err_t michi_board_display_boot_screen(const michi_board_info_t *info,
     if (title_x < 0) {
         title_x = 0;
     }
-    draw_text(s_fb, info->display_width, info->display_height, title_x, 20, title,
+    michi_board_display_draw_text(s_fb, info->display_width, info->display_height, title_x, 20, title,
               white, 0x0000);
 
     boot_screen_row(info, 48, "Board: Waveshare ESP32-S3-LCD-2", NULL, white, 0);
@@ -431,5 +432,20 @@ esp_err_t michi_board_display_clear(void)
     }
     const michi_board_info_t *bi = &s_board_info;
     memset(s_fb, 0, (size_t)bi->display_width * bi->display_height * sizeof(uint16_t));
+    return flush_fb();
+}
+
+esp_err_t michi_board_display_render(michi_board_render_fn fn)
+{
+    if (s_panel == NULL || s_fb == NULL) {
+        ESP_LOGW(TAG, "display unavailable, render skipped");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (fn == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const michi_board_info_t *bi = &s_board_info;
+    memset(s_fb, 0, (size_t)bi->display_width * bi->display_height * sizeof(uint16_t));
+    fn(s_fb, bi->display_width, bi->display_height);
     return flush_fb();
 }

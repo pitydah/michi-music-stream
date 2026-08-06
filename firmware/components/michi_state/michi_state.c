@@ -106,6 +106,33 @@ static const michi_event_map_t s_event_map[] = {
     { MICHI_EVENT_RECOVER,        0, true, MICHI_STATE_RECOVERABLE_ERROR, MICHI_STATE_IDLE },
 };
 
+/* Structural coverage: every s_event_map entry must have an
+ * EVENT_MAP_TRANSITION_CHECK below. sizeof on a static array IS an integer
+ * constant expression, so a new entry without its check fails this assert
+ * at compile time. */
+#define MICHI_EVENT_MAP_CHECK_COUNT 3
+_Static_assert(sizeof(s_event_map) / sizeof(s_event_map[0]) ==
+                   MICHI_EVENT_MAP_CHECK_COUNT,
+               "every event map entry needs a transition check");
+
+/* Phase 5 follow-up: every event-map (from, target) pair must be a valid
+ * transition - the mapping must never bypass s_transitions.
+ *
+ * GCC 13 (this toolchain) rejects reads of static const arrays inside
+ * _Static_assert (they are not integer constant expressions), so the check
+ * is expressed as a designated initializer index: a pair missing from the
+ * transition table indexes [1] into a char[1] and fails to compile with
+ * "array index in initializer exceeds array bounds". One array per entry;
+ * a new s_event_map entry must add one. */
+#define EVENT_MAP_TRANSITION_CHECK(entry, name) \
+    static char name[1] __attribute__((unused)) = { \
+        [(s_transitions[s_event_map[entry].from] & ST_BIT(s_event_map[entry].target)) ? 0 : 1] = 0 \
+    }
+EVENT_MAP_TRANSITION_CHECK(0, s_evmap_check_0);
+EVENT_MAP_TRANSITION_CHECK(1, s_evmap_check_1);
+EVENT_MAP_TRANSITION_CHECK(2, s_evmap_check_2);
+#undef EVENT_MAP_TRANSITION_CHECK
+
 typedef struct {
     michi_event_id_t filter; /* 0 = all events */
     michi_state_observer_fn fn;
@@ -349,9 +376,10 @@ esp_err_t michi_state_init(void)
 
 esp_err_t michi_state_post(michi_event_id_t id, uint32_t data)
 {
-    /* Internal reserved range: the transition-request event and any id past
-     * the enum are not postable. */
-    if (id >= MICHI_EVENT_TRANSITION_REQUEST) {
+    /* Internal reserved range: the transition-request event, the FSM-only
+     * STATE_CHANGED broadcast and any id past the enum are not postable. */
+    if (id == MICHI_EVENT_STATE_CHANGED ||
+        id >= MICHI_EVENT_TRANSITION_REQUEST) {
         return ESP_ERR_INVALID_ARG;
     }
     if (!s_initialized) {
@@ -372,7 +400,8 @@ esp_err_t michi_state_post(michi_event_id_t id, uint32_t data)
 
 esp_err_t michi_state_post_from_isr(michi_event_id_t id, uint32_t data)
 {
-    if (id >= MICHI_EVENT_TRANSITION_REQUEST) {
+    if (id == MICHI_EVENT_STATE_CHANGED ||
+        id >= MICHI_EVENT_TRANSITION_REQUEST) {
         return ESP_ERR_INVALID_ARG;
     }
     if (!s_initialized) {

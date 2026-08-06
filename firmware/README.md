@@ -56,6 +56,12 @@ firmware/
     │   ├── include/
     │   │   └── michi_state.h      # States, events, observer contract
     │   └── michi_state.c          # FSM task, transition table, broadcast
+    ├── michi_display/             # Integrated display screens (phase 6)
+    │   ├── CMakeLists.txt
+    │   ├── Kconfig                # Render task stack, request queue len
+    │   ├── include/
+    │   │   └── michi_display.h    # init, now-playing update, redraw
+    │   └── michi_display.c        # Observer -> queue -> render task
     ├── michi_audio_output/        # I2S pipeline, SPSC ring (phase 4)
     │   ├── CMakeLists.txt
     │   ├── Kconfig                # MICHI_AUDIO_RING_BUFFER_KB (1 MB PSRAM)
@@ -464,17 +470,24 @@ mappings arrive with their phases.
 
 ### Boot flow
 
-`state_init → nvs → board → self_test → dac → profile → BOOT_COMPLETE
-(→ SELF_TEST) → SELF_TEST_DONE (→ IDLE)`. `http_init` does not affect the
-FSM and stays after the boot screen. `state_init` runs FIRST so the FSM is
+`state_init → display_init → nvs → board → self_test → dac → profile →
+http → boot screen → BOOT_COMPLETE (→ SELF_TEST) → SELF_TEST_DONE (→ IDLE)`.
+The boot screen is rendered **before** the boot events so it covers
+BOOTING/SELF_TEST and is never painted over by the dynamic display screens
+(phase 6), which take over as soon as the FSM reaches a stable state.
+`state_init` runs FIRST so the FSM is
 live before NVS: on unusable NVS, `app_main` calls
 `michi_state_request(MICHI_STATE_FATAL_ERROR)` — valid, BOOTING → FATAL_ERROR
-is in the table — and halts, feeding the task watchdog to avoid a false WDT
-reset. The SELF_TEST window is modeled retrospectively: the test already ran
+is in the table — and halts; the halt loop keeps an explicit
+`esp_task_wdt_reset()` call, which is a no-op (app_main is not subscribed to
+the task watchdog) but documents the intent and survives if the subscription
+changes. The SELF_TEST window is modeled retrospectively: the test already ran
 before the events are posted, so observers must not expect to observe it. If
 `michi_state_init()` fails, boot continues in degraded mode: `state bus
 unavailable - all events will be dropped` is logged and no event reaches an
-observer (`subsystem=state state=failed`).
+observer (`subsystem=state state=failed`). If `michi_display_init()` fails,
+boot also continues degraded: no dynamic screens, the BSP boot screen still
+shows (`subsystem=display state=failed phase=6`).
 
 ### Observer contract
 
@@ -492,6 +505,92 @@ observer (`subsystem=state state=failed`).
   `ESP_ERR_TIMEOUT` and the event is dropped — drops are counted and logged
   by the FSM task periodically; producers log their own drop on task
   context.
+
+## Display: `components/michi_display`
+
+Phase 6 adds the integrated 2-inch screen: state-driven screens rendered on
+top of the BSP framebuffer by a dedicated task. No LVGL, no cover art, no
+images — only the BSP's embedded 5x7 font.
+
+### Architecture: observer → queue → render task
+
+```mermaid
+flowchart LR
+    FSM["michi_state FSM task"] -->|STATE_CHANGED / ERROR| OBS["display observer<br/>(queue only)"]
+    SESSION["session layer (phase 12)"] -->|update_now_playing| RQ["render queue"]
+    VOL["volume change / misc"] -->|request_redraw| RQ
+    OBS --> RQ
+    RQ --> RT["render task"]
+    RT -->|michi_board_display_render| PANEL["panel"]
+```
+
+The display observer runs on the FSM task, so it ONLY enqueues render
+requests (`xQueueSend` timeout 0 — a full queue drops the request with a
+warn). It NEVER renders: a full-frame flush takes ~65–80 ms, which would
+violate the observer MUST-NOT-block contract and stall the event bus. The
+render task is the **only** framebuffer/flush consumer (`michi_board` is not
+thread-safe for the display); it coalesces pending requests and renders once
+per drain with the latest state, so a state/redraw storm never stacks
+flushes. A request dropped on a full queue sets a pending flag; the task
+re-renders once more after the drain when the flag is set, so a dropped
+request does not leave the screen stale (a drop racing that re-render is
+covered by the next state change).
+
+### Screens by state
+
+Every screen carries the header (`product_name` from the product profile)
+and the footer (`v<version>`); body text is centered with the BSP 5x7
+renderer (`michi_board_display_draw_text`).
+
+| State | Screen |
+|-------|--------|
+| BOOTING, SELF_TEST | none — covered by the BSP boot screen (division below) |
+| IDLE | `IDLE` / `Ready to pair` |
+| UNPROVISIONED | `Not configured` / `Press pairing button` |
+| PROVISIONING, WIFI_CONNECTING | `Connecting...` |
+| PAIRING | `Pairing...` / `Waiting for confirmation` |
+| SESSION_PENDING, BUFFERING | `Buffering...` |
+| PLAYING | playing info (below) |
+| PAUSED | `Paused` + playing info dimmed |
+| UPDATING | `Updating firmware...` |
+| RECOVERABLE_ERROR | `Recovering...` / `Auto retry in progress` |
+| FATAL_ERROR | `FATAL ERROR` + last `MICHI_EVENT_ERROR` name (or `See serial log`) |
+
+### Playing info
+
+`Source: <source|-->`, `Title: <title|-->` (wraps to a second line when
+longer than 29 visible chars, max 2 lines), `Artist: <artist|-->`, then the
+format line built from the **real** product-profile sample rate and the
+initial applied bit depth
+(`validated_sample_rate`/1000 → `48 kHz`, `MICHI_DISPLAY_APPLIED_BIT_DEPTH`
+→ `16-bit`), the Wi-Fi placeholder and the volume:
+
+- `48 kHz / 16-bit` — sample rate from `michi_product_profile_get()` (never
+  hardcoded); bit depth from the initial applied format constant (48000/16/2
+  validated at boot; the session layer drives the real value in phase 11/12);
+- `Wi-Fi: --` — explicit placeholder: `michi_display` only renders the
+  state; the network phase (9) fills the value;
+- `Vol: <michi_volume_get()>` — always the real applied volume.
+
+Metadata is fed by `michi_display_update_now_playing()` (session layer,
+phase 12), copied into internal buffers (max 32/64/48 chars). **No cover
+art**: the text-only framebuffer renderer is a deliberate scope cut; an
+image pipeline is not planned.
+
+### Division with the BSP boot screen
+
+`app_main` renders the boot screen (board self-test results) **before**
+posting the boot events, and the render task skips BOOTING/SELF_TEST: the
+boot screen covers that window and is never painted over. The dynamic
+screens take over as soon as the FSM reaches a stable state (IDLE at boot
+with the current phase-5 routing; UNPROVISIONED once phase 9 routes it).
+
+Init: `michi_display_init()` right after `michi_state_init()`; a failure
+continues degraded (no dynamic screens, boot screen still shows,
+`subsystem=display state=failed phase=6`). Success logs
+`subsystem=display state=ok phase=6`. Kconfig: render task stack
+(`MICHI_DISPLAY_TASK_STACK_BYTES`, 4096) and render queue length
+(`MICHI_DISPLAY_QUEUE_LEN`, 4).
 
 ## Hardware validation pending
 

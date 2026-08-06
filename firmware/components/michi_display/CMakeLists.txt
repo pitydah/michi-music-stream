@@ -1,0 +1,5 @@
+idf_component_register(
+    SRCS "michi_display.c"
+    INCLUDE_DIRS "include"
+    REQUIRES michi_board michi_state michi_volume michi_product_profile freertos
+)

@@ -14,6 +14,7 @@
 
 #include "michi_board.h"
 #include "michi_dac.h"
+#include "michi_display.h"
 #include "michi_http.h"
 #include "michi_product_profile.h"
 #include "michi_state.h"
@@ -69,7 +70,6 @@ static void log_selftest_rows(const michi_board_info_t *info,
 static void log_pending_subsystems(void)
 {
     ESP_LOGI(TAG, "subsystem=bsp state=ok phase=1");
-    ESP_LOGW(TAG, "subsystem=display state=pending phase=6");
     ESP_LOGW(TAG, "subsystem=led state=pending phase=7");
     ESP_LOGW(TAG, "subsystem=button state=pending phase=8");
     ESP_LOGW(TAG, "subsystem=network state=pending phase=9");
@@ -140,16 +140,33 @@ void app_main(void)
     }
     const bool state_ok = (err == ESP_OK);
 
+    /* Display subsystem (phase 6): dynamic state screens rendered by the
+     * display task. BOOTING/SELF_TEST stay covered by the BSP boot screen
+     * (rendered below, before the boot events); on failure boot continues
+     * degraded - no dynamic screens, the boot screen still shows. */
+    err = michi_display_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "michi_display_init failed: %s (no dynamic screens)",
+                 esp_err_to_name(err));
+        ESP_LOGI(TAG, "subsystem=display state=failed phase=6");
+    }
+
     err = init_nvs();
     if (err != ESP_OK) {
         ESP_LOGE(TAG,
                  "FATAL: NVS is unusable (%s), halting - subsystems depending on NVS cannot start",
                  esp_err_to_name(err));
         /* The FSM was initialized before NVS, so this request is real and
-         * lands on the terminal state; the halt loop feeds the task watchdog
-         * to avoid a false WDT reset. */
+         * lands on the terminal state. */
         michi_state_request(MICHI_STATE_FATAL_ERROR);
         for (;;) {
+            /* This loop is NOT subscribed to the task watchdog:
+             * esp_task_wdt_reset() only feeds tasks registered via
+             * esp_task_wdt_add() (or the startup defaults), and app_main is
+             * neither - the call is a no-op. It is kept so the halt intent
+             * is explicit and the pattern survives if the watchdog
+             * subscription changes; a real WDT reset would not help anyway:
+             * the device is intentionally halted after a terminal error. */
             esp_task_wdt_reset();
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
@@ -201,14 +218,38 @@ void app_main(void)
              profile->lighting_status_rgb ? "true" : "false",
              profile->lighting_cat_contour ? "true" : "false");
 
+    /* HTTP API (phase 4): read-only migrated endpoints (/info, /firmware).
+     * A failure is logged and boot continues - no halt. */
+    err = michi_http_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "michi_http_init failed: %s (API /info and /firmware unavailable)",
+                 esp_err_to_name(err));
+        ESP_LOGI(TAG, "subsystem=http state=failed phase=4");
+    } else {
+        ESP_LOGI(TAG, "subsystem=http state=ok phase=4");
+    }
+
+    /* Boot screen BEFORE the boot events: it covers BOOTING/SELF_TEST and
+     * must never be painted over by the dynamic display screens (phase 6),
+     * which take over as soon as the FSM reaches a stable state. */
+    if (st.display_ok) {
+        err = michi_board_display_boot_screen(info, &st, profile->product_name);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "boot screen render failed: %s (continuing degraded)",
+                     esp_err_to_name(err));
+        }
+    } else {
+        ESP_LOGW(TAG, "display unavailable, boot screen skipped (degraded mode)");
+    }
+
     /* Boot events, posted after all boot-critical inits (NVS, board, self
-     * test, DAC, profile): BOOT_COMPLETE drives BOOTING->SELF_TEST and
-     * SELF_TEST_DONE drives SELF_TEST->IDLE with ANY data. The self-test
-     * already ran before these events are posted - the SELF_TEST state is
-     * modeled retrospectively, so observers must not expect to observe the
-     * test window; the overall result is surfaced by the log below.
-     * RECOVERABLE_ERROR has no boot path: it is reserved for runtime
-     * producers arriving from phase 9. */
+     * test, DAC, profile, HTTP, boot screen): BOOT_COMPLETE drives
+     * BOOTING->SELF_TEST and SELF_TEST_DONE drives SELF_TEST->IDLE with ANY
+     * data. The self-test already ran before these events are posted - the
+     * SELF_TEST state is modeled retrospectively, so observers must not
+     * expect to observe the test window; the overall result is surfaced by
+     * the log below. RECOVERABLE_ERROR has no boot path: it is reserved for
+     * runtime producers arriving from phase 9. */
     if (state_ok) {
         err = michi_state_post(MICHI_EVENT_BOOT_COMPLETE, 0);
         if (err != ESP_OK) {
@@ -221,27 +262,6 @@ void app_main(void)
             ESP_LOGW(TAG, "MICHI_EVENT_SELF_TEST_DONE post failed: %s",
                      esp_err_to_name(err));
         }
-    }
-
-    if (st.display_ok) {
-        err = michi_board_display_boot_screen(info, &st, profile->product_name);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "boot screen render failed: %s (continuing degraded)",
-                     esp_err_to_name(err));
-        }
-    } else {
-        ESP_LOGW(TAG, "display unavailable, boot screen skipped (degraded mode)");
-    }
-
-    /* HTTP API (phase 4): read-only migrated endpoints (/info, /firmware).
-     * A failure is logged and boot continues - no halt. */
-    err = michi_http_init();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "michi_http_init failed: %s (API /info and /firmware unavailable)",
-                 esp_err_to_name(err));
-        ESP_LOGI(TAG, "subsystem=http state=failed phase=4");
-    } else {
-        ESP_LOGI(TAG, "subsystem=http state=ok phase=4");
     }
 
     log_pending_subsystems();

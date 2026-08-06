@@ -118,6 +118,51 @@ esp_err_t michi_board_display_boot_screen(const michi_board_info_t *info,
  */
 esp_err_t michi_board_display_clear(void);
 
+/**
+ * @brief Draw callback for michi_board_display_render(): draws a full frame
+ *        into the framebuffer (already cleared to black by the BSP).
+ *
+ * @param fb   Framebuffer (PSRAM, fb_w x fb_h RGB565).
+ * @param fb_w Framebuffer width in pixels.
+ * @param fb_h Framebuffer height in pixels.
+ */
+typedef void (*michi_board_render_fn)(uint16_t *fb, uint16_t fb_w, uint16_t fb_h);
+
+/**
+ * @brief Render a full frame: clear the framebuffer to black, invoke the
+ *        draw callback, then flush the framebuffer to the panel.
+ *
+ * @note The panel and framebuffer are NOT thread-safe: exactly one consumer
+ *       must call this API (the michi_display render task, phase 6). The
+ *       boot screen keeps its dedicated API; the division is behavioral:
+ *       (a) the render task skips BOOTING/SELF_TEST (render_current_state
+ *       in michi_display.c) and (b) app_main posts the boot events only
+ *       AFTER rendering the boot screen - so the boot screen is never
+ *       painted over.
+ *
+ * @param fn Draw callback (NULL -> ESP_ERR_INVALID_ARG).
+ * @return ESP_OK; ESP_ERR_INVALID_STATE if the display is not available;
+ *         ESP_ERR_INVALID_ARG on NULL callback.
+ */
+esp_err_t michi_board_display_render(michi_board_render_fn fn);
+
+/**
+ * @brief Draw a 5x7 text string (embedded font) into a framebuffer, with
+ *        out-of-bounds pixels clipped.
+ *
+ * @param fb   Framebuffer to draw into.
+ * @param fb_w Framebuffer width in pixels.
+ * @param fb_h Framebuffer height in pixels.
+ * @param x    Left column of the first glyph.
+ * @param y    Top row of the first glyph.
+ * @param str  String to draw.
+ * @param fg   Glyph color.
+ * @param bg   Background color.
+ */
+void michi_board_display_draw_text(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                                   int x, int y, const char *str,
+                                   uint16_t fg, uint16_t bg);
+
 #ifdef __cplusplus
 }
 #endif
