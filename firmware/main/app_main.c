@@ -1,18 +1,16 @@
+#include <inttypes.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <inttypes.h>
 
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include "esp_chip_info.h"
 #include "esp_err.h"
-#include "esp_flash.h"
 #include "esp_log.h"
-#include "esp_psram.h"
 #include "nvs_flash.h"
 
+#include "michi_board.h"
 #include "michi_version.h"
 
 static const char *TAG = "michi_app";
@@ -41,24 +39,37 @@ static esp_err_t init_nvs(void)
     return ESP_OK;
 }
 
-static const char *chip_model_name(esp_chip_model_t model)
+static void log_selftest_rows(const michi_board_info_t *info,
+                              const michi_board_selftest_t *st)
 {
-    switch (model) {
-    case CHIP_ESP32:
-        return "ESP32";
-    case CHIP_ESP32S2:
-        return "ESP32-S2";
-    case CHIP_ESP32S3:
-        return "ESP32-S3";
-    case CHIP_ESP32C3:
-        return "ESP32-C3";
-    case CHIP_ESP32C6:
-        return "ESP32-C6";
-    case CHIP_ESP32H2:
-        return "ESP32-H2";
-    default:
-        return "unknown";
-    }
+    ESP_LOGI(TAG, "board=%s chip=%s",
+             info->model, st->chip_ok ? "ok" : "FAIL");
+    ESP_LOGI(TAG, "flash=%" PRIu32 " bytes (expected %" PRIu32 ") status=%s",
+             st->flash_bytes, info->flash_bytes_expected,
+             st->flash_ok ? "ok" : "FAIL");
+    ESP_LOGI(TAG, "psram=%" PRIu32 " bytes (expected %" PRIu32 ") status=%s",
+             st->psram_bytes, info->psram_bytes_expected,
+             st->psram_ok ? "ok" : "FAIL");
+    ESP_LOGI(TAG, "display=%s", st->display_ok ? "ok" : "FAIL");
+    ESP_LOGI(TAG, "backlight=%s", st->backlight_ok ? "ok" : "FAIL");
+    ESP_LOGI(TAG, "wifi_supported=%s", st->wifi_supported ? "yes" : "no");
+    ESP_LOGI(TAG, "ble_supported=%s", st->ble_supported ? "yes" : "no");
+    ESP_LOGI(TAG, "dac_present=%s (detection lands in phase 2)",
+             st->dac_present ? "true" : "false");
+    ESP_LOGI(TAG, "selftest=%s", st->overall ? "PASS" : "DEGRADED");
+}
+
+static void log_pending_subsystems(void)
+{
+    ESP_LOGI(TAG, "subsystem=bsp state=ok phase=1");
+    ESP_LOGW(TAG, "subsystem=dac state=pending phase=2");
+    ESP_LOGW(TAG, "subsystem=product_profile state=pending phase=3");
+    ESP_LOGW(TAG, "subsystem=display state=pending phase=6");
+    ESP_LOGW(TAG, "subsystem=led state=pending phase=7");
+    ESP_LOGW(TAG, "subsystem=button state=pending phase=8");
+    ESP_LOGW(TAG, "subsystem=network state=pending phase=9");
+    ESP_LOGW(TAG, "subsystem=audio state=pending phase=11");
+    ESP_LOGW(TAG, "subsystem=api state=pending phase=12");
 }
 
 void app_main(void)
@@ -76,38 +87,28 @@ void app_main(void)
         }
     }
 
-    esp_chip_info_t chip_info;
-    esp_chip_info(&chip_info);
-    ESP_LOGI(TAG, "chip model=%s cores=%d revision=%d",
-             chip_model_name(chip_info.model), chip_info.cores, chip_info.revision);
-    ESP_LOGI(TAG, "chip features wifi=%s ble=%s embedded_flash=%s embedded_psram=%s",
-             (chip_info.features & CHIP_FEATURE_WIFI_BGN) ? "yes" : "no",
-             (chip_info.features & CHIP_FEATURE_BLE) ? "yes" : "no",
-             (chip_info.features & CHIP_FEATURE_EMB_FLASH) ? "yes" : "no",
-             (chip_info.features & CHIP_FEATURE_EMB_PSRAM) ? "yes" : "no");
-
-    uint32_t flash_size = 0;
-    err = esp_flash_get_size(NULL, &flash_size);
+    err = michi_board_init();
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_flash_get_size failed: %s (flash size reported as 0)",
+        ESP_LOGE(TAG,
+                 "michi_board_init failed (%s), continuing in degraded mode",
                  esp_err_to_name(err));
-    } else {
-        ESP_LOGI(TAG, "flash size=%" PRIu32 " bytes (%" PRIu32 " MiB)",
-                 flash_size, flash_size / (1024 * 1024));
     }
 
-    size_t psram_size = esp_psram_get_size();
-    ESP_LOGI(TAG, "psram size=%zu bytes (%zu MiB)", psram_size, psram_size / (1024 * 1024));
+    const michi_board_info_t *info = michi_board_get_info();
+    michi_board_selftest_t st = michi_board_self_test();
+    log_selftest_rows(info, &st);
 
-    ESP_LOGW(TAG, "subsystem=bsp state=pending phase=1");
-    ESP_LOGW(TAG, "subsystem=dac state=pending phase=2");
-    ESP_LOGW(TAG, "subsystem=product_profile state=pending phase=3");
-    ESP_LOGW(TAG, "subsystem=display state=pending phase=6");
-    ESP_LOGW(TAG, "subsystem=led state=pending phase=7");
-    ESP_LOGW(TAG, "subsystem=button state=pending phase=8");
-    ESP_LOGW(TAG, "subsystem=network state=pending phase=9");
-    ESP_LOGW(TAG, "subsystem=api state=pending phase=12");
-    ESP_LOGW(TAG, "subsystem=audio state=pending phase=11");
+    if (st.display_ok) {
+        err = michi_board_display_boot_screen(&st);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "boot screen render failed: %s (continuing degraded)",
+                     esp_err_to_name(err));
+        }
+    } else {
+        ESP_LOGW(TAG, "display unavailable, boot screen skipped (degraded mode)");
+    }
+
+    log_pending_subsystems();
 
     ESP_LOGI(TAG, "boot=ok mode=diagnostic audio_available=false");
 
