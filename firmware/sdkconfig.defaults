@@ -13,3 +13,8 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # the ESP32-S3 controller).
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
+# Phase 11: RTP/UDP audio engine. The UDP receive mailbox must hold more
+# than the jitter buffer capacity (50 packets @ 10 ms at the 500 ms default)
+# so network bursts land in the jitter buffer instead of lwip's default
+# 6-packet mailbox (drops there are invisible to the engine metrics).
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=64

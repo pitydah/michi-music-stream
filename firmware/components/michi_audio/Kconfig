@@ -1,0 +1,69 @@
+menu "Michi Music Stream Audio Engine"
+
+    comment "RTP/UDP session engine (phase 11): PCM S16LE 48 kHz stereo, packet jitter buffer, metrics. Future metas (S24LE, 44.1-96 kHz, RTCP, drift, source auth, multiroom) are declared in michi_audio.h, not implemented."
+
+    config MICHI_AUDIO_RTP_PT_S16LE
+        int "RTP payload type for PCM S16LE"
+        default 10
+        range 0 127
+        help
+          RTP payload type (PT) the session accepts as PCM S16LE.
+          The default 10 reuses the RFC 3551 L16 slot, but with the
+          project's LITTLE-endian convention: a compliant RFC 3551
+          L16 sender would be byte-swapped, so PT 10 does NOT mean
+          interoperable L16. A dynamic PT (96-127) avoids the
+          association. Packets with any other PT are rejected with
+          a log (S24LE uses its own PT below).
+
+    config MICHI_AUDIO_RTP_PT_S24LE
+        int "RTP payload type for PCM S24LE"
+        default 96
+        range 96 127
+        help
+          Declared mapping for the S24LE meta: PT 96 is a dynamic type
+          (RFC 3551 dynamic range 96-127). Phase 11 does NOT support
+          S24LE: such packets are rejected with a log. Range 96-127 so
+          the constant can never collide with a static RFC 3551 type.
+
+    config MICHI_AUDIO_JITTER_MAX_MS
+        int "Jitter buffer capacity (ms)"
+        default 500
+        range 50 2000
+        help
+          Packet-level jitter buffer capacity, expressed in 10 ms
+          packets (500 ms = 50 packets). The per-session payload pool is
+          capacity x MICHI_AUDIO_RX_BUF_BYTES in PSRAM, so 500 ms/8192 B
+          costs ~400 KB. Larger values absorb longer network stalls at
+          the cost of PSRAM and startup latency.
+
+    config MICHI_AUDIO_PREFILL_MS
+        int "Jitter buffer prefill before playback (ms)"
+        default 80
+        range 10 1000
+        help
+          Audio buffered into the jitter buffer before the session
+          starts writing to the pipeline (clamped at runtime to
+          MICHI_AUDIO_JITTER_MAX_MS). After every underrun a fixed
+          re-prefill of 250 ms (MICHI_AUDIO_REPREFILL_MS) is used,
+          independent of this value.
+
+    config MICHI_AUDIO_RX_BUF_BYTES
+        int "Session UDP receive buffer size (bytes)"
+        default 8192
+        range 512 65535
+        help
+          Size of the datagram buffer and of each jitter-buffer payload
+          slot. 8192 fits a 10 ms packet at 96 kHz/24-bit stereo
+          (5760 B), the largest packet the declared metas produce.
+          Datagrams larger than this are truncated by recvfrom.
+
+    config MICHI_AUDIO_TASK_STACK_BYTES
+        int "Session task stack size (bytes)"
+        default 6144
+        range 4096 32768
+        help
+          Stack of the per-session task (socket I/O, RTP parse, jitter
+          buffer insert, blocking pipeline writes). The datagram and
+          silence buffers live on the heap, not the stack.
+
+endmenu

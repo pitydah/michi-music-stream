@@ -12,6 +12,7 @@
 #include "esp_task_wdt.h"
 #include "nvs_flash.h"
 
+#include "michi_audio.h"
 #include "michi_board.h"
 #include "michi_button.h"
 #include "michi_dac.h"
@@ -74,7 +75,6 @@ static void log_selftest_rows(const michi_board_info_t *info,
 static void log_pending_subsystems(void)
 {
     ESP_LOGI(TAG, "subsystem=bsp state=ok phase=1");
-    ESP_LOGW(TAG, "subsystem=audio state=pending phase=11");
     ESP_LOGW(TAG, "subsystem=api state=pending phase=12");
 }
 
@@ -232,6 +232,37 @@ void app_main(void)
     michi_board_selftest_t st = michi_board_self_test();
 
     init_dac();
+
+    /* Audio engine (phase 11): RTP/UDP session receiver + jitter buffer.
+     * michi_audio_init() validates the phase-11 constants; the session
+     * engine does NOT start at boot (sessions arrive with phase 12).
+     * michi_audio_boot_dac() starts the I2S clocks (silence) so the
+     * PCM5122 PLL can lock, then re-runs michi_dac_start() for the
+     * validated profile: detected-but-uninitialized becomes initialized;
+     * with no DAC the profile stays DIAGNOSTIC (honest). Runs BEFORE the
+     * self-test rows and the profile build so the boot screen and the
+     * profile log reflect the real audio state. */
+    err = michi_audio_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "michi_audio_init failed: %s", esp_err_to_name(err));
+        ESP_LOGI(TAG, "subsystem=audio state=failed phase=11");
+    } else {
+        ESP_LOGI(TAG, "subsystem=audio state=ok phase=11");
+        const michi_dac_caps_t *audio_caps = michi_dac_get_caps();
+        if (audio_caps->detected && !audio_caps->initialized) {
+            err = michi_audio_boot_dac();
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "michi_audio_boot_dac failed: %s "
+                              "(profile stays diagnostic)",
+                         esp_err_to_name(err));
+            } else {
+                ESP_LOGI(TAG, "subsystem=dac state=initialized phase=11");
+            }
+        } else if (!audio_caps->detected) {
+            ESP_LOGW(TAG, "no DAC detected: I2S/DAC boot skipped "
+                          "(profile stays diagnostic)");
+        }
+    }
 
     const michi_dac_caps_t *caps = michi_dac_get_caps();
     snprintf(st.dac_model, sizeof(st.dac_model), "%s",

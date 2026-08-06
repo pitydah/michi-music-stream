@@ -94,11 +94,17 @@ firmware/
     │   ├── include/
     │   │   └── michi_audio_output.h
     │   └── michi_audio_output.c
-    └── michi_volume/              # Volume 0-100 clamped (phase 4)
+    ├── michi_volume/              # Volume 0-100 clamped (phase 4)
         ├── CMakeLists.txt
         ├── include/
         │   └── michi_volume.h
         └── michi_volume.c
+    └── michi_audio/               # RTP/UDP audio engine (phase 11)
+        ├── CMakeLists.txt
+        ├── Kconfig                # RTP PTs, jitter capacity, prefill, rx buffer
+        ├── include/
+        │   └── michi_audio.h      # Session API, metrics, output ops abstraction
+        └── michi_audio.c          # Session task: RTP -> jitter buffer -> pipeline
 ```
 
 At boot, every subsystem that does not exist yet is logged honestly as
@@ -1108,6 +1114,129 @@ phase 12. They will operate STRICTLY inside a button-opened window for
 challenge/confirm; token validation and permission checks apply at every
 protected endpoint via the constant-time registry scan. The elevated
 permissions stay un-granted; the grant-management flow is out of scope.
+
+## Audio engine: `components/michi_audio`
+
+Phase 11 delivers the RTP/UDP receiver: PCM S16LE 48 kHz stereo over RTP
+(meta 1). The session engine does NOT start at boot — sessions arrive with
+the phase-12 API layer (`michi_audio_session_start()`).
+
+### Architecture
+
+```mermaid
+flowchart LR
+    S[Controller / sender] -->|UDP datagrams| U[lwip socket\nUDP_RECVMBOX_SIZE=64]
+    U --> P[Session task: RTP parse\nPT / SSRC filter]
+    P --> J[Jitter buffer\npacket-level, PSRAM pool]
+    J -->|playhead drain| R[SPSC ring 1 MiB\nmichi_audio_output]
+    R -->|I2S task + volume| D[DAC]
+```
+
+No unsynchronized 4 MB global buffer (legacy): resilience comes from a
+bounded per-session jitter buffer (`MICHI_AUDIO_JITTER_MAX_MS`, 500 ms = 50
+packets of 10 ms), the SPSC ring of `michi_audio_output` and lwip's UDP
+receive mailbox (raised to 64 in `sdkconfig.defaults` so bursts land in the
+jitter buffer instead of the socket — drops at the socket are invisible to
+the engine metrics).
+
+### RTP receiver
+
+Datagram → RTP header (v=2; CC/CSRC skipped; X extension skipped via its
+16-bit length; P padding trimmed). PT 10 → PCM S16LE (the RFC 3551 L16 slot,
+but with the project's little-endian convention — **not** interoperable
+RFC 3551 L16, a compliant sender would be byte-swapped; a dynamic PT avoids
+the association); PT 96 (S24LE, dynamic) is **declared and rejected with a
+log**; any other PT is rejected. SSRC: first-seen registration, or
+`ssrc_filter` (0 = any). An SSRC change mid-stream drops the packet — this
+is **filtering only**, source *authentication* is a declared future meta.
+
+> **Exposure note (phase 11)**: there is NO source authentication in this
+> meta — any host on the LAN can inject audio into the session port, force
+> overruns (drop-oldest) or corrupt the stream with malformed datagrams
+> (post-parse payload rejects are dropped, not fatal, but a hostile sender
+> can still starve the stream). The phase-12 API layer must add a
+> **source-IP allowlist and strict validation** before the engine is
+> reachable from the network.
+
+### Jitter buffer policies (16-bit seq, wrap-aware int16 diff)
+
+| Situation | Policy | Metric |
+|---|---|---|
+| Seq already queued / behind playhead within the window | drop | `duplicate` |
+| Out-of-order but still ahead of the playhead | insert sorted | `reordered` |
+| Behind the playhead by more than the window | drop | `late` |
+| Received seq gap > 1 | silence at playback | `lost += gap-1` |
+| Buffer full at insert | drop-oldest | `overrun` |
+| Ahead of the playhead by more than the window (sender restart without SSRC change) | flush + resync | logged |
+
+### Playback
+
+Prefill (`MICHI_AUDIO_PREFILL_MS`, 80 ms) before the first write, with a
+deadline: on expiry the session starts with whatever arrived (logged).
+Real-time pacing comes from the ring: a blocking write returns when the I2S
+consumer drained it. Gaps and underruns write **explicit zero samples** —
+continuous BCLK/LRCK keeps the PCM5122 PLL locked. Underrun = one packet of
+silence + a brief re-prefill that resyncs the playhead to the next
+available packet.
+
+### Timestamps and jitter (RTCP limitation)
+
+RTP timestamps size the gap silence (delta vs the last played packet,
+sanity-bounded; packet-count fallback) and feed a local EWMA jitter
+estimate (expected = first arrival + ts delta / rate, RFC 3550-style 15/16
+smoothing). Without RTCP the local clock is not mapped to the sender clock:
+**drift is NOT corrected** in this phase — a faster/slower sender eventually
+overruns (drop-oldest) or underruns (silence). RTCP and drift correction
+are declared future metas.
+
+### Metrics
+
+Counters updated by the session task under a short portMUX critical
+section, copied by `michi_audio_get_metrics()` (phase-14 diagnostics):
+`received`, `lost`, `late`, `duplicate`, `reordered`, `underruns` (one per
+contiguous stall; a slow-but-active sender may count one per recovered
+gap), `overruns`, `drops_malformed`, `drops_pt_s24le`, `drops_pt_other`,
+`drops_ssrc_filtered`, `drops_payload_geometry` (datagram-level rejects,
+counted per class), `jitter_us`, `buffer_ms`, `packets_in_buffer`,
+`last_seq`, `last_timestamp`. Prefill-timeout and mid-stream SSRC-change
+are logged but have NO counter slot.
+
+### Cooperative shutdown
+
+`michi_audio_session_stop()`: run flag + join on a done flag with timeout.
+The session task wakes within its 100 ms socket timeout (or after the
+completed blocking ring write), closes the socket, frees the buffers and
+self-deletes — no external `vTaskDelete`, no dangling handles. The
+`michi_audio_output` pipeline itself keeps running between sessions
+(started once at boot by `michi_audio_boot_dac()`); session_start flushes
+stale ring audio via a stop+start of the pipeline.
+
+### DAC integration
+
+`michi_audio_boot_dac()` (called from app_main after
+`michi_audio_init()`, only when the DAC is detected-but-uninitialized):
+starts the I2S clocks (silence, ring auto-clears) → re-runs
+`michi_dac_start(48000,16,2)` with BCLK/LRCK running so the PCM5122 PLL can
+lock → `michi_product_profile_refresh()` → tier logged. Honest: no DAC
+detected = clocks not started, profile stays DIAGNOSTIC; a DAC that still
+refuses to initialize is logged, the profile stays diagnostic and the
+clocks are left running for a retry. With a DAC present the boot screen and
+profile log reflect the real `audio_available` state.
+
+### Declared future metas (NOT implemented)
+
+S24LE payloads (PT 96), 44.1–96 kHz per profile (declared via the output
+ops `prepare()`), RTCP reception quality, clock drift correction, source
+authentication and multiroom sync. All are declared in `michi_audio.h`
+with the rejection/limitation behavior of this phase; none are faked.
+
+### Phase 12 note
+
+The session engine is idle at boot. Phase 12 (Michi Link Receiver API)
+starts/stops sessions with `michi_audio_session_start(port, ssrc_filter)`
+/ `michi_audio_session_stop()`, reads metrics for diagnostics and posts
+`MICHI_EVENT_SESSION_STARTED/CLOSED` (the engine itself does not post
+them).
 
 ## Hardware validation pending
 
