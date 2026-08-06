@@ -13,6 +13,7 @@
 
 #include "michi_board.h"
 #include "michi_dac.h"
+#include "michi_product_profile.h"
 #include "michi_version.h"
 
 static const char *TAG = "michi_app";
@@ -65,7 +66,6 @@ static void log_selftest_rows(const michi_board_info_t *info,
 static void log_pending_subsystems(void)
 {
     ESP_LOGI(TAG, "subsystem=bsp state=ok phase=1");
-    ESP_LOGW(TAG, "subsystem=product_profile state=pending phase=3");
     ESP_LOGW(TAG, "subsystem=display state=pending phase=6");
     ESP_LOGW(TAG, "subsystem=led state=pending phase=7");
     ESP_LOGW(TAG, "subsystem=button state=pending phase=8");
@@ -98,9 +98,6 @@ static void init_dac(void)
         return;
     }
 
-    const michi_dac_caps_t *caps = michi_dac_get_caps();
-    ESP_LOGI(TAG, "DAC detected: model=%s profile=%s tier=%d",
-             caps->model, caps->board_profile, (int)caps->tier);
     ESP_LOGI(TAG, "subsystem=dac state=detected phase=2");
 
     err = michi_dac_start(48000, 16, 2);
@@ -114,7 +111,7 @@ static void init_dac(void)
         ESP_LOGI(TAG, "subsystem=dac state=detected_init_failed phase=2");
         return;
     }
-    ESP_LOGI(TAG, "dac=ok profile_pending(phase 3)");
+    ESP_LOGI(TAG, "dac=ok");
     ESP_LOGI(TAG, "subsystem=dac state=initialized phase=2");
 }
 
@@ -156,8 +153,35 @@ void app_main(void)
 
     log_selftest_rows(info, &st);
 
+    /* Product profile: the single source of truth derived from DAC caps and
+     * board evidence. Everything that announces the product (logs, boot
+     * screen, later API/mDNS/BLE/sessions) reads from this profile - no
+     * duplicated strings. */
+    err = michi_product_profile_init();
+    if (err != ESP_OK) {
+        /* Defensive only: init cannot fail with the current evidence sources. */
+        ESP_LOGE(TAG, "michi_product_profile_init failed: %s", esp_err_to_name(err));
+        ESP_LOGI(TAG, "subsystem=product_profile state=failed phase=3");
+    } else {
+        ESP_LOGI(TAG, "subsystem=product_profile state=ok phase=3");
+    }
+    const michi_product_profile_t *profile = michi_product_profile_get();
+    char codecs_str[40] = {0};
+    char rates_str[40] = {0};
+    michi_product_profile_format_codecs(profile, codecs_str, sizeof(codecs_str));
+    michi_product_profile_format_rates(profile, rates_str, sizeof(rates_str));
+    ESP_LOGI(TAG, "profile: name=%s tier=%s audio_available=%s dac=%s "
+             "codecs=%s sample_rates=%s display=%s lighting_rgb=%s "
+             "cat_contour=%s",
+             profile->product_name, michi_product_profile_tier_name(),
+             profile->audio_available ? "true" : "false",
+             profile->dac_model, codecs_str, rates_str,
+             profile->display_present ? "true" : "false",
+             profile->lighting_status_rgb ? "true" : "false",
+             profile->lighting_cat_contour ? "true" : "false");
+
     if (st.display_ok) {
-        err = michi_board_display_boot_screen(info, &st);
+        err = michi_board_display_boot_screen(info, &st, profile->product_name);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "boot screen render failed: %s (continuing degraded)",
                      esp_err_to_name(err));
@@ -168,12 +192,9 @@ void app_main(void)
 
     log_pending_subsystems();
 
-    if (st.dac_ok) {
-        ESP_LOGI(TAG, "boot=ok mode=diagnostic audio_available=true "
-                 "(product tier lands in phase 3)");
-    } else {
-        ESP_LOGI(TAG, "boot=ok mode=diagnostic audio_available=false");
-    }
+    ESP_LOGI(TAG, "boot=ok mode=%s audio_available=%s",
+             michi_product_profile_tier_name(),
+             profile->audio_available ? "true" : "false");
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(10000));

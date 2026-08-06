@@ -40,6 +40,11 @@ firmware/
             ├── pcm512x.c          # PCM5122 I2C driver (self-detectable)
             ├── pcm5102a.c         # PCM5102A I2S-only DAC (profile-bound)
             └── mock_dac.c         # CI/test driver (MICHI_DAC_MOCK, default off)
+    └── michi_product_profile/     # Dynamic product profile (phase 3)
+        ├── CMakeLists.txt
+        ├── include/
+        │   └── michi_product_profile.h  # Profile struct + API
+        └── michi_product_profile.c      # Derivation from caps + board
 ```
 
 At boot, every subsystem that does not exist yet is logged honestly as
@@ -234,9 +239,56 @@ production.
 
 The boot screen shows `DAC: <model> [ok|FAIL]` (model/ok filled by `app_main`
 from `michi_dac_get_caps()`; the BSP only renders) or `DAC: none` when no
-model is known. The product tier (`standard`/`hifi`) is **not** announced yet
-— the dynamic product profile is phase 3 (`dac=ok profile_pending(phase 3)`
-is logged instead).
+model is known. The title is `<product_name> v<version>` — the product name
+comes from the dynamic product profile, never hardcoded in the BSP. The
+single consolidated profile line and the `boot=ok mode=<tier>
+audio_available=<true|false>` summary are logged by `app_main`; see
+[Product profile](#product-profile-componentsmichi_product_profile).
+
+## Product profile: `components/michi_product_profile`
+
+Phase 3 introduces the dynamic product profile: the **single source of
+truth** for everything the product announces — commercial name, tier, DAC,
+formats, sample rates, bit depth, connectors, volume, OTA, display, lighting
+and diagnostics. Later phases (API, mDNS/BLE, screens, sessions) must read
+THIS profile; no subsystem may duplicate product strings.
+
+### Derivation (runtime, from real evidence)
+
+`michi_product_profile_init()` derives the profile from
+`michi_dac_get_caps()` + `michi_board_get_info()` +
+`michi_board_self_test()` and caches it; `refresh()` re-derives without
+duplicated state. Nothing is asserted: every field traces back to evidence
+collected at boot.
+
+| Field | Rule |
+|-------|------|
+| `tier` | `caps.tier` as degraded by `michi_dac` (HiFi/Standard drop to `diagnostic` unless detected AND initialized) — never reimplemented here |
+| `product_name` | `Michi Music Stream HiFi` when tier is `hifi`, else `Michi Music Stream` |
+| `audio_available` | tier is `hifi`/`standard` AND `caps.initialized` (diagnostic → always false) |
+| `codecs` | always `pcm_s16le`; `pcm_s24le` added only on the HiFi tier |
+| `sample_rates` | `{48000}` (system validation baseline); `max_sample_rate` is the silicon capability, exposed separately and **not** claimed as supported yet |
+| `output_connector` | `differential_stereo` when `caps.differential_output`, else `single_ended_stereo`; the **physical** connector on the unit is pending hardware validation |
+| `volume` | `volume_hardware` from caps; `volume_min=0`, `volume_max=100` |
+| `ota_supported` | true: the partition table is OTA A/B (`ota_0`/`ota_1`); the OTA service lands in phase 13 |
+| `display_present` | `self_test.display_ok`; `display_width/height` from board info |
+| `lighting_status_rgb` | true (M5Stack U003 declared by the project owner; driver in phase 7) |
+| `lighting_cat_contour` | **always false by project restriction**: the cat-contour LED strip is NOT implemented — no GPIO, channel or driver is reserved or announced, and the false field is the only mention |
+
+### Examples
+
+| Boot evidence | tier | name | audio_available |
+|---------------|------|------|-----------------|
+| PCM5122 detected AND initialized (PLL locked, clocks ok) | `hifi` | Michi Music Stream HiFi | true |
+| PCM5102A bound by NVS profile and initialized | `standard` | Michi Music Stream | true |
+| No DAC detected, or init failed (no I2S clocks yet) | `diagnostic` | Michi Music Stream | false |
+
+At boot `app_main` logs the single consolidated key=value line
+`profile: name=... tier=... audio_available=... dac=... codecs=...
+sample_rates=... display=... lighting_rgb=... cat_contour=...` and the boot
+summary becomes `boot=ok mode=<tier> audio_available=<true|false>` (the
+phase-2 hardcoded `mode=diagnostic` is gone). The boot screen title renders
+`<product_name> v<version>` from the profile.
 
 ## Hardware validation pending
 

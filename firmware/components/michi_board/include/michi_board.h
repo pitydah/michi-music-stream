@@ -97,12 +97,19 @@ michi_board_selftest_t michi_board_self_test(void);
 /**
  * @brief Render the boot screen (text rows) and flush it to the display.
  *
- * @param info Board info used for the flash/PSRAM size rows.
- * @param st   Self-test results used for the verdict rows.
+ * The title is "<product_name> v<version>": the product name comes from the
+ * dynamic product profile (michi_product_profile_t::product_name), the
+ * version from MICHI_FW_VERSION_STR.
+ *
+ * @param info         Board info used for the flash/PSRAM size rows.
+ * @param st           Self-test results used for the verdict rows.
+ * @param product_name Product name rendered in the title; profile-owned,
+ *                     must be non-NULL and non-empty.
  * @return ESP_ERR_INVALID_STATE if the display is not available.
  */
 esp_err_t michi_board_display_boot_screen(const michi_board_info_t *info,
-                                          const michi_board_selftest_t *st);
+                                          const michi_board_selftest_t *st,
+                                          const char *product_name);
 
 /**
  * @brief Fill the display with the background color.

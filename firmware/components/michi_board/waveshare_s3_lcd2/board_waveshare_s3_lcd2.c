@@ -366,7 +366,8 @@ static void boot_screen_row(const michi_board_info_t *bi, int y, const char *lab
 }
 
 esp_err_t michi_board_display_boot_screen(const michi_board_info_t *info,
-                                          const michi_board_selftest_t *st)
+                                          const michi_board_selftest_t *st,
+                                          const char *product_name)
 {
     if (s_panel == NULL || s_fb == NULL) {
         ESP_LOGW(TAG, "display unavailable, boot screen not rendered");
@@ -378,8 +379,10 @@ esp_err_t michi_board_display_boot_screen(const michi_board_info_t *info,
 
     memset(s_fb, 0, (size_t)info->display_width * info->display_height * sizeof(uint16_t));
 
+    /* Title from the dynamic product profile (name) + the firmware version;
+     * the BSP never hardcodes the product name. */
     char title[48];
-    snprintf(title, sizeof(title), "Michi Music Stream v%s", MICHI_FW_VERSION_STR);
+    snprintf(title, sizeof(title), "%s v%s", product_name, MICHI_FW_VERSION_STR);
     int title_x = ((int)info->display_width - (int)strlen(title) * MICHI_TEXT_SPACING) / 2;
     if (title_x < 0) {
         title_x = 0;
