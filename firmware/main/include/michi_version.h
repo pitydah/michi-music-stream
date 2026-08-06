@@ -1,0 +1,6 @@
+#pragma once
+
+#define MICHI_FW_VERSION_MAJOR 0
+#define MICHI_FW_VERSION_MINOR 2
+#define MICHI_FW_VERSION_PATCH 0
+#define MICHI_FW_VERSION_STR "0.2.0"

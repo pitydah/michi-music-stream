@@ -20,3 +20,28 @@ jobs:
         run: python3 -m pytest simulator/tests/test_integration_http.py -v
       - name: Smoke test (launch + info)
         run: bash scripts/test_receiver_simulator.sh
+
+  firmware:
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:release-v5.3
+    defaults:
+      run:
+        working-directory: firmware
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build firmware (ESP32-S3)
+        run: |
+          idf.py set-target esp32s3
+          idf.py build
+      - name: Verify binary size fits app partition
+        run: |
+          test -f build/michi-music-stream.bin
+          SIZE=$(stat -c %s build/michi-music-stream.bin)
+          echo "app binary size: ${SIZE} bytes"
+          test "${SIZE}" -le 4194304
+      - name: Verify sdkconfig defaults applied
+        run: |
+          grep -q '^#define CONFIG_SPIRAM 1$' build/config/sdkconfig.h
+          grep -q '^#define CONFIG_SPIRAM_MODE_OCT 1$' build/config/sdkconfig.h
+          grep -q '^#define CONFIG_ESPTOOLPY_FLASHSIZE_16MB 1$' build/config/sdkconfig.h
