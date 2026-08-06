@@ -7,9 +7,10 @@ menu "Michi Music Stream State"
         help
           Depth of the FreeRTOS queue between producers (post/post_from_isr/
           request) and the FSM task. Events dropped while the queue is full
-          return ESP_ERR_TIMEOUT to the producer and are logged; keep the
-          value high enough for the busiest burst (e.g. a session teardown
-          storm in phase 12).
+          return ESP_ERR_TIMEOUT to the producer and are counted: the FSM
+          task logs the accumulated count periodically, and task-context
+          producers log their own drop. Keep the value high enough for the
+          busiest burst (e.g. a session teardown storm in phase 12).
 
     config MICHI_STATE_TASK_STACK_BYTES
         int "State machine task stack (bytes)"
@@ -27,7 +28,7 @@ menu "Michi Music Stream State"
         help
           Capacity of the observer table (one per registered (filter, fn)
           pair). Phase consumers: display (6), LED (7), network (9), audio
-          (11), API (12) plus the built-in log observer. Registration beyond
-          the limit fails with ESP_ERR_NO_MEM.
+          (11), API (12). Registration beyond the limit fails with
+          ESP_ERR_NO_MEM.
 
 endmenu

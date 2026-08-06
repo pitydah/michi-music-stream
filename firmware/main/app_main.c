@@ -9,6 +9,7 @@
 
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_task_wdt.h"
 #include "nvs_flash.h"
 
 #include "michi_board.h"
@@ -126,18 +127,31 @@ void app_main(void)
     ESP_LOGI(TAG, "michi-music-stream firmware v%s target=%s",
              MICHI_FW_VERSION_STR, CONFIG_IDF_TARGET);
 
-    esp_err_t err = init_nvs();
+    esp_err_t err;
+
+    /* State machine (phase 5): the single global coordinator. Init FIRST,
+     * before NVS, so the NVS-fatal path can land on the real terminal state
+     * (BOOTING->FATAL_ERROR is in the table) and every later producer can
+     * post events. */
+    err = michi_state_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "state bus unavailable - all events will be dropped");
+        ESP_LOGI(TAG, "subsystem=state state=failed phase=5");
+    }
+    const bool state_ok = (err == ESP_OK);
+
+    err = init_nvs();
     if (err != ESP_OK) {
         ESP_LOGE(TAG,
                  "FATAL: NVS is unusable (%s), halting - subsystems depending on NVS cannot start",
                  esp_err_to_name(err));
-        /* Symbolic only: the state machine is not initialized yet (NVS gates
-         * it), so the request is logged and rejected - the explicit log
-         * above is the ground truth. Kept so a future reorder of init()
-         * makes the terminal state work for free. */
+        /* The FSM was initialized before NVS, so this request is real and
+         * lands on the terminal state; the halt loop feeds the task watchdog
+         * to avoid a false WDT reset. */
         michi_state_request(MICHI_STATE_FATAL_ERROR);
         for (;;) {
-            vTaskDelay(pdMS_TO_TICKS(10000));
+            esp_task_wdt_reset();
+            vTaskDelay(pdMS_TO_TICKS(1000));
         }
     }
 
@@ -187,25 +201,21 @@ void app_main(void)
              profile->lighting_status_rgb ? "true" : "false",
              profile->lighting_cat_contour ? "true" : "false");
 
-    /* State machine (phase 5): the single global coordinator. Init right
-     * after the profile - every subsystem that reacts to events registers
-     * after this point. */
-    err = michi_state_init();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "michi_state_init failed: %s (event bus unavailable)",
-                 esp_err_to_name(err));
-        ESP_LOGI(TAG, "subsystem=state state=failed phase=5");
-    } else {
-        /* Boot events, after every boot-critical init (NVS, board, self
-         * test, DAC, profile, state machine): BOOT_COMPLETE drives
-         * BOOTING->SELF_TEST, SELF_TEST_DONE (self-test overall) drives
-         * SELF_TEST->IDLE (ok) or SELF_TEST->RECOVERABLE_ERROR (degraded).
-         * http_init below does not affect the FSM, hence it stays after. */
+    /* Boot events, posted after all boot-critical inits (NVS, board, self
+     * test, DAC, profile): BOOT_COMPLETE drives BOOTING->SELF_TEST and
+     * SELF_TEST_DONE drives SELF_TEST->IDLE with ANY data. The self-test
+     * already ran before these events are posted - the SELF_TEST state is
+     * modeled retrospectively, so observers must not expect to observe the
+     * test window; the overall result is surfaced by the log below.
+     * RECOVERABLE_ERROR has no boot path: it is reserved for runtime
+     * producers arriving from phase 9. */
+    if (state_ok) {
         err = michi_state_post(MICHI_EVENT_BOOT_COMPLETE, 0);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "MICHI_EVENT_BOOT_COMPLETE post failed: %s",
                      esp_err_to_name(err));
         }
+        ESP_LOGI(TAG, "self_test: overall=%u", (unsigned)(st.overall ? 1u : 0u));
         err = michi_state_post(MICHI_EVENT_SELF_TEST_DONE, st.overall ? 1u : 0u);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "MICHI_EVENT_SELF_TEST_DONE post failed: %s",

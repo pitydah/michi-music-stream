@@ -59,7 +59,7 @@ typedef enum {
  */
 typedef enum {
     MICHI_EVENT_BOOT_COMPLETE = 1, /*!< app_main after all boot-critical inits; drives BOOTING->SELF_TEST */
-    MICHI_EVENT_SELF_TEST_DONE,    /*!< after the self-test; data: 1=overall ok, 0=degraded (drives SELF_TEST->IDLE|RECOVERABLE_ERROR) */
+    MICHI_EVENT_SELF_TEST_DONE,    /*!< after the self-test; data: 1=ok, 0=degraded (informational: any data drives SELF_TEST->IDLE) */
     MICHI_EVENT_STATE_CHANGED,     /*!< internal broadcast on every transition: data=target, from=previous state */
     MICHI_EVENT_ERROR,             /*!< subsystem error: data=esp_err_t (broadcast only) */
     MICHI_EVENT_RECOVER,           /*!< retry after RECOVERABLE_ERROR; drives RECOVERABLE_ERROR->IDLE */
@@ -82,9 +82,10 @@ typedef enum {
     MICHI_EVENT_UPDATE_DONE,       /*!< data: 0 */
     MICHI_EVENT_UPDATE_FAILED,     /*!< data: esp_err_t */
 
-    /* Internal, reserved: posted ONLY by michi_state_request(); producers
-     * MUST NOT post it (post() rejects it with ESP_ERR_INVALID_ARG). */
-    MICHI_EVENT__TRANSITION_REQUEST = 0x100,
+    /* Internal, not postable: posted ONLY by michi_state_request(); post()
+     * and post_from_isr() reject it (and any id past the enum) with
+     * ESP_ERR_INVALID_ARG. */
+    MICHI_EVENT_TRANSITION_REQUEST = 0x100,
 } michi_event_id_t;
 
 /**
@@ -115,8 +116,9 @@ typedef void (*michi_state_observer_fn)(const michi_event_t *ev);
 /**
  * @brief Create the queue + FSM task and set the initial state (BOOTING).
  *
- * Registers the log observer. Safe to call once; repeated calls return
- * ESP_OK (idempotent). Init failures propagate (queue/task allocation).
+ * State transitions are logged by the FSM task; no observer slot is consumed
+ * for logging. Safe to call once; repeated calls return ESP_OK (idempotent).
+ * Init failures propagate (queue/task allocation).
  *
  * @return ESP_OK; ESP_ERR_NO_MEM if queue/task creation fails.
  */
@@ -128,11 +130,12 @@ esp_err_t michi_state_init(void);
  * Broadcast to matching observers; if the event has a mapping it may also
  * drive a state transition (validated against the transition table).
  *
- * @param id   Event id (MICHI_EVENT__TRANSITION_REQUEST is rejected).
+ * @param id   Event id (MICHI_EVENT_TRANSITION_REQUEST and ids past the enum
+ *             are rejected).
  * @param data Event payload.
  * @return ESP_OK; ESP_ERR_INVALID_STATE before init; ESP_ERR_TIMEOUT when
  *         the queue is full (event dropped); ESP_ERR_INVALID_ARG for the
- *         internal event id.
+ *         internal reserved event ids.
  */
 esp_err_t michi_state_post(michi_event_id_t id, uint32_t data);
 
@@ -151,9 +154,13 @@ esp_err_t michi_state_post_from_isr(michi_event_id_t id, uint32_t data);
  * MICHI_EVENT_STATE_CHANGED is broadcast to all observers. Invalid target:
  * nothing happens, a warn is logged and ESP_ERR_INVALID_STATE is returned.
  *
+ * @note ESP_OK means validated+queued, NOT applied: phase 9-13 producers
+ *       MUST treat MICHI_EVENT_STATE_CHANGED as the acknowledgment, since a
+ *       concurrent request or queue pressure can drop the queued transition.
+ *
  * @param target Requested state.
- * @return ESP_OK (validated, queued); ESP_ERR_INVALID_STATE (not allowed
- *         from the current state, or before init); ESP_ERR_INVALID_ARG
+ * @return ESP_OK (validated, queued - see note); ESP_ERR_INVALID_STATE (not
+ *         allowed from the current state, or before init); ESP_ERR_INVALID_ARG
  *         (target out of range); ESP_ERR_TIMEOUT (queue full).
  */
 esp_err_t michi_state_request(michi_state_t target);

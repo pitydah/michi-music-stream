@@ -9,6 +9,7 @@
 
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_task_wdt.h"
 
 #include "michi_state.h"
 
@@ -24,8 +25,11 @@
  * michi_state_request() validation. */
 #define ST_BIT(s) (1u << (s))
 
+_Static_assert(MICHI_STATE_COUNT <= 32, "state bitmask overflow");
+
 static const uint32_t s_transitions[MICHI_STATE_COUNT] = {
-    [MICHI_STATE_BOOTING] = ST_BIT(MICHI_STATE_SELF_TEST),
+    [MICHI_STATE_BOOTING] = ST_BIT(MICHI_STATE_SELF_TEST) |
+                            ST_BIT(MICHI_STATE_FATAL_ERROR),
     [MICHI_STATE_SELF_TEST] = ST_BIT(MICHI_STATE_IDLE) |
                               ST_BIT(MICHI_STATE_RECOVERABLE_ERROR) |
                               ST_BIT(MICHI_STATE_FATAL_ERROR),
@@ -82,10 +86,12 @@ static const uint32_t s_transitions[MICHI_STATE_COUNT] = {
 };
 
 /* Event -> transition mapping. `any_data` ignores the payload; otherwise
- * data must match exactly (SELF_TEST_DONE: 1=ok -> IDLE, 0=fail ->
- * RECOVERABLE_ERROR). `from` is the state the event must arrive in: a
+ * data must match exactly. `from` is the state the event must arrive in: a
  * mismatched arrival is out-of-contract, logged and dropped (no transition;
- * the event itself is still broadcast). */
+ * the event itself is still broadcast). SELF_TEST_DONE carries the self-test
+ * overall result as data for observers, but ANY data drives SELF_TEST->IDLE:
+ * the result is surfaced by app_main's log, and RECOVERABLE_ERROR has no
+ * boot path - it is reserved for runtime producers arriving from phase 9. */
 typedef struct {
     michi_event_id_t id;
     uint32_t data;
@@ -95,10 +101,9 @@ typedef struct {
 } michi_event_map_t;
 
 static const michi_event_map_t s_event_map[] = {
-    { MICHI_EVENT_BOOT_COMPLETE,  0,  true, MICHI_STATE_BOOTING,           MICHI_STATE_SELF_TEST },
-    { MICHI_EVENT_SELF_TEST_DONE, 1,  false, MICHI_STATE_SELF_TEST,        MICHI_STATE_IDLE },
-    { MICHI_EVENT_SELF_TEST_DONE, 0,  false, MICHI_STATE_SELF_TEST,        MICHI_STATE_RECOVERABLE_ERROR },
-    { MICHI_EVENT_RECOVER,        0,  true,  MICHI_STATE_RECOVERABLE_ERROR, MICHI_STATE_IDLE },
+    { MICHI_EVENT_BOOT_COMPLETE,  0, true, MICHI_STATE_BOOTING,           MICHI_STATE_SELF_TEST },
+    { MICHI_EVENT_SELF_TEST_DONE, 0, true, MICHI_STATE_SELF_TEST,         MICHI_STATE_IDLE },
+    { MICHI_EVENT_RECOVER,        0, true, MICHI_STATE_RECOVERABLE_ERROR, MICHI_STATE_IDLE },
 };
 
 typedef struct {
@@ -107,8 +112,10 @@ typedef struct {
 } michi_observer_t;
 
 static QueueHandle_t s_queue;
+static TaskHandle_t s_task;
 static volatile michi_state_t s_current;
 static volatile bool s_initialized;
+static volatile uint32_t s_drops;
 
 static portMUX_TYPE s_state_mux = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE s_obs_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -210,11 +217,11 @@ static bool map_exists_for_id(michi_event_id_t id)
 static void handle_transition_request(michi_state_t target)
 {
     if (target >= MICHI_STATE_COUNT) {
-        ESP_LOGW(TAG, "state: request target=%u out of range", (unsigned)target);
+        ESP_LOGW(TAG, "state: request rejected=target=%u out of range", (unsigned)target);
         return;
     }
     if (!transition_valid(s_current, target)) {
-        ESP_LOGW(TAG, "state: request to=%s invalid from=%s (state changed since request)",
+        ESP_LOGW(TAG, "state: request rejected=to=%s from=%s (state changed since request)",
                  state_name(target), state_name(s_current));
         return;
     }
@@ -226,14 +233,28 @@ static void state_task(void *arg)
     michi_event_t ev;
 
     for (;;) {
-        if (xQueueReceive(s_queue, &ev, portMAX_DELAY) != pdTRUE) {
+        /* Bounded receive so the task can feed the task watchdog while idle:
+         * an observer that blocks past the WDT timeout triggers the watchdog
+         * instead of a silent stall (5 s default). */
+        if (xQueueReceive(s_queue, &ev, pdMS_TO_TICKS(1000)) != pdTRUE) {
+            esp_task_wdt_reset();
             continue;
         }
+        esp_task_wdt_reset();
 
-        ESP_LOGI(TAG, "state: current=%s event=%d data=%u",
-                 state_name(s_current), (int)ev.id, (unsigned)ev.data);
+        /* Drops are counted by the producers (queue full); report and reset
+         * once per dispatch so the log volume stays low. */
+        portENTER_CRITICAL(&s_state_mux);
+        const uint32_t drops = s_drops;
+        s_drops = 0;
+        portEXIT_CRITICAL(&s_state_mux);
+        if (drops > 0) {
+            ESP_LOGW(TAG, "state: events_dropped=%u", (unsigned)drops);
+        }
 
-        if (ev.id == MICHI_EVENT__TRANSITION_REQUEST) {
+        ESP_LOGI(TAG, "state: event=%d data=%u", (int)ev.id, (unsigned)ev.data);
+
+        if (ev.id == MICHI_EVENT_TRANSITION_REQUEST) {
             /* Internal: never broadcast; the resulting STATE_CHANGED is. */
             handle_transition_request((michi_state_t)ev.data);
             continue;
@@ -253,8 +274,18 @@ static void state_task(void *arg)
             continue;
         }
         if (m->from != s_current) {
-            ESP_LOGW(TAG, "state: event=%d dropped: expected state=%s but current=%s",
-                     (int)ev.id, state_name(m->from), state_name(s_current));
+            ESP_LOGW(TAG, "state: event=%d data=%u dropped: expected from=%s actual from=%s",
+                     (int)ev.id, (unsigned)ev.data, state_name(m->from),
+                     state_name(s_current));
+            continue;
+        }
+        /* Same authority as request(): the mapping must not bypass the
+         * transition table, so the (from, target) pairs of s_event_map stay
+         * validated against s_transitions at dispatch time. */
+        if (!transition_valid(s_current, m->target)) {
+            ESP_LOGW(TAG, "state: event=%d data=%u dropped: transition to=%s from=%s not in table",
+                     (int)ev.id, (unsigned)ev.data, state_name(m->target),
+                     state_name(s_current));
             continue;
         }
         apply_transition(m->target, s_current);
@@ -294,12 +325,21 @@ esp_err_t michi_state_init(void)
 
     BaseType_t rc = xTaskCreate(state_task, "michi_state",
                                 CONFIG_MICHI_STATE_TASK_STACK_BYTES, NULL,
-                                MICHI_STATE_TASK_PRIORITY, NULL);
+                                MICHI_STATE_TASK_PRIORITY, &s_task);
     if (rc != pdPASS) {
         vQueueDelete(s_queue);
         s_queue = NULL;
         ESP_LOGE(TAG, "init: task creation failed");
         return ESP_ERR_NO_MEM;
+    }
+
+    /* Task watchdog: an observer that blocks past the WDT timeout triggers
+     * the watchdog (5 s default) instead of a silent stall; the FSM task
+     * feeds it from its bounded receive loop. */
+    esp_err_t wdt_rc = esp_task_wdt_add(s_task);
+    if (wdt_rc != ESP_OK) {
+        ESP_LOGW(TAG, "init: task watchdog add failed (%s), FSM runs without watchdog",
+                 esp_err_to_name(wdt_rc));
     }
 
     s_initialized = true;
@@ -309,7 +349,9 @@ esp_err_t michi_state_init(void)
 
 esp_err_t michi_state_post(michi_event_id_t id, uint32_t data)
 {
-    if (id == MICHI_EVENT__TRANSITION_REQUEST) {
+    /* Internal reserved range: the transition-request event and any id past
+     * the enum are not postable. */
+    if (id >= MICHI_EVENT_TRANSITION_REQUEST) {
         return ESP_ERR_INVALID_ARG;
     }
     if (!s_initialized) {
@@ -319,6 +361,9 @@ esp_err_t michi_state_post(michi_event_id_t id, uint32_t data)
     }
     const michi_event_t ev = { .id = id, .data = data, .from = 0 };
     if (xQueueSend(s_queue, &ev, 0) != pdTRUE) {
+        portENTER_CRITICAL(&s_state_mux);
+        s_drops++;
+        portEXIT_CRITICAL(&s_state_mux);
         ESP_LOGW(TAG, "post: queue full, event=%d dropped", (int)id);
         return ESP_ERR_TIMEOUT;
     }
@@ -327,7 +372,7 @@ esp_err_t michi_state_post(michi_event_id_t id, uint32_t data)
 
 esp_err_t michi_state_post_from_isr(michi_event_id_t id, uint32_t data)
 {
-    if (id == MICHI_EVENT__TRANSITION_REQUEST) {
+    if (id >= MICHI_EVENT_TRANSITION_REQUEST) {
         return ESP_ERR_INVALID_ARG;
     }
     if (!s_initialized) {
@@ -336,6 +381,10 @@ esp_err_t michi_state_post_from_isr(michi_event_id_t id, uint32_t data)
     const michi_event_t ev = { .id = id, .data = data, .from = 0 };
     BaseType_t hpw = pdFALSE;
     if (xQueueSendFromISR(s_queue, &ev, &hpw) != pdTRUE) {
+        /* ISR context cannot log: counted, the FSM task reports periodically. */
+        portENTER_CRITICAL_ISR(&s_state_mux);
+        s_drops++;
+        portEXIT_CRITICAL_ISR(&s_state_mux);
         return ESP_ERR_TIMEOUT;
     }
     if (hpw) {
@@ -347,7 +396,7 @@ esp_err_t michi_state_post_from_isr(michi_event_id_t id, uint32_t data)
 esp_err_t michi_state_request(michi_state_t target)
 {
     if (!s_initialized) {
-        ESP_LOGW(TAG, "request: state machine not initialized");
+        ESP_LOGW(TAG, "state: request rejected=state machine not initialized");
         return ESP_ERR_INVALID_STATE;
     }
     if (target >= MICHI_STATE_COUNT) {
@@ -356,18 +405,18 @@ esp_err_t michi_state_request(michi_state_t target)
 
     michi_state_t cur = michi_state_get();
     if (!transition_valid(cur, target)) {
-        ESP_LOGW(TAG, "state: request to=%s invalid from=%s",
+        ESP_LOGW(TAG, "state: request rejected=to=%s from=%s",
                  state_name(target), state_name(cur));
         return ESP_ERR_INVALID_STATE;
     }
 
     const michi_event_t ev = {
-        .id = MICHI_EVENT__TRANSITION_REQUEST,
+        .id = MICHI_EVENT_TRANSITION_REQUEST,
         .data = (uint32_t)target,
         .from = 0,
     };
     if (xQueueSend(s_queue, &ev, 0) != pdTRUE) {
-        ESP_LOGW(TAG, "state: request queue full, to=%s dropped",
+        ESP_LOGW(TAG, "state: request rejected=queue full to=%s",
                  state_name(target));
         return ESP_ERR_TIMEOUT;
     }

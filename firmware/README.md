@@ -419,7 +419,7 @@ request to an invalid target is logged (`warn`) and rejected with
 
 | From | To |
 |------|----|
-| BOOTING | SELF_TEST |
+| BOOTING | SELF_TEST, FATAL_ERROR |
 | SELF_TEST | IDLE, RECOVERABLE_ERROR, FATAL_ERROR |
 | UNPROVISIONED | PROVISIONING, WIFI_CONNECTING, PAIRING, RECOVERABLE_ERROR, FATAL_ERROR |
 | PROVISIONING | WIFI_CONNECTING, UNPROVISIONED, RECOVERABLE_ERROR, FATAL_ERROR |
@@ -444,9 +444,17 @@ state current when the event was dispatched - stamped by the FSM task).
 | Event | Condition | Transition |
 |-------|-----------|------------|
 | `MICHI_EVENT_BOOT_COMPLETE` | in BOOTING | BOOTING → SELF_TEST |
-| `MICHI_EVENT_SELF_TEST_DONE` | data=1 (overall ok) | SELF_TEST → IDLE |
-| `MICHI_EVENT_SELF_TEST_DONE` | data=0 (degraded) | SELF_TEST → RECOVERABLE_ERROR |
+| `MICHI_EVENT_SELF_TEST_DONE` | in SELF_TEST (any data) | SELF_TEST → IDLE |
 | `MICHI_EVENT_RECOVER` | in RECOVERABLE_ERROR | RECOVERABLE_ERROR → IDLE |
+
+`MICHI_EVENT_SELF_TEST_DONE` carries the self-test overall result as data
+(1=ok, 0=degraded) for observers, but any data drives SELF_TEST → IDLE:
+`RECOVERABLE_ERROR` is entered only by runtime producers from phase 9
+onwards — no boot path enters it.
+
+`michi_state_request()` enqueues an internal, not postable event
+(`MICHI_EVENT_TRANSITION_REQUEST`, id 0x100) that the FSM re-validates and
+applies; every applied transition emits `MICHI_EVENT_STATE_CHANGED`.
 
 `MICHI_EVENT_ERROR` (data: `esp_err_t`), `MICHI_EVENT_STATE_CHANGED` and
 the phase events (`MICHI_EVENT_WIFI_*` phase 9, `MICHI_EVENT_PAIRING_*`
@@ -456,12 +464,17 @@ mappings arrive with their phases.
 
 ### Boot flow
 
-`board → self_test → dac → profile → state_init → BOOT_COMPLETE
-(→ SELF_TEST) → SELF_TEST_DONE(overall) (→ IDLE | RECOVERABLE_ERROR)`.
-`http_init` does not affect the FSM and stays after the boot screen. On
-unusable NVS, `app_main` calls `michi_state_request(MICHI_STATE_FATAL_ERROR)`
-before the halt loop (symbolic: the FSM is not initialized yet at that
-point - the explicit FATAL log is the ground truth).
+`state_init → nvs → board → self_test → dac → profile → BOOT_COMPLETE
+(→ SELF_TEST) → SELF_TEST_DONE (→ IDLE)`. `http_init` does not affect the
+FSM and stays after the boot screen. `state_init` runs FIRST so the FSM is
+live before NVS: on unusable NVS, `app_main` calls
+`michi_state_request(MICHI_STATE_FATAL_ERROR)` — valid, BOOTING → FATAL_ERROR
+is in the table — and halts, feeding the task watchdog to avoid a false WDT
+reset. The SELF_TEST window is modeled retrospectively: the test already ran
+before the events are posted, so observers must not expect to observe it. If
+`michi_state_init()` fails, boot continues in degraded mode: `state bus
+unavailable - all events will be dropped` is logged and no event reaches an
+observer (`subsystem=state state=failed`).
 
 ### Observer contract
 
@@ -473,9 +486,12 @@ point - the explicit FATAL log is the ground truth).
   time, never concurrently. They MUST NOT block (no `vTaskDelay`, no
   blocking I/O) - the FSM must always be free to drain the queue.
 - Consumers by phase: display (6), LED (7), network (9), audio (11),
-  API (12). The built-in log observer is registered by `michi_state_init()`.
+  API (12). Transitions are logged by the FSM task itself; no observer slot
+  is consumed for logging.
 - `post()`/`post_from_isr()` never block: a full queue returns
-  `ESP_ERR_TIMEOUT` and the event is dropped (logged by the FSM).
+  `ESP_ERR_TIMEOUT` and the event is dropped — drops are counted and logged
+  by the FSM task periodically; producers log their own drop on task
+  context.
 
 ## Hardware validation pending
 
