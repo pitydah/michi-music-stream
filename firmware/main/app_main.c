@@ -15,6 +15,7 @@
 #include "michi_dac.h"
 #include "michi_http.h"
 #include "michi_product_profile.h"
+#include "michi_state.h"
 #include "michi_version.h"
 
 static const char *TAG = "michi_app";
@@ -130,6 +131,11 @@ void app_main(void)
         ESP_LOGE(TAG,
                  "FATAL: NVS is unusable (%s), halting - subsystems depending on NVS cannot start",
                  esp_err_to_name(err));
+        /* Symbolic only: the state machine is not initialized yet (NVS gates
+         * it), so the request is logged and rejected - the explicit log
+         * above is the ground truth. Kept so a future reorder of init()
+         * makes the terminal state work for free. */
+        michi_state_request(MICHI_STATE_FATAL_ERROR);
         for (;;) {
             vTaskDelay(pdMS_TO_TICKS(10000));
         }
@@ -180,6 +186,32 @@ void app_main(void)
              profile->display_present ? "true" : "false",
              profile->lighting_status_rgb ? "true" : "false",
              profile->lighting_cat_contour ? "true" : "false");
+
+    /* State machine (phase 5): the single global coordinator. Init right
+     * after the profile - every subsystem that reacts to events registers
+     * after this point. */
+    err = michi_state_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "michi_state_init failed: %s (event bus unavailable)",
+                 esp_err_to_name(err));
+        ESP_LOGI(TAG, "subsystem=state state=failed phase=5");
+    } else {
+        /* Boot events, after every boot-critical init (NVS, board, self
+         * test, DAC, profile, state machine): BOOT_COMPLETE drives
+         * BOOTING->SELF_TEST, SELF_TEST_DONE (self-test overall) drives
+         * SELF_TEST->IDLE (ok) or SELF_TEST->RECOVERABLE_ERROR (degraded).
+         * http_init below does not affect the FSM, hence it stays after. */
+        err = michi_state_post(MICHI_EVENT_BOOT_COMPLETE, 0);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "MICHI_EVENT_BOOT_COMPLETE post failed: %s",
+                     esp_err_to_name(err));
+        }
+        err = michi_state_post(MICHI_EVENT_SELF_TEST_DONE, st.overall ? 1u : 0u);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "MICHI_EVENT_SELF_TEST_DONE post failed: %s",
+                     esp_err_to_name(err));
+        }
+    }
 
     if (st.display_ok) {
         err = michi_board_display_boot_screen(info, &st, profile->product_name);

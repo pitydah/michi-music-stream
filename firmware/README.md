@@ -50,6 +50,12 @@ firmware/
     │   ├── include/
     │   │   └── michi_http.h       # Handler contract + checked JSON helpers
     │   └── http_server.c          # /api/v1/receiver/info + /firmware
+    ├── michi_state/               # Global state machine + event bus (phase 5)
+    │   ├── CMakeLists.txt
+    │   ├── Kconfig                # Queue len, FSM task stack, observer count
+    │   ├── include/
+    │   │   └── michi_state.h      # States, events, observer contract
+    │   └── michi_state.c          # FSM task, transition table, broadcast
     ├── michi_audio_output/        # I2S pipeline, SPSC ring (phase 4)
     │   ├── CMakeLists.txt
     │   ├── Kconfig                # MICHI_AUDIO_RING_BUFFER_KB (1 MB PSRAM)
@@ -376,6 +382,100 @@ applied value - the phase-12 handler must answer with it (P0-12).
 `michi_wifi` handlers (phase 9) MUST NEVER block: `vTaskDelay` and
 blocking I/O are prohibited inside `esp_event` handlers - use `esp_timer`
 or a FreeRTOS queue to defer work. This is the P0-11 fix by construction.
+
+## State machine: `components/michi_state`
+
+Phase 5 introduces the **single global coordinator**: one state machine,
+one event bus, one FSM task. The scattered booleans of the legacy firmware
+(`is_provisioned`, `is_streaming`, `is_pairing`, `is_updating`, ...) are
+replaced by this unique source of truth - no subsystem keeps its own
+opinion about what the product is doing.
+
+### States
+
+| Enum | Meaning |
+|------|---------|
+| `MICHI_STATE_BOOTING` | Start-up until the boot events are processed |
+| `MICHI_STATE_SELF_TEST` | Running the board self-test |
+| `MICHI_STATE_UNPROVISIONED` | No network profile stored (network, phase 9) |
+| `MICHI_STATE_PROVISIONING` | Provisioning flow active |
+| `MICHI_STATE_WIFI_CONNECTING` | Connecting to the configured AP |
+| `MICHI_STATE_IDLE` | Steady state: ready for pairing/session |
+| `MICHI_STATE_PAIRING` | Pairing flow open (phase 10) |
+| `MICHI_STATE_SESSION_PENDING` | Session negotiated, playback not started |
+| `MICHI_STATE_BUFFERING` | Pre-filling before playback |
+| `MICHI_STATE_PLAYING` | Audio flowing |
+| `MICHI_STATE_PAUSED` | Session active, playback suspended |
+| `MICHI_STATE_UPDATING` | OTA in progress (phase 13) |
+| `MICHI_STATE_RECOVERABLE_ERROR` | Degraded but retryable |
+| `MICHI_STATE_FATAL_ERROR` | Terminal: cannot continue |
+
+### Transition table (single source of truth)
+
+`michi_state.c` encodes it as one bitmask per source state; both
+`michi_state_request()` and the event mapping validate against it. A
+request to an invalid target is logged (`warn`) and rejected with
+`ESP_ERR_INVALID_STATE` - no state change.
+
+| From | To |
+|------|----|
+| BOOTING | SELF_TEST |
+| SELF_TEST | IDLE, RECOVERABLE_ERROR, FATAL_ERROR |
+| UNPROVISIONED | PROVISIONING, WIFI_CONNECTING, PAIRING, RECOVERABLE_ERROR, FATAL_ERROR |
+| PROVISIONING | WIFI_CONNECTING, UNPROVISIONED, RECOVERABLE_ERROR, FATAL_ERROR |
+| WIFI_CONNECTING | IDLE, UNPROVISIONED, RECOVERABLE_ERROR, FATAL_ERROR |
+| IDLE | UNPROVISIONED, PROVISIONING, WIFI_CONNECTING, PAIRING, SESSION_PENDING, UPDATING, RECOVERABLE_ERROR, FATAL_ERROR |
+| PAIRING | IDLE, RECOVERABLE_ERROR, FATAL_ERROR |
+| SESSION_PENDING | BUFFERING, IDLE, RECOVERABLE_ERROR, FATAL_ERROR |
+| BUFFERING | PLAYING, IDLE, RECOVERABLE_ERROR, FATAL_ERROR |
+| PLAYING | PAUSED, BUFFERING, IDLE, UPDATING, RECOVERABLE_ERROR, FATAL_ERROR |
+| PAUSED | PLAYING, IDLE, RECOVERABLE_ERROR, FATAL_ERROR |
+| UPDATING | IDLE, RECOVERABLE_ERROR, FATAL_ERROR |
+| RECOVERABLE_ERROR | IDLE, UNPROVISIONED, WIFI_CONNECTING, FATAL_ERROR |
+| FATAL_ERROR | (terminal - no outgoing transitions) |
+
+### Event mapping
+
+Mapped events drive transitions; every other event is broadcast only (no
+transition). `michi_event_t` carries `id`, `data` and `from` (for
+`MICHI_EVENT_STATE_CHANGED`: the previous state; for other events: the
+state current when the event was dispatched - stamped by the FSM task).
+
+| Event | Condition | Transition |
+|-------|-----------|------------|
+| `MICHI_EVENT_BOOT_COMPLETE` | in BOOTING | BOOTING → SELF_TEST |
+| `MICHI_EVENT_SELF_TEST_DONE` | data=1 (overall ok) | SELF_TEST → IDLE |
+| `MICHI_EVENT_SELF_TEST_DONE` | data=0 (degraded) | SELF_TEST → RECOVERABLE_ERROR |
+| `MICHI_EVENT_RECOVER` | in RECOVERABLE_ERROR | RECOVERABLE_ERROR → IDLE |
+
+`MICHI_EVENT_ERROR` (data: `esp_err_t`), `MICHI_EVENT_STATE_CHANGED` and
+the phase events (`MICHI_EVENT_WIFI_*` phase 9, `MICHI_EVENT_PAIRING_*`
+phase 10, `MICHI_EVENT_SESSION_*` phase 12, `MICHI_EVENT_UPDATE_*`
+phase 13) are declared now so consumers can register filters; their
+mappings arrive with their phases.
+
+### Boot flow
+
+`board → self_test → dac → profile → state_init → BOOT_COMPLETE
+(→ SELF_TEST) → SELF_TEST_DONE(overall) (→ IDLE | RECOVERABLE_ERROR)`.
+`http_init` does not affect the FSM and stays after the boot screen. On
+unusable NVS, `app_main` calls `michi_state_request(MICHI_STATE_FATAL_ERROR)`
+before the halt loop (symbolic: the FSM is not initialized yet at that
+point - the explicit FATAL log is the ground truth).
+
+### Observer contract
+
+- Register with `michi_state_register_observer(filter, fn)`; `filter=0`
+  receives ALL events, any other value receives only that event
+  (`MICHI_EVENT_STATE_CHANGED` included - it is dispatched like any other
+  event). Max 8 observers (`MICHI_STATE_MAX_OBSERVERS`).
+- Observers are invoked **sequentially from the FSM task**, one event at a
+  time, never concurrently. They MUST NOT block (no `vTaskDelay`, no
+  blocking I/O) - the FSM must always be free to drain the queue.
+- Consumers by phase: display (6), LED (7), network (9), audio (11),
+  API (12). The built-in log observer is registered by `michi_state_init()`.
+- `post()`/`post_from_isr()` never block: a full queue returns
+  `ESP_ERR_TIMEOUT` and the event is dropped (logged by the FSM).
 
 ## Hardware validation pending
 
