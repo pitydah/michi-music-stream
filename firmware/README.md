@@ -114,9 +114,15 @@ firmware/
         ├── CMakeLists.txt
         ├── Kconfig                # Manifest/URL bounds, HTTP timeout, task stack
         ├── include/
-        │   ├── michi_ota.h        # start/get_state/boot_selftest_done API
+        │   ├── michi_ota.h        # start/start_local/check_local/get_state/boot_selftest_done API
         │   └── michi_ota_pubkey.h # Embedded RSA-2048 public key (DER, dev key)
-        └── michi_ota.c            # Manifest fetch + verify + streaming download
+        └── michi_ota.c            # Manifest fetch + verify + streaming download (HTTPS + SD)
+    └── michi_sd/                  # Onboard microSD, shared LCD SPI bus (phase 17)
+        ├── CMakeLists.txt
+        ├── Kconfig                # MICHI_SD_ENABLE, update manifest/file names
+        ├── include/
+        │   └── michi_sd.h         # init/mounted/get_info/shutdown
+        └── michi_sd.c             # FAT mount at /sdcard (CS 41), degraded when absent
 ```
 
 At boot, every subsystem that does not exist yet is logged honestly as
@@ -1400,7 +1406,7 @@ envelope for failures.
 | `/api/v1/receiver/sessions/current` | PATCH | Bearer | PLAYBACK | `volume` / `paused`; token in body or `X-Michi-Session` |
 | `/api/v1/receiver/sessions/current` | DELETE | Bearer | PLAYBACK | Stop; token in `X-Michi-Session` header |
 | `/api/v1/receiver/now-playing` | PUT | Bearer | PLAYBACK | `source`/`title`/`artist` → display |
-| `/api/v1/receiver/diagnostics` | GET | Bearer | STATUS | Uptime, reset reason, heap/PSRAM, wifi (ssid/rssi/reconnects), audio+RTP metrics, I2S errors, DAC, session, OTA, last error, firmware (see Diagnostics) |
+| `/api/v1/receiver/diagnostics` | GET | Bearer | STATUS | Uptime, reset reason, heap/PSRAM, wifi (ssid/rssi/reconnects), audio+RTP metrics, I2S errors, DAC, session, SD (mounted/sizes), OTA, last error, firmware (see Diagnostics) |
 | `/api/v1/receiver/logs` | GET | Bearer | STATUS | Hybrid log registry (phase 16): tail ring or event journal (see Log registry) |
 | `/api/v1/receiver/updates` | POST | Bearer | OTA | Body `{url}` → signed manifest URL; **202** `ota_started` (phase 13) |
 
@@ -1508,6 +1514,7 @@ phase 11/12 clients — the RTP metrics keep living under `audio`, not
 | `dac.tier` | `michi_product_profile_tier_name()` | `standard` \| `hifi` \| `diagnostic` |
 | `dac.sample_rate` / `bit_depth` | Product profile validated baseline | 48000 / 16 — the format the DAC is CONFIGURED with (not the silicon maximum; that is `audio`-independent and lives in the profile as capability) |
 | `ota` | `michi_ota_get_state()` | `{state, percent}`; `error` only on `failed` (failure description, never a credential) |
+| `sd` | `michi_sd_mounted()` + `michi_sd_get_info()` | `{mounted, total_bytes, free_bytes}` (FAT volume sizes via `esp_vfs_fat_info`); `0/0` when absent — no file listing, no contents |
 | `last_error` | `michi_state_get_last_error()` | `{event, data}`: `event` = `error` (MICHI_EVENT_ERROR: wifi retries exhausted, audio session self-end) or `update_failed` (OTA); `data` = the `esp_err_t`. `event: null` when nothing was captured this boot. A transition REQUEST to an error state without a preceding error event is captured with `data: 0` |
 | `firmware` | Product profile | `version`, `build_date`, `board` |
 
@@ -1807,6 +1814,183 @@ the next update).
 | `MICHI_OTA_URL_MAX` | 256 | Manifest URL length bound |
 | `MICHI_OTA_HTTP_TIMEOUT_MS` | 10000 | Per-read HTTP timeout (manifest + binary) |
 | `MICHI_OTA_STACK_BYTES` | 10240 | OTA task stack (mbedTLS + HTTP frames; transfer buffers are heap-allocated) |
+
+## microSD & local OTA: `components/michi_sd`
+
+Onboard microSD (phase 17) + local OTA from the card, for field updates
+without USB. **The ESP32-S3 does NOT boot from SD** — the card is update
+transport only: the owner copies the signed firmware onto the card,
+inserts it, and the receiver applies it as a normal OTA (A/B + rollback
+included).
+
+### Hardware: the SD shares the LCD SPI bus
+
+| Signal | GPIO | Notes |
+|---|---|---|
+| SCLK | 39 | SPI2_HOST, initialized by `michi_board` |
+| MOSI | 38 | Same bus as the ST7789 (CS 45) |
+| MISO | 40 | |
+| CS_SD | 41 | Reserved in the BSP; the card is an ADDITIONAL device on the bus |
+
+`michi_sd_init()` does NOT initialize the bus: it runs after
+`michi_board_init()` and `esp_vfs_fat_sdspi_mount()` attaches the card to
+the existing bus via `sdspi_host_init_device()` internally (verified in
+the IDF 5.3 sources, `vfs_fat_sdmmc.c`). The mount is ASYNC (review F3):
+`michi_sd_init()` spawns a mount task (priority 2) and returns
+immediately, so a boot without a card is not penalized — the mount runs
+in parallel with the DAC/WiFi bring-up and its outcome is published via
+`michi_sd_mounted()` + the mount task logs. The SPI driver serializes
+per device: an SD transaction briefly pauses LCD flushes (order of ms
+for the 4 KB chunks — no long locks). The card is FAT, mounted at
+`/sdcard` with `format_if_mount_failed=false` — a card that needs
+formatting is reported as absent, never formatted behind the owner's
+back.
+
+Honest degradation: no card or failed mount → the mount task logs
+`sd: not mounted (ok - updates fall back to HTTPS OTA)` and the system
+continues — HTTPS OTA is always the fallback path.
+`GET /diagnostics` exposes `sd.mounted` (the real mount flag) /
+`sd.total_bytes` / `sd.free_bytes` (sizes via `esp_vfs_fat_info`; the
+IDF 5.3 VFS has no `statvfs` — verified against the installed sources).
+The sizes are cached for `MICHI_SD_INFO_TTL_MS` (review F4) so the
+diagnostics polling does not hammer the card; a failed read reports
+0/0 without conflating stats with the mount state (review F6).
+
+### Flow: generate the update, copy it to the SD, insert, verify
+
+```mermaid
+sequenceDiagram
+    participant O as Owner (PC)
+    participant SD as microSD (FAT32)
+    participant R as Receiver boot
+    O->>O: sha256sum firmware.bin
+    O->>O: sign_manifest.py --url file://michi-update.bin (same key)
+    O->>SD: copy michi-update.json + michi-update.bin
+    O->>R: insert the card and power on
+    R->>R: michi_sd_init: spawns the mount task (async, no boot penalty)
+    R->>SD: FSM observer at IDLE triggers the check task (not app_main)
+    R->>R: check task waits for the mount flag (MICHI_SD_MOUNT_WAIT_MS)
+    R->>SD: michi_ota_check_local: does michi-update.json exist?
+    R->>R: F1 latches: already applied? failed-boot cap? (NVS ota_local)
+    R->>R: michi_ota_start_local: validate signed manifest (same key)
+    R->>R: pending_version latched in NVS BEFORE the apply
+    R->>R: file://<base> == michi-update.bin + SHA-256 of the file
+    R->>R: esp_ota_begin/write/end + set_boot_partition + restart
+    Note over R: next boot: PENDING_VERIFY -> boot self-test -> mark valid
+    Note over R: self-test FAIL: manifest renamed to michi-update.applied
+    Note over R: (the rolled-back image must NOT reapply - no boot loop)
+```
+
+1. **Generate the signed update** (the SAME key and the SAME canonical
+   payload as HTTPS OTA — `version|board|min_version|url|sha256`):
+
+```bash
+python3 scripts/sign_manifest.py \
+    --key /path/to/ota_dev_private.pem \
+    --version 0.3.0 \
+    --board "Waveshare ESP32-S3-LCD-2" \
+    --min-version 0.2.0 \
+    --url "file://michi-update.bin" \
+    --sha256 "$(sha256sum fw-0.3.0.bin | cut -d' ' -f1)" \
+    --out michi-update.json
+```
+
+   The `url` MUST be `file://<base-name>`: the script (and the firmware)
+   reject path separators, `..` and names longer than 64 chars. The base
+   name must match `MICHI_SD_UPDATE_FILE` EXACTLY (default
+   `michi-update.bin`) — the signed manifest "binds" the file that gets
+   applied.
+
+2. **Copy to the SD** (FAT32): `michi-update.json` + `michi-update.bin`
+   in the root. **Rename the built binary to `michi-update.bin`** — the
+   name must match the signed `file://` base name exactly, or the update
+   is rejected with `binary_name_mismatch`. Insert the card into the
+   board.
+
+3. **Power on**: `michi_sd_init` spawns the mount task (async — the boot
+   is not penalized without a card), and the FSM observer registered by
+   `michi_ota_init` triggers the check task when the FSM reaches IDLE.
+   The check task waits for the mount flag (`MICHI_SD_MOUNT_WAIT_MS`,
+   default 3000 ms — a safety bound, the mount usually completes while
+   the DAC/WiFi bring-up runs in parallel), runs the F1 latches and
+   launches `michi_ota_start_local`. The FSM lands on UPDATING (LED ramp
+   + "Updating firmware..." + `ota.state=UPDATING` in diagnostics); if
+   the wifi flow moved the FSM off IDLE first, the update still runs and
+   the observer re-arms UPDATING as soon as the FSM is IDLE again. On
+   the UART monitor the sequence is `ota_local: check=present ...
+   starting` → `state=validating board=... version=... sig=ok` →
+   `state=downloading size=...` → `state=verifying sha256=ok` →
+   `state=done source=sd booting_next`. All shared-pipeline log lines
+   carry `source=sd` so the operator can filter the local flow. The
+   restart boots the new slot in PENDING_VERIFY; a passing self-test
+   marks it valid — a failing one makes the bootloader roll back to the
+   previous slot (rollback identical to HTTPS).
+
+4. **What if something fails**: `MICHI_OTA_FAILED` with the error text
+   in `/diagnostics` (`ota.error`) and the FSM returns to IDLE. Missing
+   valid signature, corrupt binary (SHA-256 mismatch), wrong board,
+   downgrade or unmet `min_version` → rejection with log, NOTHING is
+   applied. Local OTA never accepts an unsigned file.
+
+### Anti boot-loop latch (review F1): the user never removes the card
+
+An applied local update is a two-boot transaction (apply → new image →
+self-test → mark valid), and without protection a FAILING self-test
+would make the previous image reapply the same update on every boot
+(apply → rollback → reapply → …). The latch in the NVS namespace
+`ota_local` breaks that loop:
+
+- **Before the apply**, `pending_version` = the manifest version is
+  written to NVS (truncated to 15 chars; errors logged, never blocking).
+- **Successful apply**: `applied_version` (the NVS key for the last
+  applied version) is recorded and the
+  manifest is renamed to `michi-update.applied` on the card — the next
+  boot skips it (`ota_local: check=skipped reason=already_applied
+  version=...`) and the card can stay inserted. If the rename failed,
+  the `applied_version` skip is the belt.
+- **Failed self-test of the new image**: the manifest is renamed to
+  `michi-update.applied` BEFORE the rollback restart
+  (`ota_local: update <version> failed N times, manifest disabled`) — the
+  rolled-back image finds no manifest and does not reapply. The rename
+  happens on the FIRST failure (a transient brownout costs the update;
+  that is the accepted policy — retry requires a BUMPED version). The
+  `MICHI_OTA_LOCAL_MAX_FAILED_BOOTS` counter (hardcoded to 3, internal
+  constant) is the defensive belt when the rename cannot run (e.g. the card is unreadable
+  at that exact point): the boot-time check refuses to reapply once the
+  cap is hit (`check=skipped reason=failed_boot_limit`) and re-attempts
+  the rename.
+
+To retry after a failed update: copy a manifest with a **bumped version**
+(the failed version stays suppressed via the `applied_version` latch).
+
+### Security (identical to HTTPS)
+
+- Same embedded RSA-2048 key, same signed canonical payload
+  (`verify_signature` is SHARED — no duplicated crypto).
+- `file://` strictly validated (no path traversal); the signed base name
+  must be the configured file.
+- Runtime SHA-256 of the file compared with the manifest BEFORE
+  `esp_ota_end`.
+- Boot gate: a local update never starts while the running image is in
+  PENDING_VERIFY (the self-test must mark it valid first) — reuses the
+  `michi_ota_start` gate.
+
+### Kconfig
+
+| Symbol | Default | Meaning |
+|---|---|---|
+| `MICHI_SD_ENABLE` | y | Mount + local OTA from the card (LCD SPI bus, CS 41); when n the SD code is compiled out of `app_main`/diagnostics |
+| `MICHI_SD_UPDATE_FILE` | `michi-update.bin` | Signed binary on the card (must be the base-name of the signed `url`) |
+| `MICHI_SD_UPDATE_MANIFEST` | `michi-update.json` | Signed manifest on the card |
+| `MICHI_SD_MOUNT_WAIT_MS` | 3000 | Max wait for the async mount flag (boot-time local check, review F3) |
+| `MICHI_SD_INFO_TTL_MS` | 30000 | `michi_sd_get_info` cache TTL — `esp_vfs_fat_info` SD I/O runs at most once per TTL (review F4) |
+| `MICHI_OTA_LOCAL_MAX_FAILED_BOOTS` | hardcoded to 3 (internal constant) | Failed self-test boots before the boot-time check force-disables a local update (belt when the manifest rename cannot run, review F1) |
+
+`michi_ota` depends on `michi_sd` ONLY for the mount flag
+(`michi_sd_mounted`, review F3 — the boot-time check waits on it with a
+bounded timeout). The update files themselves are still read through the
+VFS (`/sdcard/...` with `fopen`/`fread`): when the card is not mounted,
+`fopen` fails with `ENOENT` and the flow treats it as "no local update".
 
 ## Testing & CI (phase 15)
 

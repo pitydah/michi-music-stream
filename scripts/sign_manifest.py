@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-sign_manifest.py — sign a Michi OTA update manifest (phase 13).
+sign_manifest.py — sign a Michi OTA update manifest (phase 13 + 17).
 
 Builds the canonical signed payload
 
     version|board|min_version|url|sha256
 
 computes RSA-SHA256 (PKCS#1 v1.5) with the given private key and emits the
-JSON manifest the firmware consumes at POST /api/v1/receiver/updates.
+JSON manifest the firmware consumes at POST /api/v1/receiver/updates
+(HTTPS OTA) or from the onboard microSD (local OTA, phase 17).
 
 The private key is an INPUT ONLY: it is never embedded, logged or stored by
 this script, and it must live OUTSIDE the repository (see
@@ -16,7 +17,7 @@ the embedded public key (components/michi_ota/include/michi_ota_pubkey.h).
 
 Requires: cryptography (pip install cryptography) or the openssl CLI.
 
-Usage:
+Usage (HTTPS OTA):
   python3 scripts/sign_manifest.py \
       --key /path/to/ota_private.pem \
       --version 0.3.0 \
@@ -25,6 +26,22 @@ Usage:
       --url "https://dl.example.com/michi/0.3.0/firmware.bin" \
       --sha256 <64 hex chars of the firmware binary> \
       --out manifest.json
+
+Usage (local OTA from SD, phase 17): the url is file://<base-name> and
+must name the binary file that sits on the card:
+  python3 scripts/sign_manifest.py \
+      --key /path/to/ota_private.pem \
+      --version 0.3.0 \
+      --board "Waveshare ESP32-S3-LCD-2" \
+      --min-version 0.2.0 \
+      --url "file://michi-update.bin" \
+      --sha256 <64 hex chars of the firmware binary> \
+      --out michi-update.json
+
+  Copy michi-update.json + the binary (named exactly as the file:// base
+  name, e.g. michi-update.bin) onto a FAT32-formatted microSD card,
+  insert it in the Waveshare ESP32-S3-LCD-2, and the receiver applies the
+  update at boot (or keeps serving it for michi_ota_start_local()).
 
   python3 scripts/sign_manifest.py --help   # full options
 """
@@ -47,10 +64,40 @@ MAX_FIELD = {
     "url": 256,
     "sha256": 64,
 }
+# Local (SD) OTA: the file:// base name limit enforced by the firmware
+# (MICHI_OTA_FILE_NAME_MAX).
+FILE_URL_BASE_MAX = 64
 
 
 def canonical_payload(version, board, min_version, url, sha256):
     return PAYLOAD_SEPARATOR.join([version, board, min_version, url, sha256])
+
+
+def validate_url(url):
+    """Mirror of the firmware rules: https:// (no userinfo, <= url max)
+    for the network flow, or file://<base-name> (plain base name only)
+    for the local SD flow."""
+    if url.startswith("https://"):
+        if len(url) > MAX_FIELD["url"]:
+            sys.exit(f"error: url longer than {MAX_FIELD['url']} chars")
+        netloc = url[8:].split("/", 1)[0]
+        if "@" in netloc:
+            sys.exit("error: url contains userinfo (user@host) — rejected by firmware")
+        return
+    if url.startswith("file://"):
+        base = url[7:]
+        if not base or len(base) > FILE_URL_BASE_MAX:
+            sys.exit(
+                f"error: file:// url must be file://<base-name> "
+                f"(1..{FILE_URL_BASE_MAX} chars)"
+            )
+        if "/" in base or "\\" in base or ".." in base:
+            sys.exit(
+                "error: file:// url must be a plain base name "
+                "(no '/', no '\\\\', no '..') — the firmware rejects path traversal"
+            )
+        return
+    sys.exit("error: url must start with https:// or file://<base-name>")
 
 
 def validate_fields(fields):
@@ -64,12 +111,7 @@ def validate_fields(fields):
     board = fields["board"]
     if not board or len(board) > MAX_FIELD["board"]:
         sys.exit(f"error: board must be 1..{MAX_FIELD['board']} chars")
-    url = fields["url"]
-    if not url.startswith("https://") or len(url) > MAX_FIELD["url"]:
-        sys.exit(f"error: url must start with https:// and be <= {MAX_FIELD['url']} chars")
-    netloc = url[8:].split("/", 1)[0]
-    if "@" in netloc:
-        sys.exit("error: url contains userinfo (user@host) — rejected by firmware")
+    validate_url(fields["url"])
     sha256 = fields["sha256"]
     if len(sha256) != 64 or any(c not in "0123456789abcdefABCDEF" for c in sha256):
         sys.exit("error: sha256 must be exactly 64 hex chars")
@@ -111,7 +153,9 @@ def main():
     parser.add_argument("--min-version", required=True,
                         help="minimum firmware version allowed to install this update")
     parser.add_argument("--url", required=True,
-                        help="https:// URL of the firmware binary (sha256 = its digest)")
+                        help="https:// URL of the firmware binary, or "
+                             "file://<base-name> for a local SD update "
+                             "(sha256 = the binary's digest)")
     parser.add_argument("--sha256", required=True, help="SHA-256 of the firmware binary (64 hex)")
     parser.add_argument("--out", required=True, help="output manifest JSON path")
     args = parser.parse_args()
@@ -129,13 +173,19 @@ def main():
     # The canonical payload is NOT printed in full: it embeds the binary
     # URL, whose query string may carry a token (same rule the firmware
     # logs by: host + path length only). Show the signed fields except the
-    # URL, and the URL as a sanitized host/path-length.
+    # URL, and the URL as a sanitized host/path-length (https) or the
+    # base name (file:// - no tokens possible, path-traversal already
+    # rejected by validate_url).
     parts = urlsplit(args.url)
+    if args.url.startswith("file://"):
+        url_log = f"url_file={args.url[7:]}"
+    else:
+        url_log = f"url_host={parts.netloc} url_path_len={len(parts.path)}"
     print(
         "signing payload: "
         f"version={fields['version']} board={fields['board']} "
         f"min_version={fields['min_version']} sha256={fields['sha256']} "
-        f"url_host={parts.netloc} url_path_len={len(parts.path)} "
+        f"{url_log} "
         "(url omitted from the log: query strings may carry tokens)"
     )
 

@@ -17,7 +17,8 @@ extern "C" {
 /**
  * @brief Signed OTA updates (phase 13): manifest fetch + signature
  *        verification + streaming download + A/B partition swap with
- *        boot-time rollback.
+ *        boot-time rollback. Local SD OTA (phase 17): the same pipeline
+ *        from the onboard microSD - see michi_ota_start_local().
  *
  * Flow (see firmware/README.md, OTA section):
  *  - POST /api/v1/receiver/updates {url} -> michi_ota_start(): the URL
@@ -25,8 +26,10 @@ extern "C" {
  *    verified against the embedded public key michi_ota_pubkey_der).
  *  - The manifest is validated field by field: board exact match with the
  *    product profile, strict semver (version > current, version >=
- *    min_version - downgrade prevention), https:// binary URL, 64-hex
- *    sha256, valid signature over "version|board|min_version|url|sha256".
+ *    min_version - downgrade prevention), binary URL re-validated
+ *    (https:// for the network flow, file://<base-name> for the SD flow),
+ *    64-hex sha256, valid signature over
+ *    "version|board|min_version|url|sha256".
  *  - The binary is streamed (4 KB chunks) with esp_http_client +
  *    esp_crt_bundle_attach (CA-verified TLS, no CN skip), written with
  *    esp_ota_begin/esp_ota_write (OTA_SIZE_UNKNOWN) into the next update
@@ -37,7 +40,11 @@ extern "C" {
  *    michi_ota_boot_selftest_done() after the board self-test and the
  *    profile build. Marking valid (cancel rollback) when the self-test
  *    passed; logging + esp_restart() when it failed so the bootloader
- *    rolls back to the previous partition.
+ *    rolls back to the previous partition. A LOCAL update additionally
+ *    disables its manifest on the card (rename to michi-update.applied)
+ *    before the rollback restart so the previous image never reapplies
+ *    the same update (anti boot-loop latch, review F1 - NVS namespace
+ *    "ota_local": pending_version / applied_version / failed_boots).
  *
  * Security invariants:
  *  - TLS: https:// enforced at validation (http/ftp/arbitrary rejected),
@@ -45,6 +52,8 @@ extern "C" {
  *  - Integrity: the binary sha256 is inside the SIGNED manifest, so a
  *    tampered binary is rejected before it is ever booted; the signature
  *    key is the embedded public key (private key never in the repo).
+ *  - Local (SD) OTA enforces the same manifest signature with the same
+ *    key: a card file without a valid signed manifest is never applied.
  *  - The URL is not a secret, but query strings are never logged
  *    (the URL may carry a token); logs carry host + path length only.
  *
@@ -119,6 +128,73 @@ esp_err_t michi_ota_init(void);
 esp_err_t michi_ota_start(const char *url);
 
 /**
+ * @brief Start a signed update from the onboard microSD (phase 17).
+ *
+ * Reads /sdcard/<CONFIG_MICHI_SD_UPDATE_MANIFEST> and applies
+ * /sdcard/<CONFIG_MICHI_SD_UPDATE_FILE> through the SAME pipeline as the
+ * HTTPS flow: the manifest is the identical signed JSON (same canonical
+ * payload, same embedded key - verify_signature is shared, no duplicate
+ * crypto), the binary SHA-256 is checked before esp_ota_end, and A/B
+ * rollback (PENDING_VERIFY -> boot self-test) applies unchanged. The
+ * manifest url field MUST be file://<base-name> (strictly validated:
+ * no path separators, no "..", <= 64 chars) and its base name MUST equal
+ * CONFIG_MICHI_SD_UPDATE_FILE, otherwise the update is rejected.
+ *
+ * Anti boot-loop latch (review F1): BEFORE the apply starts, the pending
+ * version is latched in the NVS namespace "ota_local"
+ * (pending_version, truncated to 15 chars). A failed boot self-test of
+ * the new image then renames the manifest on the card to
+ * "michi-update.applied" (the rolled-back image must NOT reapply) and a
+ * successful apply records applied_version so the next boot skips
+ * an already-applied manifest (idempotency). See the README for the
+ * complete flow - the user never needs to remove the card.
+ *
+ * The mount state comes from michi_sd_mounted() (async mount flag,
+ * review F3) - the local flow waits on it with a bounded timeout.
+ *
+ * Gate/behavior identical to michi_ota_start: active session force-
+ * closed first, busy/PENDING_VERIFY rejected, MICHI_STATE_UPDATING
+ * requested, MICHI_EVENT_UPDATE_STARTED posted, progress/state reported
+ * through the same michi_ota_get_state (percent advances by bytes read
+ * from the file). Local updates NEVER apply an unsigned/corrupt file.
+ *
+ * @return ESP_OK (started); ESP_ERR_NOT_FOUND (no card / no manifest -
+ *         updates fall back to HTTPS OTA); ESP_ERR_INVALID_STATE (busy
+ *         or init failed); ESP_ERR_NOT_ALLOWED (running image
+ *         PENDING_VERIFY); ESP_ERR_INVALID_ARG (misconfigured Kconfig
+ *         names); ESP_ERR_NOT_SUPPORTED (MICHI_SD_ENABLE=n);
+ *         ESP_ERR_NO_MEM (task/queue allocation).
+ */
+esp_err_t michi_ota_start_local(void);
+
+/**
+ * @brief Boot-time local update check (phase 17, review F2/F3).
+ *
+ * Not called from app_main anymore: the observer registered by
+ * michi_ota_init() triggers the internal check task when the FSM
+ * reaches IDLE - the MICHI_STATE_UPDATING request maps only from IDLE,
+ * so a direct call (which runs while the FSM is still BOOTING/
+ * SELF_TEST) would start the update without the UPDATING state, breaking
+ * the LED ramp, the "Updating" screen and the diagnostics. The check
+ * task (NOT the FSM observer) then blocks on the async SD mount flag
+ * with a CONFIG_MICHI_SD_MOUNT_WAIT_MS timeout, probes the manifest and
+ * runs the F1 latches (skip when applied_version == the manifest
+ * version; refuse when failed_boots >= CONFIG_MICHI_OTA_LOCAL_MAX_
+ * FAILED_BOOTS and re-attempt the manifest disable).
+ *
+ * The mount wait makes this function BLOCKING (up to
+ * MICHI_SD_MOUNT_WAIT_MS): call it from task context only (the check
+ * task is the only caller).
+ *
+ * @return ESP_OK (update started or nothing to do); ESP_ERR_NOT_FOUND
+ *         (no card / no manifest / already applied or failed-boot limit
+ *         - updates fall back to HTTPS OTA); ESP_ERR_INVALID_STATE
+ *         (init failed); ESP_ERR_INVALID_ARG (misconfigured Kconfig
+ *         names); ESP_ERR_NOT_SUPPORTED (MICHI_SD_ENABLE=n).
+ */
+esp_err_t michi_ota_check_local(void);
+
+/**
  * @brief Snapshot the OTA state (any task).
  *
  * @param state   Out: lifecycle state (never NULL).
@@ -156,6 +232,11 @@ bool michi_ota_busy(void);
  *  - selftest_ok:  esp_ota_mark_app_valid_cancel_rollback() + log.
  *  - !selftest_ok: log the verdict + esp_restart() - the bootloader rolls
  *    back to the previous partition (CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE).
+ *    When the failed image came from a LOCAL update (pending_version
+ *    latched in NVS), the manifest on the card is renamed to
+ *    michi-update.applied BEFORE the restart (anti boot-loop, review
+ *    F1): the rolled-back image would otherwise reapply the same update
+ *    on the next boot forever.
  * Any other image state: no-op (log only) - nothing to mark or roll back.
  *
  * Independent of michi_ota_init(): must run even when init failed.

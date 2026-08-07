@@ -48,6 +48,7 @@
 #include "michi_ota.h"
 #include "michi_pairing.h"
 #include "michi_product_profile.h"
+#include "michi_sd.h"
 #include "michi_session.h"
 #include "michi_state.h"
 #include "michi_volume.h"
@@ -1530,6 +1531,28 @@ static esp_err_t diagnostics_get_handler(httpd_req_t *req)
                                     p->board_model) == NULL) {
             send_err = ESP_ERR_NO_MEM;
         }
+    }
+    if (send_err == ESP_OK) {
+#ifdef CONFIG_MICHI_SD_ENABLE
+        /* SD (phase 17): card presence + FAT volume sizes. Zero-secret:
+         * sizes only, no file listing, no contents. F6 (review): the
+         * mounted flag is the REAL mount state (michi_sd_mounted, async
+         * mount flag) and total/free fall back to 0 when get_info fails
+         * - a stats failure must never be reported as "not mounted". */
+        const bool sd_mounted = michi_sd_mounted();
+        uint64_t sd_total = 0;
+        uint64_t sd_free = 0;
+        (void)michi_sd_get_info(&sd_total, &sd_free); /* 0/0 on failure */
+        cJSON *sd = cJSON_AddObjectToObject(root, "sd");
+        if (sd == NULL ||
+            cJSON_AddBoolToObject(sd, "mounted", sd_mounted) == NULL ||
+            cJSON_AddNumberToObject(sd, "total_bytes",
+                                    (double)sd_total) == NULL ||
+            cJSON_AddNumberToObject(sd, "free_bytes",
+                                    (double)sd_free) == NULL) {
+            send_err = ESP_ERR_NO_MEM;
+        }
+#endif /* CONFIG_MICHI_SD_ENABLE */
     }
     if (send_err == ESP_OK) {
         /* OTA (phase 13): lifecycle state + progress; the error text on

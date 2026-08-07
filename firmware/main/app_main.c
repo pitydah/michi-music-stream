@@ -23,6 +23,7 @@
 #include "michi_ota.h"
 #include "michi_pairing.h"
 #include "michi_product_profile.h"
+#include "michi_sd.h"
 #include "michi_session.h"
 #include "michi_state.h"
 #include "michi_version.h"
@@ -258,6 +259,24 @@ void app_main(void)
     const michi_board_info_t *info = michi_board_get_info();
     michi_board_selftest_t st = michi_board_self_test();
 
+    /* microSD (phase 17): onboard card on the LCD SPI bus (CS 41). MUST
+     * run AFTER michi_board_init (SPI2_HOST is initialized by the BSP):
+     * the card is one more device on that bus, not a second bus. The
+     * mount is ASYNC (review F3): michi_sd_init spawns the mount task
+     * and returns immediately - the boot is not penalized when no card
+     * is present (the mount runs in parallel with the DAC/WiFi bring-up);
+     * the outcome is published via michi_sd_mounted() + the mount task
+     * logs. Degraded when absent - local OTA unavailable, HTTPS OTA
+     * keeps working. */
+#ifdef CONFIG_MICHI_SD_ENABLE
+    err = michi_sd_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "michi_sd_init failed: %s (no local updates)",
+                 esp_err_to_name(err));
+    }
+    ESP_LOGI(TAG, "subsystem=sd state=starting phase=17");
+#endif
+
     init_dac();
 
     /* Audio engine (phase 11): RTP/UDP session receiver + jitter buffer.
@@ -403,6 +422,19 @@ void app_main(void)
                      esp_err_to_name(err));
         }
     }
+
+    /* Local (SD) update check (phase 17, review F2): NOT called directly
+     * anymore. The FSM observer registered by michi_ota_init triggers
+     * the check task when the FSM reaches IDLE - the MICHI_STATE_UPDATING
+     * request maps only from IDLE, so a direct call here (the boot events
+     * are only queued at this point, the FSM is still BOOTING/SELF_TEST)
+     * would start the update without the UPDATING state: no LED ramp, no
+     * "Updating" screen, diagnostics stuck on IDLE. The check task waits
+     * for the async SD mount (MICHI_SD_MOUNT_WAIT_MS) and runs the F1
+     * latches before starting. */
+#ifdef CONFIG_MICHI_SD_ENABLE
+    ESP_LOGI(TAG, "subsystem=ota_local state=armed phase=17");
+#endif
 
     log_pending_subsystems();
 
