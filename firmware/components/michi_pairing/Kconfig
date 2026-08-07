@@ -1,0 +1,45 @@
+menu "Michi Music Stream Pairing"
+
+    comment "Pairing window + controller registry (phase 10). The window opens ONLY from the physical button; tokens are stored as SHA-256 digests (never plaintext)."
+
+    config MICHI_PAIRING_WINDOW_SECONDS
+        int "Pairing window duration (s)"
+        default 120
+        range 10 3600
+        help
+          How long a pairing window (opened by the physical button)
+          stays open before it expires and closes itself (one-shot
+          esp_timer -> MICHI_EVENT_PAIRING_WINDOW_CLOSED, PAIRING -> IDLE
+          in the FSM). A window also closes on a successful pairing or
+          when the confirm-attempt limit is exhausted.
+
+    config MICHI_PAIRING_MAX_CONTROLLERS
+        int "Maximum paired controllers"
+        default 8
+        range 1 16
+        help
+          Maximum registry entries persisted in the NVS "michi_pairing"
+          namespace (one versioned blob). Reaching the limit rejects new
+          pairings until a controller is revoked.
+
+    config MICHI_PAIRING_MAX_CHALLENGES_PER_WINDOW
+        int "Max challenges per window"
+        default 3
+        range 1 10
+        help
+          Rate limit: how many challenges one window may issue. Each
+          challenge request past the limit fails (ESP_ERR_TIMEOUT) until
+          the window is re-opened by the button. Never 0: a window with
+          no challenges could never be confirmed.
+
+    config MICHI_PAIRING_MAX_CONFIRM_ATTEMPTS
+        int "Max failed confirmations per window"
+        default 5
+        range 1 10
+        help
+          Anti brute force: every failed confirmation (wrong challenge,
+          malformed credentials) consumes one attempt. When the limit is
+          exceeded the window CLOSES (log + MICHI_EVENT_PAIRING_WINDOW_CLOSED)
+          and can only be re-opened by the physical button.
+
+endmenu

@@ -1,0 +1,90 @@
+menu "Michi Music Stream Button"
+
+    comment "Short press posts MICHI_EVENT_PAIRING_STARTED only in IDLE or UNPROVISIONED. The firmware enables the INTERNAL pull-up on MICHI_BUTTON_GPIO (active low to GND)."
+
+    config MICHI_BUTTON_DEBOUNCE_MS
+        int "Debounce window (ms)"
+        default 20
+        range 10 200
+        help
+          Stable-window debounce: an edge (press/release) is confirmed only
+          after N consecutive equal samples, N = DEBOUNCE/POLL rounded up.
+          The stable window is (N-1) poll periods; POLL must be < DEBOUNCE
+          or the debounce is disabled (init clamps N to 2 and logs a
+          warning). Honest guarantee: glitches shorter than one poll period
+          are rejected (they cannot fill N consecutive samples); a bounce
+          longer than the poll period can confirm an edge if it spans the
+          whole stable window - contacts that bounce long need a larger
+          window.
+
+    config MICHI_BUTTON_LONG_PRESS_MS
+        int "Long press threshold (ms)"
+        default 5000
+        range 500 30000
+        help
+          Press duration (measured edge-to-edge from the ISR timestamps) at
+          or above which the press counts as LONG and runs
+          MICHI_BUTTON_LONG_PRESS_ACTION instead of pairing. 5 s is long
+          enough that a normal pairing tap can never trip it, short enough
+          to be practical as a recovery/factory-reset gesture.
+
+    choice MICHI_BUTTON_LONG_PRESS_ACTION
+        prompt "Long press action"
+        default MICHI_BUTTON_LONG_PRESS_RECOVERY
+        help
+          What a long press (>= MICHI_BUTTON_LONG_PRESS_MS) does. Both
+          actions are ignored while the FSM is in BOOTING, SELF_TEST or
+          UPDATING.
+
+        config MICHI_BUTTON_LONG_PRESS_RECOVERY
+            bool "Recovery: post MICHI_EVENT_RECOVER"
+            help
+              Posts MICHI_EVENT_RECOVER, which drives RECOVERABLE_ERROR ->
+              IDLE (event mapping in michi_state). Safe in every state; the
+              FSM only applies it from RECOVERABLE_ERROR.
+
+        config MICHI_BUTTON_LONG_PRESS_FACTORY_RESET
+            bool "Factory reset: erase NVS + restart"
+            help
+              Erases the NVS partition (network profile, DAC override,
+              device id, ...) and restarts. DESTRUCTIVE: all stored
+              settings are lost. Blocked while UPDATING so a long press
+              can never brick an OTA in progress; additionally armed by
+              MICHI_BUTTON_FACTORY_ARM_MS so a press held through power-on
+              can never erase NVS.
+    endchoice
+
+    config MICHI_BUTTON_FACTORY_ARM_MS
+        int "Factory reset arm window (ms)"
+        default 10000
+        range 0 300000
+        help
+          A factory reset runs only if the press STARTED at least this many
+          milliseconds after boot (measured with esp_timer_get_time()
+          against the button init reference). A button held through
+          power-on, or a stuck pin, would otherwise confirm a "press" with
+          ~0 ms elapsed as soon as the FSM leaves the protected states and
+          erase NVS. 0 disables the arm window. Recovery is NOT gated by
+          the arm window.
+
+    config MICHI_BUTTON_POLL_MS
+        int "Debounce task poll period (ms)"
+        default 10
+        range 1 50
+        help
+          Sampling period of the debounce task. 10 ms gives sub-tick
+          resolution for the press duration while keeping the task at 100
+          samples/s of a single GPIO read. Must be < MICHI_BUTTON_DEBOUNCE_MS:
+          POLL >= DEBOUNCE disables the debounce (N would be 1; init clamps
+          N to 2 and logs a warning).
+
+    config MICHI_BUTTON_TASK_STACK_BYTES
+        int "Debounce task stack (bytes)"
+        default 3072
+        range 2048 16384
+        help
+          Stack of the debounce task (ESP-IDF xTaskCreate takes bytes).
+          The task polls one GPIO and posts events, so the default is
+          generous.
+
+endmenu

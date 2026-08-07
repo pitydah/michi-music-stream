@@ -1,0 +1,107 @@
+menu "Michi Music Stream Hardware"
+
+    config MICHI_DEVICE_ID
+        string "Device ID announced by the michi-link API"
+        default "michi-receiver-1"
+        help
+          Unique identifier of this unit, announced as device_id by
+          /api/v1/receiver/info and /api/v1/receiver/firmware (phase 4).
+          Change it per unit before pairing/registration (phase 10).
+
+    config MICHI_DAC_I2C_SDA
+        int "External DAC I2C SDA pin"
+        default 21
+        help
+          Camera SCCB SDA pin; the camera interface is not populated on this unit,
+          reusing it forfeits the camera. REQUIRES physical validation: measure
+          continuity between the DAC SDA line and GPIO21 with the unit powered off.
+
+    config MICHI_DAC_I2C_SCL
+        int "External DAC I2C SCL pin"
+        default 16
+        help
+          Camera SCCB SCL pin; the camera interface is not populated on this unit,
+          reusing it forfeits the camera. REQUIRES physical validation: measure
+          continuity between the DAC SCL line and GPIO16 with the unit powered off.
+
+    config MICHI_DAC_I2C_SPEED_HZ
+        int "External DAC I2C bus speed (Hz)"
+        default 100000
+        help
+          I2C clock for the external DAC bus. Default is 100 kHz: the ESP32-S3
+          internal pull-ups (~45 kOhm) are marginal at 400 kHz, so 400000 is
+          only safe after measuring external pull-ups (2.2-4.7 kOhm) on SDA/SCL
+          - see README hardware validation.
+
+    config MICHI_I2S_BCLK
+        int "External DAC I2S BCLK pin"
+        default 3
+        help
+          I2S bit clock to the external DAC. Default 3 is a free GPIO with no
+          Waveshare ESP32-S3-LCD-2 collision. REQUIRES physical validation: measure
+          continuity between the DAC BCLK line and GPIO3 on your unit. Measure with
+          the unit powered off. Note: this is an ESP32-S3 strapping pin; the external
+          circuit must not hold it low during reset.
+
+    config MICHI_I2S_LRCK
+        int "External DAC I2S LRCK pin"
+        default 18
+        help
+          I2S left/right clock to the external DAC. Default 18 is a free GPIO with
+          no Waveshare ESP32-S3-LCD-2 collision. REQUIRES physical validation:
+          measure continuity between the DAC LRCK line and GPIO18 on your unit.
+          Measure with the unit powered off.
+
+    config MICHI_I2S_DIN
+        int "External DAC I2S DIN pin"
+        default 5
+        help
+          I2S serial data to the external DAC. Default 5 is a free GPIO with no
+          Waveshare ESP32-S3-LCD-2 collision. REQUIRES physical validation: measure
+          continuity between the DAC DIN line and GPIO5 on your unit. Measure with
+          the unit powered off.
+
+    config MICHI_I2S_MCLK
+        int "External DAC I2S MCLK pin"
+        default -1
+        help
+          GPIO46 is input-only on ESP32-S3 so MCLK cannot be driven; the PCM5122
+          PLL synthesizes clocks from BCK/LRCK. Set to -1 to disable. If your unit
+          wires an MCLK line to another pin, measure continuity with the unit
+          powered off before updating this value.
+
+    config MICHI_DAC_MOCK
+        bool "Register the mock DAC driver (tests/CI only)"
+        default n
+        help
+          When enabled, the michi_dac registry also contains a "mock" driver
+          whose probe outcome is controlled by MICHI_DAC_MOCK_PROBE_OK. Never
+          enabled by default: it exists so tests/CI of later phases can
+          exercise the DAC state machine without real hardware.
+
+    config MICHI_DAC_MOCK_PROBE_OK
+        bool "Mock DAC probe reports OK"
+        default y
+        depends on MICHI_DAC_MOCK
+        help
+          y: mock probe succeeds and the mock DAC binds during autodetection.
+          n: mock probe fails, simulating an absent DAC.
+
+    config MICHI_LED_GPIO
+        int "External LED (SK6812) data pin"
+        default 4
+        help
+          Camera HREF pin; camera interface not populated, reuse forfeits the
+          camera. REQUIRES physical validation: measure continuity between the
+          SK6812 data line and GPIO4 with the unit powered off.
+
+    config MICHI_BUTTON_GPIO
+        int "External pairing button pin"
+        default 17
+        help
+          Camera PWDN pin; camera interface not populated, reuse forfeits the
+          camera. Active low to GND, requires a pull-up. REQUIRES physical
+          validation: measure continuity between the button pin and GPIO17, and
+          verify the pull-up, with the unit powered off.
+
+endmenu

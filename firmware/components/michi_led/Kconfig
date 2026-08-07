@@ -1,0 +1,32 @@
+menu "Michi Music Stream LED"
+
+    config MICHI_LED_COUNT
+        int "Number of SK6812 status LEDs"
+        default 3
+        range 1 64
+        help
+          LEDs on the M5Stack U003 status board (phase 7). The cat-contour
+          strip is NOT supported (project restriction: no second channel).
+
+    config MICHI_LED_MAX_BRIGHTNESS_PCT
+        int "Maximum LED brightness (percent)"
+        default 25
+        range 1 100
+        help
+          Global brightness cap applied to EVERY pixel in software (all
+          colors are scaled by this/100 in the animation task, never in
+          hardware). SK6812 at full brightness is blinding in a dark room;
+          the 25% default keeps the status LEDs visible but comfortable.
+          Raise only if the LEDs are meant to be seen from a distance.
+
+    config MICHI_LED_TASK_STACK_BYTES
+        int "LED animation task stack (bytes)"
+        default 3072
+        range 2048 16384
+        help
+          Stack of the LED animation task (ESP-IDF xTaskCreate takes bytes).
+          The task only computes pixel colors from the precomputed sine LUT
+          and calls led_strip_set_pixel/refresh per tick, so the default is
+          generous.
+
+endmenu

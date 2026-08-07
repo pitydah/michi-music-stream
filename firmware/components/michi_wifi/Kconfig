@@ -1,0 +1,69 @@
+menu "Michi Music Stream WiFi"
+
+    comment "Wi-Fi STA + BLE provisioning (phase 9). Credentials live ONLY in the NVS 'wifi' namespace - nothing here is a Wi-Fi credential."
+
+    config MICHI_WIFI_RETRY_MAX
+        int "Max reconnect attempts before RECOVERABLE_ERROR"
+        default 3
+        range 0 10
+        help
+          Consecutive STA disconnects tolerated before the FSM lands on
+          RECOVERABLE_ERROR (MICHI_EVENT_ERROR is broadcast with
+          ESP_ERR_WIFI_NOT_CONNECT as data; recovery via the physical
+          button long press - MICHI_EVENT_RECOVER - or a reboot). 0 fails
+          on the first disconnect.
+
+    config MICHI_WIFI_RECONNECT_BASE_MS
+        int "Reconnect backoff base (ms)"
+        default 5000
+        range 1000 60000
+        help
+          Backoff delay = BASE * 2^attempt, capped at 5 minutes, scheduled
+          on a one-shot esp_timer (P0-11: never from the esp_event
+          handler). With the defaults: 5 s, 10 s, 20 s, then
+          RECOVERABLE_ERROR.
+
+    config MICHI_PROV_POP
+        string "BLE provisioning proof-of-possession (SRP6a)"
+        default "michi123"
+        help
+          Proof-of-possession shown by the client (e.g. the Espressif
+          Provisioning app) when starting the secure session. THIS IS A
+          SHARED SECRET COMPILED INTO THE FIRMWARE: change it before any
+          production deployment - a factory default PoP lets anyone on
+          BLE range provision the device. It is a Kconfig STRING by
+          design (the provisioning protocol needs it before the device is
+          on the network); Wi-Fi credentials themselves are NEVER
+          compiled in - they live only in NVS.
+
+    config MICHI_PROV_SERVICE_NAME_PREFIX
+        string "BLE provisioning service name prefix"
+        default "MICHI-PROV_"
+        help
+          The provisioning BLE advertisement is
+          <prefix><last 4 hex digits of the STA MAC> (e.g.
+          MICHI-PROV_4CAB). Keep prefix + 4 characters within 31 bytes
+          (BLE name limit); longer names are truncated by the BLE stack.
+
+    config MICHI_PROV_RETRY_MS
+        int "Automatic provisioning retry delay (ms)"
+        default 30000
+        range 5000 300000
+        help
+          After a failed provisioning session (10-min client timeout,
+          bring-up error or NVS persist failure) the BLE provisioning
+          service restarts automatically after this delay, max 3 retries.
+          Exhausted sessions log clearly and land on UNPROVISIONED; the
+          pairing button long press (recovery action) restarts the cycle.
+
+    config MICHI_WIFI_TASK_STACK_BYTES
+        int "Provisioning task stack (bytes)"
+        default 6144
+        range 4096 16384
+        help
+          Stack of the task that brings up the BLE provisioning service
+          (wifi_prov_mgr + protocomm + cJSON device-info endpoint) and
+          persists the delivered credentials. The BLE bring-up blocks
+          this task, never the esp_event handlers (P0-11).
+
+endmenu

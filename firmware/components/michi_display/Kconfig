@@ -1,0 +1,28 @@
+menu "Michi Music Stream Display"
+
+    config MICHI_DISPLAY_TASK_STACK_BYTES
+        int "Display render task stack (bytes)"
+        default 4096
+        range 2048 16384
+        help
+          Stack of the render task (ESP-IDF xTaskCreate takes bytes). The
+          task draws into the PSRAM framebuffer and flushes it to the panel
+          (a full-frame flush is ~65-80 ms at 20 MHz SPI), so the stack also
+          covers the esp_lcd draw_bitmap call. Raise it only if a future
+          screen needs deeper frames.
+
+    config MICHI_DISPLAY_QUEUE_LEN
+        int "Render request queue length (requests)"
+        default 4
+        range 2 32
+        help
+          Depth of the FreeRTOS queue between the state observer /
+          update_now_playing / request_redraw producers and the render task.
+          A request dropped while the queue is full is logged (warn) by the
+          producer and sets a pending flag; the task re-renders once more
+          after the drain when the flag is set, and the next state change
+          re-renders anyway, so a dropped request does not leave the screen
+          stale (a drop racing that re-render is covered by the next state
+          change).
+
+endmenu

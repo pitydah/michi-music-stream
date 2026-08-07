@@ -1,0 +1,63 @@
+menu "Michi SD"
+
+config MICHI_SD_ENABLE
+    bool "Enable microSD support (onboard card on the LCD SPI bus)"
+    default y
+    help
+        Mounts the onboard microSD on the SPI bus shared with the LCD
+        (CS 41, SPI2_HOST, same SCLK/MOSI/MISO as the display) and
+        enables local OTA from the card (see michi_ota_start_local /
+        michi_ota_check_local). The card is FAT, mounted at /sdcard.
+        Without a card the system degrades gracefully: updates fall back
+        to HTTPS OTA. The ESP32-S3 does NOT boot from SD - the card is
+        update transport only.
+
+config MICHI_SD_UPDATE_FILE
+    string "Local update binary file name (on the SD card)"
+    default "michi-update.bin"
+    depends on MICHI_SD_ENABLE
+    help
+        Base file name of the firmware binary the receiver applies from
+        the card. It must match the file:// base name inside the signed
+        manifest (sign_manifest.py --url file://<this-name>), otherwise
+        the update is rejected at validation. Keep it a plain name: no
+        path separators, no ".." (the firmware enforces this).
+
+config MICHI_SD_UPDATE_MANIFEST
+    string "Local update manifest file name (on the SD card)"
+    default "michi-update.json"
+    depends on MICHI_SD_ENABLE
+    help
+        Base file name of the signed update manifest the receiver looks
+        for on the card at /sdcard/<this-name>. The manifest is the SAME
+        signed JSON used for HTTPS OTA (version/board/min_version/url/
+        sha256/signature), signed with the same key; only the url scheme
+        differs (file://<binary base name>).
+
+config MICHI_SD_MOUNT_WAIT_MS
+    int "Max wait for the async SD mount (ms)"
+    default 3000
+    range 100 10000
+    help
+        The SD mount runs in a task (michi_sd_init returns immediately).
+        The boot-time local OTA check (michi_ota_check_local) waits up to
+        this long for the mount flag before deciding there is no card.
+        The mount usually completes in a few hundred ms while the rest
+        of the boot runs in parallel (DAC/WiFi), so this is a safety
+        bound, not a boot delay. Kept independent of MICHI_SD_ENABLE so
+        michi_sd.c compiles unchanged when the SD support is compiled
+        out of app_main/diagnostics (review F13).
+
+config MICHI_SD_INFO_TTL_MS
+    int "SD volume info cache TTL (ms)"
+    default 30000
+    range 1000 600000
+    help
+        michi_sd_get_info() performs the real esp_vfs_fat_info() SD I/O
+        once and serves cached total/free bytes for this long. The
+        diagnostics endpoint polls /diagnostics on demand; the TTL keeps
+        the card quiet between polls. Kept independent of MICHI_SD_ENABLE
+        so michi_sd.c compiles unchanged when the SD support is compiled
+        out of app_main/diagnostics (review F13).
+
+endmenu

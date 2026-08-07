@@ -1,0 +1,47 @@
+menu "Michi OTA"
+
+config MICHI_OTA_MANIFEST_MAX_BYTES
+    int "Maximum signed manifest size in bytes"
+    default 2048
+    range 1024 2048
+    help
+        Upper bound for the signed update manifest JSON downloaded from the
+        manifest URL. The buffer lives on the HEAP (not the task stack);
+        this bound is capped at 2048 so the heap spend stays small and the
+        relation to the OTA task stack (MICHI_OTA_STACK_BYTES) stays
+        predictable: the stack only carries mbedTLS + HTTP frames.
+        Manifests larger than the bound are rejected at fetch time (the
+        JSON content may be up to one byte less than this bound, which
+        reserves the NUL terminator).
+
+config MICHI_OTA_URL_MAX
+    int "Maximum manifest URL length in characters"
+    default 256
+    range 64 1024
+    help
+        Upper bound for the manifest URL accepted by michi_ota_start() and
+        for the binary URL inside the manifest. Longer URLs are rejected
+        with ESP_ERR_INVALID_ARG.
+
+config MICHI_OTA_HTTP_TIMEOUT_MS
+    int "HTTP timeout for manifest fetch and firmware download (ms)"
+    default 10000
+    range 1000 60000
+    help
+        Per-read timeout for the esp_http_client during the manifest fetch
+        and the firmware download. The download aborts cleanly on read
+        failure (esp_ota_abort); there are no read retries.
+
+config MICHI_OTA_STACK_BYTES
+    int "OTA task stack size in bytes"
+    default 10240
+    range 4096 16384
+    help
+        Stack for the OTA task: it runs the whole update pipeline
+        (manifest fetch, mbedTLS verification, streaming download,
+        runtime SHA-256). The large transfer buffers (manifest up to
+        MICHI_OTA_MANIFEST_MAX_BYTES, 4 KB download chunk) are
+        heap-allocated, so the stack only has to carry mbedTLS + HTTP
+        frames; 10240 leaves headroom for those frames.
+
+endmenu
