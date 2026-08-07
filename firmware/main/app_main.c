@@ -19,6 +19,7 @@
 #include "michi_display.h"
 #include "michi_http.h"
 #include "michi_led.h"
+#include "michi_ota.h"
 #include "michi_pairing.h"
 #include "michi_product_profile.h"
 #include "michi_session.h"
@@ -277,6 +278,17 @@ void app_main(void)
         ESP_LOGI(TAG, "subsystem=session state=failed phase=12");
     }
 
+    /* OTA subsystem (phase 13): signed updates with A/B rollback. Runs
+     * after the session layer (the update path force-closes the active
+     * session) and logs the running partition + image state at boot.
+     * On failure boot continues degraded - no OTA, the rest works. */
+    err = michi_ota_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "michi_ota_init failed: %s (no OTA updates)",
+                 esp_err_to_name(err));
+        ESP_LOGI(TAG, "subsystem=ota state=failed phase=13");
+    }
+
     const michi_dac_caps_t *caps = michi_dac_get_caps();
     snprintf(st.dac_model, sizeof(st.dac_model), "%s",
              caps->detected ? caps->model : "");
@@ -310,6 +322,16 @@ void app_main(void)
              profile->display_present ? "true" : "false",
              profile->lighting_status_rgb ? "true" : "false",
              profile->lighting_cat_contour ? "true" : "false");
+
+    /* OTA rollback self-test (phase 13): after the board self-test + the
+     * profile build. Criterion (documented in michi_ota.h): the BOARD
+     * self-test overall (chip/flash/psram/display/backlight); a
+     * DIAGNOSTIC profile (no DAC detected) is a legitimate hardware
+     * option and does NOT block the mark. On the first boot after an OTA
+     * the image is PENDING_VERIFY: pass marks it valid (cancel rollback),
+     * fail logs + restarts so the bootloader rolls back. Any other image
+     * state is a no-op. */
+    michi_ota_boot_selftest_done(st.overall);
 
     /* HTTP API (phase 4): read-only migrated endpoints (/info, /firmware).
      * A failure is logged and boot continues - no halt. */

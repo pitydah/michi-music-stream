@@ -108,8 +108,15 @@ firmware/
     └── michi_session/             # Single active session lifecycle (phase 12)
         ├── CMakeLists.txt
         ├── include/
-        │   └── michi_session.h    # start/stop/patch/info + session credential
+        │   └── michi_session.h    # start/stop/abort/patch/info + session credential
         └── michi_session.c        # Contract validation, token, FSM events
+    └── michi_ota/                 # Signed OTA + rollback (phase 13)
+        ├── CMakeLists.txt
+        ├── Kconfig                # Manifest/URL bounds, HTTP timeout, task stack
+        ├── include/
+        │   ├── michi_ota.h        # start/get_state/boot_selftest_done API
+        │   └── michi_ota_pubkey.h # Embedded RSA-2048 public key (DER, dev key)
+        └── michi_ota.c            # Manifest fetch + verify + streaming download
 ```
 
 At boot, every subsystem that does not exist yet is logged honestly as
@@ -528,8 +535,10 @@ applies; every applied transition emits `MICHI_EVENT_STATE_CHANGED`.
 `MICHI_EVENT_ERROR` (data: `esp_err_t`), `MICHI_EVENT_STATE_CHANGED` and
 the phase events (`MICHI_EVENT_WIFI_*` phase 9, `MICHI_EVENT_PAIRING_WINDOW_CLOSED`
 phase 10, `MICHI_EVENT_SESSION_*` phase 12, `MICHI_EVENT_UPDATE_*`
-phase 13) are declared so consumers can register filters; their
-mappings arrive with their phases. The session events are the exception
+phase 13 — the UPDATE events are BROADCAST-ONLY by design: OTA drives
+the state with `michi_state_request(UPDATING)` directly, the events
+exist for observers) are declared so consumers can register filters;
+their mappings arrive with their phases. The session events are the exception
 alongside the pairing ones: `MICHI_EVENT_SESSION_STARTED` is posted once
 per lifecycle step (negotiated → engine starting → running) and the
 from-keyed lookup advances the chain IDLE → SESSION_PENDING → BUFFERING →
@@ -1316,6 +1325,17 @@ can hold. It sits between the HTTP API and the RTP engine:
   is stored and reported; volume is clamped 0-100 and the APPLIED value
   (`michi_volume_get`) is stored and reported — never the request value.
 - **No persistence.** Sessions live in RAM; a reboot ends them.
+- **Stop clears the display** (F9 follow-up): `stop()`/`abort()` clear
+  the now-playing metadata (source/title/artist → "--") so the IDLE
+  screen never shows stale track info.
+- **OTA gate + abort (phase 13).** `start()` rejects while the FSM is
+  `UPDATING` (the API answers 409 `ota_in_progress` before the session
+  layer is reached; the gate here is defensive). The update path
+  force-closes the active session with `michi_session_abort(reason)` —
+  a PRIVILEGED internal call that does NOT require the session token
+  (the credential is never persisted, so OTA cannot present it; the HTTP
+  handlers never use abort, they always go through `stop()` with the
+  token).
 - **Threading.** All calls run in task context (the httpd task); a mutex
   serializes. `stop()` — and `pause()` inside PATCH, which stops the
   engine the same way — may block up to the engine's cooperative join
@@ -1368,8 +1388,8 @@ envelope for failures.
 | `/api/v1/receiver/sessions/current` | PATCH | Bearer | PLAYBACK | `volume` / `paused`; token in body or `X-Michi-Session` |
 | `/api/v1/receiver/sessions/current` | DELETE | Bearer | PLAYBACK | Stop; token in `X-Michi-Session` header |
 | `/api/v1/receiver/now-playing` | PUT | Bearer | PLAYBACK | `source`/`title`/`artist` → display |
-| `/api/v1/receiver/diagnostics` | GET | Bearer | STATUS | Uptime, heap, PSRAM, wifi rssi, audio metrics, DAC |
-| `/api/v1/receiver/updates` | POST | Bearer | OTA | **501** `ota_not_implemented` — the service lands in phase 13 (auth verified, endpoint ready) |
+| `/api/v1/receiver/diagnostics` | GET | Bearer | STATUS | Uptime, heap, PSRAM, wifi rssi, audio metrics, DAC, OTA state |
+| `/api/v1/receiver/updates` | POST | Bearer | OTA | Body `{url}` → signed manifest URL; **202** `ota_started` (phase 13) |
 
 ### Session contract
 
@@ -1432,21 +1452,184 @@ phase-12 field names.
 - **Pairing only via button**: no network call opens the pairing window.
   Challenge/confirm work strictly inside a button-opened window; a
   revoke/list runs on the registry directly (Bearer-gated).
-- **Updates → phase 13**: `POST /updates` verifies auth and answers an
-  honest 501. The OTA service (partition swap, status reporting) is
-  phase 13.
+- **Updates → phase 13**: `POST /updates` starts the signed OTA flow; see
+  the OTA section below.
 - **Now-playing → display**: `PUT /now-playing` accepts metadata anytime
   (no session required); the display renders it when the state screen
   shows it. Oversize fields are rejected with 400 (never silently
-  truncated).
+  truncated). `DELETE /sessions/current` clears the now-playing
+  metadata (F9 follow-up) so the IDLE screen never shows stale track
+  info.
 - **Heartbeat semantics**: the response always carries the ACTIVE
   session id (server truth); a mismatched client id is not an error —
   the response lets the client discover the real id.
 - **Diagnostics**: audio metrics are engine counters (see the Audio
   engine section); `wifi.rssi_dbm` is omitted when not connected;
-  `audio.ssrc` appears once a source was accepted into the stream.
-  `wifi.ssid` exposes the network NAME only (never the password) —
-  intentional, diagnostics are Bearer-gated (STATUS).
+  `audio.ssrc` appears once a source was accepted into the stream;
+  `ota` reports `{state, percent, error}` (error only on
+  `failed`). `wifi.ssid` exposes the network NAME only (never the
+  password) — intentional, diagnostics are Bearer-gated (STATUS).
+
+## OTA updates: `components/michi_ota`
+
+Signed OTA with A/B partitions and boot-time rollback (phase 13). The
+trust model: the receiver NEVER downloads a binary directly — it
+downloads a **signed manifest** whose fields (version, board, binary URL,
+SHA-256) are RSA-2048/PKCS#1 v1.5/SHA-256 verified with an embedded
+public key; the binary digest lives INSIDE the signed manifest, so a
+tampered binary is rejected before it is ever staged or booted.
+
+### Flow
+
+```mermaid
+sequenceDiagram
+    participant C as Controller
+    participant API as HTTP API
+    participant O as michi_ota
+    participant H as HTTPS server
+    C->>API: POST /updates {url} (Bearer OTA)
+    API->>O: michi_ota_start(url) — URL validated sync
+    API-->>C: 202 {status:ota_started}
+    O->>O: force-close session (michi_session_abort) + request UPDATING
+    O->>H: GET manifest (TLS, CA bundle)
+    O->>O: validate fields + semver + signature (embedded key)
+    O->>H: GET binary (streamed, 4 KB chunks)
+    O->>O: esp_ota_write + runtime SHA-256 == manifest
+    O->>O: esp_ota_end + esp_ota_set_boot_partition + LED shutdown
+    O-->>O: esp_restart
+    Note over O: next boot: PENDING_VERIFY -> boot self-test -> mark valid
+```
+
+1. **URL validation** (`michi_ota_start`, synchronous): `https://` only
+   (http/ftp/arbitrary rejected), no userinfo (`user@host` rejected),
+   host non-empty, length ≤ `MICHI_OTA_URL_MAX` (256). Rejection →
+   `ESP_ERR_INVALID_ARG` → API 400. While an update runs a new start
+   answers 409 `ota_in_progress` (both in the handler and defensively in
+   the component).
+2. **Signed manifest** (JSON, ≤ `MICHI_OTA_MANIFEST_MAX_BYTES` — the
+   buffer reserves one byte for the NUL, so JSON content ≤ 2047 bytes
+   with the default 2048 bound):
+   `version`, `board`, `min_version`, `url`, `sha256`, `signature`.
+   The signature covers the canonical payload
+   `version|board|min_version|url|sha256` (verbatim strings, `|`
+   separator). Validation order: board EXACT match with the profile
+   `board_model` → strict semver (`version` > current — downgrade
+   prevention; `version` ≥ `min_version` — the manifest's own floor) →
+   binary URL re-validated (`https://`, no userinfo) → `sha256` exactly
+   64 hex → signature (base64-decoded, 256 bytes, `mbedtls_pk_verify`
+   with `michi_ota_pubkey_der`). Any failure → `MICHI_OTA_FAILED` with
+   the error text in `GET /diagnostics` → FSM returns to IDLE.
+3. **Download**: `esp_http_client` with `esp_crt_bundle_attach` (CA
+   bundle verified; `skip_cert_common_name_check` NEVER set) →
+   `esp_ota_begin(esp_ota_get_next_update_partition(NULL),
+   OTA_SIZE_UNKNOWN)` → `esp_ota_write` in 4 KB chunks with the runtime
+   SHA-256 fed in parallel → digest compared with the manifest →
+   `esp_ota_end` → `esp_ota_set_boot_partition` → `michi_led_shutdown()`
+   (clean LED power-off before restart) → `esp_restart`. On any
+   mid-stream error `esp_ota_abort`; the partition is never marked
+   bootable without a verified digest.
+4. **Rollback / self-test**: the OTA'd image boots in `PENDING_VERIFY`
+   (CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y). After the board self-test
+   + profile build, `app_main` calls
+   `michi_ota_boot_selftest_done(st.overall)`. Criterion: the BOARD
+   self-test overall (chip/flash/psram/display/backlight); a DIAGNOSTIC
+   profile (no DAC) is a legitimate hardware option and does NOT block
+   the mark. Pass → `esp_ota_mark_app_valid_cancel_rollback()`; fail →
+   log + `esp_restart()` so the bootloader rolls back to the previous
+   partition. The function checks the running partition state first
+   (`esp_ota_get_state_partition`) and only acts when `PENDING_VERIFY`
+    — a normal boot is a no-op. `michi_ota_start` additionally refuses to
+    start while the running image is still `PENDING_VERIFY` (the mark
+    must come from the boot self-test; the API answers 409
+    `pending_verify`).
+    **A/B without factory (accepted limitation):** two consecutive failed
+    updates can invalidate BOTH slots — each rollback marks the discarded
+    slot `INVALID`, so after failure N+2 the bootloader may find no valid
+    image; recovery then requires a serial reflash.
+5. **Blocked sessions**: starting an update force-closes the active
+   session via `michi_session_abort()` (privileged internal path — the
+   64-hex session credential is never persisted, so OTA cannot present
+   it; the HTTP handlers never use it) and requests
+   `MICHI_STATE_UPDATING` (valid from IDLE/PLAYING/PAUSED; the
+   SESSION_CLOSED event is queued first so the FSM lands IDLE → UPDATING
+   in order). `POST /sessions` during an update answers 409
+   `ota_in_progress` (checked in the handler before the body is read,
+   plus a defensive gate in `michi_session_start`). The display shows
+   "Updating firmware..." and the LED runs the UPDATING progress ramp.
+6. **Progress**: `michi_ota_get_state` reports state + percent — 5
+   manifest fetched, 10 validating, 10-85 download (by bytes), 90
+   verifying, 95 applying, 100 done. With a chunked transfer (no
+   content-length) the percent stays at 10 from the download anchor until
+   the verify step — there is no total to compute progress against.
+   `GET /api/v1/receiver/diagnostics` exposes `ota.state` / `ota.percent`
+   / `ota.error` (chosen over `/status`: diagnostics is the Bearer-gated
+   machine-readable surface; `/status` stays human/product focused).
+7. **Logs**: key=value; URLs are logged as `host=... path_len=...`
+   only — the URL is not a secret, but query strings may carry tokens
+   and are never logged.
+
+### Security
+
+- TLS: `https://` enforced at both ends (manifest URL and the SIGNED
+  binary URL are re-validated identically); CA bundle attached, CN
+  checked.
+- Integrity: binary SHA-256 inside the signed manifest; runtime digest
+  compared before `esp_ota_end` — a tampered binary never becomes
+  bootable.
+- Authenticity: RSA-2048 PKCS#1 v1.5 SHA-256, public key embedded in
+  `michi_ota_pubkey.h` (DER, 294 bytes). The private key NEVER lives in
+  the repository.
+- Upgrade policy: strict semver — no downgrades, `min_version` floor.
+
+### Signing and key management
+
+**Development (phase 13 bring-up)** — a DEV key pair was generated
+outside the repo (`/tmp/opencode/ota-dev-key/`, not committed; only the
+PUBLIC half is embedded in `michi_ota_pubkey.h`):
+
+```bash
+# generate (once, outside the repo)
+openssl genrsa -out ota_dev_private.pem 2048
+openssl rsa -in ota_dev_private.pem -pubout -outform DER -out ota_dev_public.der
+
+# sign a manifest for a release binary (cryptography or openssl backend)
+python3 scripts/sign_manifest.py \
+    --key /path/to/ota_dev_private.pem \
+    --version 0.3.0 \
+    --board "Waveshare ESP32-S3-LCD-2" \
+    --min-version 0.2.0 \
+    --url "https://dl.example.com/michi/fw-0.3.0.bin" \
+    --sha256 "$(sha256sum fw-0.3.0.bin | cut -d' ' -f1)" \
+    --out manifest.json
+
+# serve manifest.json + the binary over https, then:
+curl -X POST -H "Authorization: Bearer <ota-token>" \
+     -H "Content-Type: application/json" \
+     -d '{"url":"https://dl.example.com/michi/manifest.json"}' \
+     http://<receiver>/api/v1/receiver/updates
+```
+
+`scripts/sign_manifest.py` takes the private key as an INPUT ONLY (never
+embeds, logs or stores it) and reproduces the exact canonical payload the
+firmware verifies. The manifest's `board` must equal the receiver's
+`board_model` exactly ("Waveshare ESP32-S3-LCD-2").
+
+**Production** — generate a FRESH key pair per release channel, keep the
+private key in the release pipeline's secrets vault (never in the repo,
+never on a CI runner that builds artifacts), embed the new public key in
+`michi_ota_pubkey.h`, and sign manifests only in the release step. CI
+does NOT sign. Rotation: embed the new public key in an app update that
+is signed with the CURRENT key (the new key is exercised at runtime by
+the next update).
+
+### Kconfig
+
+| Symbol | Default | Meaning |
+|---|---|---|
+| `MICHI_OTA_MANIFEST_MAX_BYTES` | 2048 | Signed manifest size bound |
+| `MICHI_OTA_URL_MAX` | 256 | Manifest URL length bound |
+| `MICHI_OTA_HTTP_TIMEOUT_MS` | 10000 | Per-read HTTP timeout (manifest + binary) |
+| `MICHI_OTA_STACK_BYTES` | 10240 | OTA task stack (mbedTLS + HTTP frames; transfer buffers are heap-allocated) |
 
 ## Hardware validation pending
 

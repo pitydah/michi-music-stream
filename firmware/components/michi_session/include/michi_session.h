@@ -57,6 +57,11 @@ extern "C" {
  *   MICHI_EVENT_SESSION_CLOSED posted, "cleaned dead engine session"
  *   logged. start() then proceeds with the new session; get_info()
  *   returns ESP_ERR_INVALID_STATE (the API answers "no active session").
+ * - OTA gate (phase 13): start() rejects with ESP_ERR_INVALID_STATE while
+ *   the FSM is in MICHI_STATE_UPDATING (the HTTP layer answers 409
+ *   ota_in_progress BEFORE the session layer is reached - the gate here
+ *   is defensive). The update path force-closes the session with
+ *   michi_session_abort() (privileged, no credential - see below).
  * - FSM reconciliation: the FSM follows the session layer best-effort.
  *   get_info() re-posts the missing SESSION_STARTED chain steps from
  *   the current state when an active session left the FSM short of
@@ -194,7 +199,9 @@ esp_err_t michi_session_start(const char *owner_controller_id,
  * the join window. Idempotent for an already-stopped engine (pause)
  * since michi_audio_session_stop() is; the session state is cleared in
  * every case. If the engine task fails to join, ESP_ERR_TIMEOUT is
- * returned and NOTHING is cleared - retry stop().
+ * returned and NOTHING is cleared - retry stop(). On success the
+ * now-playing display metadata is cleared (F9 follow-up) so the IDLE
+ * screen never shows stale track info.
  *
  * @param session_token The 64-hex session token issued at start.
  * @return ESP_OK; ESP_ERR_INVALID_STATE (before init, or no session
@@ -203,6 +210,26 @@ esp_err_t michi_session_start(const char *owner_controller_id,
  *         ESP_ERR_TIMEOUT (engine task did not join - retry).
  */
 esp_err_t michi_session_stop(const char *session_token);
+
+/**
+ * @brief Force-stop the active session WITHOUT the credential
+ *        (privileged internal path, phase 13 OTA).
+ *
+ * The session token is a credential that is never persisted, so the OTA
+ * component cannot present it when it must tear the session down before
+ * flashing. This API is for trusted firmware components only (michi_ota);
+ * it must never be reachable from the network layer (the HTTP handlers
+ * use stop()/patch() exclusively).
+ *
+ * Same semantics as stop() minus the credential check: engine stop
+ * (cooperative, may block up to the join window), session state cleared,
+ * MICHI_EVENT_SESSION_CLOSED posted, now-playing metadata cleared.
+ *
+ * @param reason Log reason (e.g. "ota update"); may be NULL.
+ * @return Same as stop() (INVALID_STATE when no session is active;
+ *         TIMEOUT when the engine did not join - retry).
+ */
+esp_err_t michi_session_abort(const char *reason);
 
 /**
  * @brief Patch the active session: volume and/or pause state.

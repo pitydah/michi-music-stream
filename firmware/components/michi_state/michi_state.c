@@ -73,6 +73,7 @@ static const uint32_t s_transitions[MICHI_STATE_COUNT] = {
                             ST_BIT(MICHI_STATE_FATAL_ERROR),
     [MICHI_STATE_PAUSED] = ST_BIT(MICHI_STATE_PLAYING) |
                            ST_BIT(MICHI_STATE_IDLE) |
+                           ST_BIT(MICHI_STATE_UPDATING) |
                            ST_BIT(MICHI_STATE_RECOVERABLE_ERROR) |
                            ST_BIT(MICHI_STATE_FATAL_ERROR),
     [MICHI_STATE_UPDATING] = ST_BIT(MICHI_STATE_IDLE) |

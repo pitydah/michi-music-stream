@@ -38,6 +38,7 @@
 #include "esp_timer.h"
 
 #include "michi_audio.h"
+#include "michi_display.h"
 #include "michi_product_profile.h"
 #include "michi_session.h"
 #include "michi_state.h"
@@ -331,6 +332,15 @@ esp_err_t michi_session_start(const char *owner_controller_id,
     }
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
+    /* OTA gate (phase 13): while the FSM is UPDATING no new session may
+     * start. The HTTP layer answers 409 ota_in_progress BEFORE reaching
+     * this call; the gate here is defensive (a race between the busy
+     * check and the update teardown). */
+    if (michi_state_get() == MICHI_STATE_UPDATING) {
+        xSemaphoreGive(s_mutex);
+        ESP_LOGW(TAG, "start: rejected state=UPDATING (ota in progress)");
+        return ESP_ERR_INVALID_STATE;
+    }
     if (s_active) {
         if (session_reconcile_dead_engine_locked()) {
             /* The engine died on its own (F2): the zombie was cleaned
@@ -465,7 +475,48 @@ esp_err_t michi_session_stop(const char *session_token)
     s_session_start_us = 0;
     xSemaphoreGive(s_mutex);
 
+    /* F9 follow-up: the IDLE screen must never show stale track info. */
+    if (michi_display_clear_now_playing() != ESP_OK) {
+        ESP_LOGW(TAG, "stop: display clear failed (metadata kept)");
+    }
+
     ESP_LOGI(TAG, "session: stopped");
+    post_event(MICHI_EVENT_SESSION_CLOSED);
+    return ESP_OK;
+}
+
+esp_err_t michi_session_abort(const char *reason)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (!s_active) {
+        xSemaphoreGive(s_mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /* Cooperative engine stop, same contract as stop() (no credential:
+     * this is the privileged internal path used by michi_ota, which
+     * cannot present the never-persisted session token). */
+    const esp_err_t err = michi_audio_session_stop();
+    if (err != ESP_OK) {
+        xSemaphoreGive(s_mutex);
+        ESP_LOGW(TAG, "abort: engine did not stop: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    s_active = false;
+    memset(&s_session, 0, sizeof(s_session));
+    s_session_start_us = 0;
+    xSemaphoreGive(s_mutex);
+
+    if (michi_display_clear_now_playing() != ESP_OK) {
+        ESP_LOGW(TAG, "abort: display clear failed (metadata kept)");
+    }
+
+    ESP_LOGI(TAG, "session: aborted reason=%s", reason != NULL ? reason : "-");
     post_event(MICHI_EVENT_SESSION_CLOSED);
     return ESP_OK;
 }

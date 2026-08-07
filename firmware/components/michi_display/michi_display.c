@@ -415,3 +415,17 @@ void michi_display_request_redraw(void)
     }
     queue_render();
 }
+
+esp_err_t michi_display_clear_now_playing(void)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    portENTER_CRITICAL(&s_info_mux);
+    s_source[0] = '\0';
+    s_title[0] = '\0';
+    s_artist[0] = '\0';
+    portEXIT_CRITICAL(&s_info_mux);
+    queue_render();
+    return ESP_OK;
+}

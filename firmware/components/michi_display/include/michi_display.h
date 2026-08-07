@@ -68,6 +68,18 @@ esp_err_t michi_display_update_now_playing(const char *source,
                                            const char *artist);
 
 /**
+ * @brief Clear the now-playing metadata (source/title/artist reset to
+ *        empty, rendered as "--") and request a re-render.
+ *
+ * Called by the session layer on stop (phase 12 F9 follow-up) so the
+ * IDLE screen never shows stale track info. TASK context only; never
+ * blocks (same queue contract as update_now_playing).
+ *
+ * @return ESP_OK; ESP_ERR_INVALID_STATE if the subsystem is not initialized.
+ */
+esp_err_t michi_display_clear_now_playing(void);
+
+/**
  * @brief Request a re-render of the current state (e.g. volume changed).
  *
  * TASK context only (the render queue is not ISR-safe). Never blocks: a

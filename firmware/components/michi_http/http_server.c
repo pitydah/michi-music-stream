@@ -9,12 +9,12 @@
  *
  * Phase 12: the full receiver API - pairing (challenge/confirm strictly
  * INSIDE the button-opened window, controller list/revoke), sessions
- * (start/current/patch/stop), now-playing, diagnostics, updates (501:
- * phase 13), plus the v1-lite compatibility layer mapping the legacy
- * paths onto the SAME handlers with the SAME security. The bearer token
- * is validated by michi_pairing_validate_token (constant-time registry
- * scan) and the endpoint's permission bit is checked before any action;
- * the token VALUE is never logged.
+ * (start/current/patch/stop), now-playing, diagnostics, updates (phase
+ * 13: signed OTA), plus the v1-lite compatibility layer mapping the
+ * legacy paths onto the SAME handlers with the SAME security. The bearer
+ * token is validated by michi_pairing_validate_token (constant-time
+ * registry scan) and the endpoint's permission bit is checked before any
+ * action; the token VALUE is never logged.
  *
  * Handler contract (P0-1/P0-2 fixed by construction, shared with
  * michi_http.h): copy ALL values out of the cJSON tree BEFORE delete,
@@ -42,6 +42,7 @@
 #include "michi_dac.h"
 #include "michi_display.h"
 #include "michi_http.h"
+#include "michi_ota.h"
 #include "michi_pairing.h"
 #include "michi_product_profile.h"
 #include "michi_session.h"
@@ -59,6 +60,9 @@
 #define MICHI_HTTP_AUTH_HEADER_MAX 80   /* "Bearer " + 64 hex + NUL */
 #define MICHI_HTTP_SESSION_TOKEN_HEADER "X-Michi-Session"
 #define MICHI_HTTP_CONTROLLERS_PREFIX "/api/v1/receiver/controllers/"
+/* OTA error text buffer for the diagnostics snapshot: MICHI_OTA_ERR_MAX
+ * is exported by michi_ota.h (the component's internal bound - single
+ * source of truth, no local copy to drift). */
 
 static httpd_handle_t s_server = NULL;
 
@@ -70,6 +74,7 @@ static void status_to_str(int status, const char **out)
 {
     switch (status) {
     case 200: *out = "200 OK"; break;
+    case 202: *out = "202 Accepted"; break;
     case 400: *out = "400 Bad Request"; break;
     case 401: *out = "401 Unauthorized"; break;
     case 403: *out = "403 Forbidden"; break;
@@ -760,6 +765,14 @@ static esp_err_t session_start_handler(httpd_req_t *req)
     if (!auth_gate(req, MICHI_PERM_PLAYBACK, owner, sizeof(owner))) {
         return ESP_OK; /* 401/403 already sent (P0-5) */
     }
+    /* OTA gate (phase 13): no session may start while an update is in
+     * flight (the update task force-closes the active session and the
+     * FSM lands on UPDATING; the session layer's own defensive gate is
+     * a second line). */
+    if (michi_ota_busy()) {
+        return michi_http_send_error(req, 409, "ota_in_progress",
+                                     "a firmware update is in progress");
+    }
     cJSON *root = read_json_body(req);
     if (root == NULL) {
         return ESP_OK; /* 400 already sent (P0-5) */
@@ -1310,6 +1323,22 @@ static esp_err_t now_playing_put_handler(httpd_req_t *req)
     return send_err;
 }
 
+/* OTA state name for the API responses (diagnostics + updates 202). */
+static const char *ota_state_name(michi_ota_state_t st)
+{
+    switch (st) {
+    case MICHI_OTA_IDLE:             return "idle";
+    case MICHI_OTA_FETCHING_MANIFEST: return "fetching_manifest";
+    case MICHI_OTA_VALIDATING:       return "validating";
+    case MICHI_OTA_DOWNLOADING:      return "downloading";
+    case MICHI_OTA_VERIFYING:        return "verifying";
+    case MICHI_OTA_APPLYING:         return "applying";
+    case MICHI_OTA_DONE:             return "done";
+    case MICHI_OTA_FAILED:           return "failed";
+    default:                         return "unknown";
+    }
+}
+
 /* GET /api/v1/receiver/diagnostics (Bearer STATUS): uptime, heap, PSRAM,
  * Wi-Fi link, audio metrics, DAC state. Diagnostic data only - no
  * secrets (the SSID is a network name, fine; the password is never
@@ -1396,15 +1425,41 @@ static esp_err_t diagnostics_get_handler(httpd_req_t *req)
         }
     }
     if (send_err == ESP_OK) {
+        /* OTA (phase 13): lifecycle state + progress; the error text on
+         * MICHI_OTA_FAILED is diagnostic data, never a credential. */
+        michi_ota_state_t ota_state = MICHI_OTA_IDLE;
+        int ota_percent = 0;
+        char ota_err[MICHI_OTA_ERR_MAX] = {0};
+        if (michi_ota_get_state(&ota_state, &ota_percent, ota_err,
+                                sizeof(ota_err)) != ESP_OK) {
+            send_err = ESP_ERR_NO_MEM; /* defensive */
+        } else {
+            cJSON *ota = cJSON_AddObjectToObject(root, "ota");
+            if (ota == NULL ||
+                cJSON_AddStringToObject(ota, "state",
+                                        ota_state_name(ota_state)) == NULL ||
+                cJSON_AddNumberToObject(ota, "percent", ota_percent) == NULL ||
+                (ota_state == MICHI_OTA_FAILED &&
+                 cJSON_AddStringToObject(ota, "error", ota_err) == NULL)) {
+                send_err = ESP_ERR_NO_MEM;
+            }
+        }
+    }
+    if (send_err == ESP_OK) {
         send_err = michi_http_send_json(req, 200, root);
     }
     cJSON_Delete(root);
     return send_err;
 }
 
-/* POST /api/v1/receiver/updates (Bearer OTA): the endpoint is REAL (auth
- * is verified, the handler is registered) but the service lands in
- * phase 13 - an honest 501 with the documented message. */
+/* POST /api/v1/receiver/updates (Bearer OTA, phase 13): body {url} where
+ * url points at a SIGNED manifest. michi_ota_start() validates the URL
+ * synchronously and spawns the OTA task; the handler answers 202 with the
+ * resulting OTA state. Errors: 409 ota_in_progress when an update is
+ * already running (checked in the handler before the body is read, plus
+ * the atomic defensive gate inside michi_ota_start), 409 pending_verify
+ * when the running image is awaiting the boot self-test, 400 for a
+ * rejected URL/body, 500 on allocation or internal failures. */
 static esp_err_t updates_post_handler(httpd_req_t *req)
 {
     char controller_id[32] = {0};
@@ -1412,8 +1467,64 @@ static esp_err_t updates_post_handler(httpd_req_t *req)
                      sizeof(controller_id))) {
         return ESP_OK; /* 401/403 already sent (P0-5) */
     }
-    return michi_http_send_error(req, 501, "ota_not_implemented",
-                                 "OTA service lands in phase 13");
+    if (michi_ota_busy()) {
+        return michi_http_send_error(req, 409, "ota_in_progress",
+                                     "a firmware update is already in "
+                                     "progress");
+    }
+    cJSON *root = read_json_body(req);
+    if (root == NULL) {
+        return ESP_OK; /* 400 already sent (P0-5) */
+    }
+    char url[CONFIG_MICHI_OTA_URL_MAX + 1] = {0};
+    const bool have_url = michi_http_json_get_string(root, "url", url,
+                                                     sizeof(url));
+    cJSON_Delete(root);
+    if (!have_url) {
+        return michi_http_send_error(req, 400, "invalid_request",
+                                     "url is required");
+    }
+    const esp_err_t err = michi_ota_start(url);
+    switch (err) {
+    case ESP_OK: {
+        michi_ota_state_t st;
+        int percent = 0;
+        if (michi_ota_get_state(&st, &percent, NULL, 0) != ESP_OK) {
+            st = MICHI_OTA_IDLE;
+        }
+        cJSON *resp = cJSON_CreateObject();
+        if (resp == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
+        esp_err_t send_err = ESP_OK;
+        if (cJSON_AddStringToObject(resp, "status", "ota_started") == NULL ||
+            cJSON_AddStringToObject(resp, "state", ota_state_name(st)) == NULL ||
+            cJSON_AddNumberToObject(resp, "percent", percent) == NULL) {
+            send_err = ESP_ERR_NO_MEM;
+        } else {
+            send_err = michi_http_send_json(req, 202, resp);
+        }
+        cJSON_Delete(resp);
+        return send_err;
+    }
+    case ESP_ERR_INVALID_STATE:
+        return michi_http_send_error(req, 409, "ota_in_progress",
+                                     "an update is already in progress");
+    case ESP_ERR_NOT_ALLOWED:
+        return michi_http_send_error(req, 409, "pending_verify",
+                                     "firmware is awaiting the boot "
+                                     "self-test before the next update");
+    case ESP_ERR_INVALID_ARG:
+        return michi_http_send_error(req, 400, "invalid_request",
+                                     "url must be https:// with a non-empty "
+                                     "host and no userinfo");
+    case ESP_ERR_NO_MEM:
+        return michi_http_send_error(req, 500, "internal_error",
+                                     "out of memory starting the update");
+    default:
+        return michi_http_send_error(req, 500, "internal_error",
+                                     esp_err_to_name(err));
+    }
 }
 
 static const httpd_uri_t s_endpoints[] = {
