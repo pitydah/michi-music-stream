@@ -19,6 +19,7 @@
 #include "michi_display.h"
 #include "michi_http.h"
 #include "michi_led.h"
+#include "michi_log.h"
 #include "michi_ota.h"
 #include "michi_pairing.h"
 #include "michi_product_profile.h"
@@ -132,6 +133,17 @@ void app_main(void)
 
     esp_err_t err;
 
+    /* Log registry (phase 16): hybrid tail + journal. Init FIRST (before
+     * NVS, before any other PSRAM user): the tail ring is the first
+     * PSRAM allocation of the boot, so its address is deterministic and
+     * the crash dump can validate the previous boot's ring. The FSM
+     * observer for the journal is registered here (allowed pre-init). */
+    err = michi_log_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "michi_log_init failed: %s (no log registry)",
+                 esp_err_to_name(err));
+    }
+
     /* State machine (phase 5): the single global coordinator. Init FIRST,
      * before NVS, so the NVS-fatal path can land on the real terminal state
      * (BOOTING->FATAL_ERROR is in the table) and every later producer can
@@ -195,6 +207,19 @@ void app_main(void)
             esp_task_wdt_reset();
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
+    }
+
+    /* Log journal (phase 16): SPIFFS mount + boot_seq + journal task,
+     * right after NVS (boot_seq lives there; the crash dump flush needs
+     * SPIFFS). On failure boot continues degraded - tail keeps working. */
+    err = michi_log_start_journal();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "michi_log_start_journal failed: %s "
+                      "(journal disabled, tail still active)",
+                 esp_err_to_name(err));
+        ESP_LOGI(TAG, "subsystem=log state=degraded phase=16");
+    } else {
+        ESP_LOGI(TAG, "subsystem=log state=ok phase=16");
     }
 
     /* Network subsystem (phase 9): Wi-Fi STA + BLE provisioning +

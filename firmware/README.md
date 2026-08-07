@@ -1401,6 +1401,7 @@ envelope for failures.
 | `/api/v1/receiver/sessions/current` | DELETE | Bearer | PLAYBACK | Stop; token in `X-Michi-Session` header |
 | `/api/v1/receiver/now-playing` | PUT | Bearer | PLAYBACK | `source`/`title`/`artist` → display |
 | `/api/v1/receiver/diagnostics` | GET | Bearer | STATUS | Uptime, reset reason, heap/PSRAM, wifi (ssid/rssi/reconnects), audio+RTP metrics, I2S errors, DAC, session, OTA, last error, firmware (see Diagnostics) |
+| `/api/v1/receiver/logs` | GET | Bearer | STATUS | Hybrid log registry (phase 16): tail ring or event journal (see Log registry) |
 | `/api/v1/receiver/updates` | POST | Bearer | OTA | Body `{url}` → signed manifest URL; **202** `ota_started` (phase 13) |
 
 ### Session contract
@@ -1509,6 +1510,118 @@ phase 11/12 clients — the RTP metrics keep living under `audio`, not
 | `ota` | `michi_ota_get_state()` | `{state, percent}`; `error` only on `failed` (failure description, never a credential) |
 | `last_error` | `michi_state_get_last_error()` | `{event, data}`: `event` = `error` (MICHI_EVENT_ERROR: wifi retries exhausted, audio session self-end) or `update_failed` (OTA); `data` = the `esp_err_t`. `event: null` when nothing was captured this boot. A transition REQUEST to an error state without a preceding error event is captured with `data: 0` |
 | `firmware` | Product profile | `version`, `build_date`, `board` |
+
+## Log registry: `components/michi_log`
+
+Hybrid log registry (phase 16): a volatile tail that captures EVERY
+`ESP_LOG*` line plus a durable event journal, served by one Bearer-gated
+endpoint. The `storage` SPIFFS partition (~8.25 MB, reserved since
+phase 0) is mounted ONLY by this component.
+
+### Three layers
+
+1. **Tail (volatile, PSRAM).** `michi_log_init()` (very early in
+   `app_main`, before NVS and before any other PSRAM user) replaces the
+   vprintf used by `esp_log` with a callback that writes every rendered
+   line `[t_ms u32][level u8][len u16][payload]` into a ring of 512-byte
+   slots (`MICHI_LOG_TAIL_SIZE_KB`, default 128 KB = 255 entries)
+   allocated from PSRAM. The callback never logs, never mallocs, holds a
+   short spinlock and drops instead of failing; the console output is
+   preserved by chaining the previous vprintf (returned by
+   `esp_log_set_vprintf`, called exactly once).
+2. **Journal (durable, SPIFFS).** `michi_log_start_journal()` (after
+   `init_nvs`) mounts SPIFFS on `storage` (`format_if_mount_failed =
+   false` — a failed mount logs clearly and degrades to tail-only),
+   reads/increments `boot_seq` (NVS namespace `michi_log`, key
+   `boot_seq`, saturated at `UINT32_MAX` — no wrap, documented) and
+   starts the journal task (priority 3). A single FSM observer (filter
+   0) forwards ONLY `STATE_CHANGED` / `ERROR` / `UPDATE_FAILED` to the
+   queue (non-blocking send; a full queue drops the event and counts
+   it). `michi_state_report_error()` posts the same events to the bus,
+   so errors reported that way are journaled too — the source is the
+   OBSERVED EVENTS, not the FSM last-error slot. Each event becomes one
+   text line in `/spiffs/logs/journal.1`:
+   `<boot_seq> <t_ms> STATE_CHANGED target=<state> from=<state>` or
+   `<boot_seq> <t_ms> ERROR err=<esp_err_t name>`. The task
+   opens/appends/closes the file per event — intentional at this rate
+   (tens of events per day; the SPIFFS write cost is irrelevant and the
+   tail is unaffected).
+3. **Endpoint.** `GET /api/v1/receiver/logs` (Bearer STATUS, phase 16).
+
+### Rotation and wear
+
+When `journal.1` grows past `MICHI_LOG_JOURNAL_MAX_KB` (default 256 KB)
+the rename chain shifts (`journal.1 → journal.2`, the oldest file is
+dropped; `MICHI_LOG_JOURNAL_FILES` selects the chain length). Storage
+consumption is bounded by `files × max` (default 2 × 256 KB) plus crash
+dumps on the ~8.25 MB partition — SPIFFS wear is spread over the whole
+partition by its own wear leveling, and the journal write rate (events
+only, not log lines) keeps erase cycles negligible.
+
+### Crash dump
+
+On a crash reset (`PANIC`/`INT_WDT`/`TASK_WDT`/`WDT`), `michi_log_init()`
+checks the PSRAM ring BEFORE writing to it: same address (the ring is
+the first PSRAM allocation of every boot of the same build), magic
+`0x4D4C5247`, matching slot size and non-empty content → the last
+`MICHI_LOG_CRASH_DUMP_KB` (default 8 KB) are staged and written to
+`/spiffs/logs/crash_<boot_seq_prev>.txt` when the journal starts. Any
+mismatch (cold PSRAM, different build, PSRAM not first allocation)
+skips with a log line — a dump is never invented. The previous boot's
+entries are treated as untrusted (a crash may have interrupted a ring
+write): payloads are bounded-copied before printing.
+
+### Endpoint contract
+
+`GET /api/v1/receiver/logs?source=tail|journal&count=N&offset=O`
+
+Query parameters are optional and strictly validated (400 on any
+violation): `source` (default `tail`), `count` (tail only, default 100,
+max `MICHI_LOG_TAIL_MAX_ENTRIES_RESPONSE` = 500), `offset` (journal
+only, `>= 0`, sanity-capped at 16 MB).
+
+```json
+{
+  "boot_seq": 3,
+  "tail_available": true,
+  "journal_available": true,
+  "tail": [
+    {"t_ms": 12345, "level": "I", "line": "michi_http: http server listening on port 80 (17 endpoints)"}
+  ],
+  "journal": {"offset": 0, "next_offset": 512, "lines": ["3 12345 STATE_CHANGED target=IDLE from=SELF_TEST"]}
+}
+```
+
+- `tail`: the raw ESP_LOG payload (tag + key=value), level letter and
+  uptime ms; entries are single-line by construction (the ring sanitizes
+  embedded newlines); payloads longer than 504 bytes are truncated in
+  the tail only — the console is not.
+- `journal`: `offset`/`next_offset` pagination (repeat with
+  `next_offset` to page; a page is trimmed to the last complete line; a
+  single line longer than the 16 KB page is skipped — journal lines are
+  short by construction).
+- When the tail or the journal is unavailable, its boolean is `false`
+  and the corresponding field is omitted.
+
+### Zero-secret guarantee
+
+No token, challenge, nonce, password or session-token VALUE is ever part
+of a log format string in the firmware (the only token-bearing logs are
+outcomes, e.g. `token_mismatch rejected=1`; verified by grep at review
+time). The tail serves exactly what ESP_LOG produces, so it cannot leak
+a credential that was never logged; the journal stores event ids and
+`esp_err_t` codes only. The endpoint is additionally Bearer-gated
+(STATUS).
+
+### Limitations
+
+- The tail is VOLATILE: it lives in PSRAM, survives soft resets (the
+  crash dump uses that) and is lost on power cycle.
+- The journal is EVENT-ONLY: it records state changes and errors, not
+  the full log stream — that is the tail's job.
+- SPIFFS is NOT formatted on mount failure (by design): the first boot
+  with an unformatted `storage` partition (or a corrupt one) degrades
+  to tail-only until the partition is formatted by a maintenance path.
 
 ## OTA updates: `components/michi_ota`
 

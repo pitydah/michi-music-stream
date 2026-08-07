@@ -11,8 +11,9 @@
  * INSIDE the button-opened window, controller list/revoke), sessions
  * (start/current/patch/stop), now-playing, diagnostics, updates (phase
  * 13: signed OTA), plus the v1-lite compatibility layer mapping the
- * legacy paths onto the SAME handlers with the SAME security. The bearer
- * token is validated by michi_pairing_validate_token (constant-time
+ * legacy paths onto the SAME handlers with the SAME security. Phase 16:
+ * GET /api/v1/receiver/logs (hybrid log registry - tail + journal). The
+ * bearer token is validated by michi_pairing_validate_token (constant-time
  * registry scan) and the endpoint's permission bit is checked before any
  * action; the token VALUE is never logged.
  *
@@ -43,6 +44,7 @@
 #include "michi_dac.h"
 #include "michi_display.h"
 #include "michi_http.h"
+#include "michi_log.h"
 #include "michi_ota.h"
 #include "michi_pairing.h"
 #include "michi_product_profile.h"
@@ -61,6 +63,13 @@
 #define MICHI_HTTP_AUTH_HEADER_MAX 80   /* "Bearer " + 64 hex + NUL */
 #define MICHI_HTTP_SESSION_TOKEN_HEADER "X-Michi-Session"
 #define MICHI_HTTP_CONTROLLERS_PREFIX "/api/v1/receiver/controllers/"
+/* Journal response page: bytes of journal text served per /logs request
+ * (bounded, malloc'd - never a stack buffer). */
+#define MICHI_LOG_LOGS_PAGE 16384
+/* Sanity cap for the /logs offset query parameter: the journal is at most
+ * MICHI_LOG_JOURNAL_FILES * MICHI_LOG_JOURNAL_MAX_KB bytes, so any offset
+ * beyond 16 MB is a client error, not a storage limit. */
+#define MICHI_LOG_LOGS_OFFSET_MAX (16 * 1024 * 1024)
 /* OTA error text buffer for the diagnostics snapshot: MICHI_OTA_ERR_MAX
  * is exported by michi_ota.h (the component's internal bound - single
  * source of truth, no local copy to drift). */
@@ -1550,6 +1559,222 @@ static esp_err_t diagnostics_get_handler(httpd_req_t *req)
     return send_err;
 }
 
+/* ------------------------------------------------------------------
+ * GET /api/v1/receiver/logs (Bearer STATUS, phase 16): the hybrid log
+ * registry. Query parameters (all optional, strictly validated):
+ *   source=tail|journal  (default tail)
+ *   count                tail entries, 1..CONFIG_MICHI_LOG_TAIL_MAX_
+ *                        ENTRIES_RESPONSE (default 100)
+ *   offset               journal byte offset (pagination)
+ * The response always carries boot_seq, tail_available and
+ * journal_available; source=tail adds the "tail" array (each entry:
+ * t_ms, level I|W|E|D|V, line = raw ESP_LOG payload with tag and
+ * key=value); source=journal adds the "journal" object (offset,
+ * next_offset, lines). Zero-secret guarantee: no token/challenge/nonce
+ * VALUE is ever part of a log format string anywhere in the firmware
+ * (verified at review time); the tail can therefore never leak one. */
+static cJSON *logs_tail_array(int count)
+{
+    /* Line format from michi_log_get_tail: "<level> <t_ms:010u> <payload>".
+     * The payload is the raw ESP_LOG line (tag + key=value), single-line
+     * by construction (the ring sanitizes embedded newlines). */
+    const size_t line_max = 520;
+    const size_t buf_len = (size_t)count * line_max + 1;
+    char *buf = heap_caps_malloc(buf_len, MALLOC_CAP_SPIRAM);
+    if (buf == NULL) {
+        buf = malloc(buf_len);
+    }
+    if (buf == NULL) {
+        return NULL;
+    }
+    const esp_err_t err = michi_log_get_tail(buf, buf_len, (uint32_t)count);
+    if (err != ESP_OK) {
+        free(buf);
+        return NULL;
+    }
+    cJSON *arr = cJSON_CreateArray();
+    if (arr == NULL) {
+        free(buf);
+        return NULL;
+    }
+    for (char *line = buf; *line != '\0';) {
+        char *nl = strchr(line, '\n');
+        if (nl != NULL) {
+            *nl = '\0'; /* in-place NUL: cJSON copies the string */
+        }
+        if (line[0] != '\0') {
+            cJSON *item = cJSON_CreateObject();
+            if (item == NULL || cJSON_AddItemToArray(arr, item) == 0) {
+                if (item != NULL) {
+                    cJSON_Delete(item);
+                }
+                cJSON_Delete(arr);
+                free(buf);
+                return NULL;
+            }
+            char lvl = line[0];
+            const char *level = (lvl == 'E') ? "E" :
+                                (lvl == 'W') ? "W" :
+                                (lvl == 'D') ? "D" :
+                                (lvl == 'V') ? "V" : "I";
+            const long t_ms = strtol(&line[2], NULL, 10);
+            const char *payload = strlen(line) >= 14 ? &line[13] : "";
+            if (cJSON_AddNumberToObject(item, "t_ms", (double)t_ms) == NULL ||
+                cJSON_AddStringToObject(item, "level", level) == NULL ||
+                cJSON_AddStringToObject(item, "line", payload) == NULL) {
+                cJSON_Delete(arr);
+                free(buf);
+                return NULL;
+            }
+        }
+        if (nl == NULL) {
+            break;
+        }
+        line = nl + 1;
+    }
+    free(buf);
+    return arr;
+}
+
+static cJSON *logs_journal_object(uint32_t offset, uint32_t *next_offset)
+{
+    char *buf = heap_caps_malloc(MICHI_LOG_LOGS_PAGE + 1, MALLOC_CAP_SPIRAM);
+    if (buf == NULL) {
+        buf = malloc(MICHI_LOG_LOGS_PAGE + 1);
+    }
+    if (buf == NULL) {
+        return NULL;
+    }
+    const esp_err_t err = michi_log_get_journal(buf, MICHI_LOG_LOGS_PAGE + 1,
+                                                offset, next_offset);
+    if (err != ESP_OK) {
+        free(buf);
+        return NULL;
+    }
+    cJSON *j = cJSON_CreateObject();
+    if (j == NULL) {
+        free(buf);
+        return NULL;
+    }
+    if (cJSON_AddNumberToObject(j, "offset", (double)offset) == NULL ||
+        cJSON_AddNumberToObject(j, "next_offset", (double)*next_offset) ==
+            NULL) {
+        cJSON_Delete(j);
+        free(buf);
+        return NULL;
+    }
+    cJSON *lines = cJSON_CreateArray();
+    if (lines == NULL || cJSON_AddItemToObject(j, "lines", lines) == 0) {
+        cJSON_Delete(j);
+        free(buf);
+        return NULL;
+    }
+    for (char *line = buf; *line != '\0';) {
+        char *nl = strchr(line, '\n');
+        if (nl != NULL) {
+            *nl = '\0';
+        }
+        cJSON *s = cJSON_CreateString(line);
+        if (s == NULL || cJSON_AddItemToArray(lines, s) == 0) {
+            if (s != NULL) {
+                cJSON_Delete(s);
+            }
+            cJSON_Delete(j);
+            free(buf);
+            return NULL;
+        }
+        if (nl == NULL) {
+            break;
+        }
+        line = nl + 1;
+    }
+    free(buf);
+    return j;
+}
+
+static esp_err_t logs_get_handler(httpd_req_t *req)
+{
+    char controller_id[32] = {0};
+    if (!auth_gate(req, MICHI_PERM_STATUS, controller_id,
+                     sizeof(controller_id))) {
+        return ESP_OK; /* 401/403 already sent (P0-5) */
+    }
+    char source[16] = "tail";
+    int count = 100;
+    long offset = 0;
+    char qs[128] = {0};
+    if (httpd_req_get_url_query_str(req, qs, sizeof(qs)) == ESP_OK) {
+        char v[32] = {0};
+        if (httpd_query_key_value(qs, "source", v, sizeof(v)) == ESP_OK) {
+            if (strcmp(v, "journal") == 0) {
+                strcpy(source, "journal");
+            } else if (strcmp(v, "tail") != 0) {
+                return michi_http_send_error(req, 400, "invalid_request",
+                                             "source must be 'tail' or 'journal'");
+            }
+        }
+        if (httpd_query_key_value(qs, "count", v, sizeof(v)) == ESP_OK) {
+            char *end = NULL;
+            const long c = strtol(v, &end, 10);
+            if (end == v || *end != '\0' || c < 1 ||
+                c > CONFIG_MICHI_LOG_TAIL_MAX_ENTRIES_RESPONSE) {
+                return michi_http_send_error(req, 400, "invalid_request",
+                                             "count out of range");
+            }
+            count = (int)c;
+        }
+        if (httpd_query_key_value(qs, "offset", v, sizeof(v)) == ESP_OK) {
+            char *end = NULL;
+            offset = strtol(v, &end, 10);
+            if (end == v || *end != '\0' || offset < 0 ||
+                offset > MICHI_LOG_LOGS_OFFSET_MAX) {
+                return michi_http_send_error(req, 400, "invalid_request",
+                                             "offset out of range");
+            }
+        }
+    }
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    esp_err_t send_err = ESP_OK;
+    if (cJSON_AddNumberToObject(root, "boot_seq",
+                                (double)michi_log_get_boot_seq()) == NULL ||
+        cJSON_AddBoolToObject(root, "tail_available",
+                              michi_log_tail_available()) == NULL ||
+        cJSON_AddBoolToObject(root, "journal_available",
+                              michi_log_journal_available()) == NULL) {
+        send_err = ESP_ERR_NO_MEM;
+    }
+    if (send_err == ESP_OK && strcmp(source, "journal") == 0) {
+        if (michi_log_journal_available()) {
+            uint32_t next_offset = 0;
+            cJSON *j = logs_journal_object((uint32_t)offset, &next_offset);
+            if (j == NULL) {
+                send_err = ESP_ERR_NO_MEM;
+            } else if (cJSON_AddItemToObject(root, "journal", j) == 0) {
+                cJSON_Delete(j);
+                send_err = ESP_ERR_NO_MEM;
+            }
+        }
+    } else if (send_err == ESP_OK) {
+        if (michi_log_tail_available()) {
+            cJSON *arr = logs_tail_array(count);
+            if (arr == NULL) {
+                send_err = ESP_ERR_NO_MEM;
+            } else if (cJSON_AddItemToObject(root, "tail", arr) == 0) {
+                cJSON_Delete(arr);
+                send_err = ESP_ERR_NO_MEM;
+            }
+        }
+    }
+    if (send_err == ESP_OK) {
+        send_err = michi_http_send_json(req, 200, root);
+    }
+    cJSON_Delete(root);
+    return send_err;
+}
+
 /* POST /api/v1/receiver/updates (Bearer OTA, phase 13): body {url} where
  * url points at a SIGNED manifest. michi_ota_start() validates the URL
  * synchronously and spawns the OTA task; the handler answers 202 with the
@@ -1641,6 +1866,7 @@ static const httpd_uri_t s_endpoints[] = {
     {.uri = "/api/v1/receiver/sessions/current",  .method = HTTP_DELETE, .handler = session_delete_handler},
     {.uri = "/api/v1/receiver/now-playing",       .method = HTTP_PUT,   .handler = now_playing_put_handler},
     {.uri = "/api/v1/receiver/diagnostics",       .method = HTTP_GET,   .handler = diagnostics_get_handler},
+    {.uri = "/api/v1/receiver/logs",              .method = HTTP_GET,   .handler = logs_get_handler},
     {.uri = "/api/v1/receiver/updates",           .method = HTTP_POST,  .handler = updates_post_handler},
     /* v1-lite compatibility (transition layer, same handlers/security) */
     {.uri = "/api/v1/receiver/pair/start",    .method = HTTP_POST, .handler = pairing_challenge_handler},

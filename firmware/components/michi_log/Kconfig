@@ -1,0 +1,72 @@
+menu "Michi Music Stream Log"
+
+    config MICHI_LOG_TAIL_SIZE_KB
+        int "Tail ring buffer size (KB, PSRAM)"
+        default 128
+        range 16 1024
+        help
+          Size of the volatile log tail ring allocated from PSRAM at boot
+          (the FIRST PSRAM allocation, so the address is deterministic
+          across boots of the same build - the crash dump relies on it).
+          Ring capacity is size/512 entries (512-byte slots; log payloads
+          longer than 504 bytes are truncated in the tail only, the
+          console is not). 128 KB = 255 entries.
+
+    config MICHI_LOG_JOURNAL_MAX_KB
+        int "Journal file max size (KB, SPIFFS)"
+        default 256
+        range 16 2048
+        help
+          Rotation threshold of journal.1: when it grows past this size it
+          is renamed to journal.2 (the oldest file is dropped). Storage
+          consumption is bounded by files * max (2 * 256 KB by default) on
+          the SPIFFS "storage" partition (~8.25 MB).
+
+    config MICHI_LOG_JOURNAL_FILES
+        int "Journal files (rotation chain)"
+        default 2
+        range 1 4
+        help
+          Number of journal files in the rotation chain. 1 = single file
+          that is truncated on rotation (no history); 2 = one generation
+          of history; higher = more history at more SPIFFS space.
+
+    config MICHI_LOG_CRASH_DUMP_KB
+        int "Crash dump size (KB)"
+        default 8
+        range 2 64
+        help
+          How much of the previous boot's tail is copied to
+          /spiffs/logs/crash_<boot_seq_prev>.txt after a crash reset
+          (PANIC/INT_WDT/TASK_WDT/WDT) with a valid ring magic. Skipped
+          (never invented) when the magic does not match.
+
+    config MICHI_LOG_QUEUE_LEN
+        int "Journal event queue length"
+        default 16
+        range 4 256
+        help
+          Depth of the FreeRTOS queue between the FSM observer and the
+          journal task. A full queue drops the event (counted, logged on
+          the next drop). State changes and errors are rare (tens per
+          day), so 16 is generous for a teardown storm.
+
+    config MICHI_LOG_TAIL_MAX_ENTRIES_RESPONSE
+        int "Maximum tail entries per /logs response"
+        default 500
+        range 50 2000
+        help
+          Hard cap for the count query parameter of GET
+          /api/v1/receiver/logs (default 100). Bounds the response size
+          (each entry renders to at most ~520 bytes).
+
+    config MICHI_LOG_TASK_STACK_BYTES
+        int "Journal task stack (bytes)"
+        default 4096
+        range 2048 16384
+        help
+          Stack of the journal task (SPIFFS open/append/close + rotation
+          per event). The default is generous for the FILE* + snprintf
+          frames.
+
+endmenu
