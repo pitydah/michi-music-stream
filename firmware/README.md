@@ -1583,9 +1583,10 @@ deleted (the `boot_seq` in the file name orders them).
 `GET /api/v1/receiver/logs?source=tail|journal&count=N&offset=O`
 
 Query parameters are optional and strictly validated (400 on any
-violation): `source` (default `tail`), `count` (tail only, default 100,
-max `MICHI_LOG_TAIL_MAX_ENTRIES_RESPONSE` = 200 — capped because cJSON
-allocates ~260 KB of internal heap for a 500-entry array), `offset`
+violation): `source` (default `tail`), `count` (tail only, handler
+default 100, max `MICHI_LOG_TAIL_MAX_ENTRIES_RESPONSE` — Kconfig
+default 200, range 50-500: larger values spike internal-RAM cJSON
+usage, ~130 KB at 200 entries and ~1 MB at 2000), `offset`
 (journal only, `>= 0`, sanity-capped at 16 MB).
 
 ```json
@@ -1603,7 +1604,9 @@ allocates ~260 KB of internal heap for a 500-entry array), `offset`
 - `tail`: the raw ESP_LOG payload (tag + key=value), level letter and
   uptime ms; entries are single-line by construction (the ring sanitizes
   embedded newlines); payloads longer than 504 bytes are truncated in
-  the tail only — the console is not. `t_ms` is uptime in ms as a u32:
+  the tail only — the console is not. `level` is `I|W|E|D|V`, or `?`
+  for non-esp_log lines (e.g. bare `printf` routed through the global
+  vprintf hook). `t_ms` is uptime in ms as a u32:
   it wraps at 2^32 ms ≈ 49.7 days of uptime (documented; clients must
   not assume monotonicity across reboots).
 - `journal`: `offset`/`next_offset` pagination (repeat with
@@ -1619,8 +1622,10 @@ allocates ~260 KB of internal heap for a 500-entry array), `offset`
 - Permissions: this endpoint is Bearer-gated at STATUS, so the tail
   (which may include controller IDs and the SSID in log payloads) is
   readable by any STATUS token. Those IDs are documented as
-  non-secret device identifiers; the controller LIST endpoint still
-  requires CONTROLLER_ADMIN.
+  non-secret device identifiers; controller LIST (`GET
+  /api/v1/receiver/controllers`) requires STATUS like this one — only
+  `DELETE /api/v1/receiver/controllers/{id}` requires
+  CONTROLLER_ADMIN.
 
 ### Zero-secret guarantee
 

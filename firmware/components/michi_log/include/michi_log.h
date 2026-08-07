@@ -16,6 +16,10 @@ extern "C" {
 #define MICHI_LOG_ENTRY_PAYLOAD_MAX 504 /* bytes of payload per ring slot */
 #define MICHI_LOG_TAIL_LINE_FMT "%c %010" PRIu32 " %s\n" /* get_tail() line */
 #define MICHI_LOG_TAIL_PREFIX_LEN 13 /* "<level> <t_ms:010u> " before payload */
+/* Offset of the t_ms field inside a rendered tail line: level at 0,
+ * space at 1, the 10-digit field at 2 (= PREFIX_LEN - 11; enforced by a
+ * _Static_assert in michi_log.c). Consumers parse t_ms from here. */
+#define MICHI_LOG_TAIL_T_OFFSET 2
 /* Worst-case rendered line: prefix + payload + '\n' + NUL. */
 #define MICHI_LOG_TAIL_LINE_MAX \
     (MICHI_LOG_TAIL_PREFIX_LEN + MICHI_LOG_ENTRY_PAYLOAD_MAX + 2)
@@ -72,8 +76,10 @@ extern "C" {
  * Safe to call once; repeated calls return ESP_OK (idempotent). The
  * journal task is NOT started here: start_journal() runs after NVS.
  *
- * @return ESP_OK; ESP_ERR_NO_MEM when neither the ring nor the queue
- *         could be created (console logging still works).
+ * @return ESP_OK; ESP_ERR_NO_MEM only when BOTH layers failed: the tail
+ *         ring is NULL AND (the journal queue or its observer
+ *         registration) failed - console logging still works either
+ *         way.
  */
 esp_err_t michi_log_init(void);
 
@@ -87,7 +93,9 @@ esp_err_t michi_log_init(void);
  * - flushes a staged crash dump to /spiffs/logs/crash_<prev>.txt;
  * - starts the journal task (priority 3).
  *
- * @return ESP_OK; ESP_ERR_INVALID_STATE when init() was not called;
+ * @return ESP_OK; ESP_ERR_INVALID_STATE when init() was not called or
+ *         a previous shutdown was left UNCONFIRMED (timed out - the
+ *         journal re-arms only after a reboot, see michi_log_shutdown);
  *         the SPIFFS mount error when it failed (journal disabled,
  *         tail unaffected).
  */
@@ -101,7 +109,8 @@ esp_err_t michi_log_start_journal(void);
  * where <level> is I/W/E/D/V (or '?' for non-esp_log formats) and
  * <payload> is the raw ESP_LOG line WITHOUT the leading level/timestamp
  * prefix (tag + key=value included). Entries longer than the ring slot
- * (504 bytes payload) are truncated in the tail; the console is not.
+ * (MICHI_LOG_ENTRY_PAYLOAD_MAX bytes payload) are truncated in the
+ * tail; the console is not.
  *
  * @param out         Output buffer (must not be NULL).
  * @param out_len     Buffer size; the real limit of what is returned.
@@ -167,6 +176,14 @@ bool michi_log_journal_available(void);
  * it polls the flag with a bounded receive timeout. The caller waits on
  * its own handle for at most 500 ms; on timeout a clear warning is
  * logged (the task is presumed gone - the flag guarantees it exits).
+ *
+ * Unconfirmed shutdown (M3/M4): on TIMEOUT the shutdown is
+ * UNCONFIRMED - the quit flag stays set (a later start_journal()
+ * returns ESP_ERR_INVALID_STATE until reboot) and SPIFFS is LEFT
+ * MOUNTED, because the task may still be inside a SPIFFS syscall that
+ * owns it. Convergence of a later shutdown/restart depends on those
+ * in-flight SPIFFS syscalls completing - normally the reboot does
+ * that. Only a CONFIRMED exit (or a reboot) clears the flag.
  *
  * @return ESP_OK.
  */

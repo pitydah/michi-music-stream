@@ -91,6 +91,12 @@ typedef struct {
 _Static_assert(sizeof(michi_log_entry_t) == MICHI_LOG_ENTRY_SLOT_BYTES,
                "log entry must fit the fixed slot size");
 
+/* M11: the t_ms field offset must stay coherent with the tail line
+ * layout ("<level> <t_ms:010u> ": level at 0, space at 1, the 10-digit
+ * field at 2 = PREFIX_LEN(13) - 11). */
+_Static_assert(MICHI_LOG_TAIL_T_OFFSET == MICHI_LOG_TAIL_PREFIX_LEN - 11,
+               "t_ms field offset must match the tail line layout");
+
 typedef struct {
     uint32_t kind;      /* MICHI_LOG_ITEM_QUIT or an event id */
     uint32_t uptime_ms; /* esp_timer_get_time()/1000 at dispatch time */
@@ -193,12 +199,10 @@ static void sanitize_payload(char *payload, size_t len)
  * via the previous vprintf is always chained. */
 static int log_vprintf(const char *fmt, va_list args)
 {
-    /* C11 7.16.1.1: a va_list passed to a function is indeterminate
-     * after that function consumes it. vsnprintf consumes args, so the
-     * chained s_prev_vprintf would read garbage afterwards. Xtensa
-     * happens to work by ABI (va_list is passed by pointer), but
-     * RISC-V passes va_list BY VALUE - the bug would corrupt the
-     * console on the RISC-V boards. Copy once, consume the copy. */
+    /* M10: va_copy for correctness: the va_list state after vsnprintf is
+     * unspecified per C11 7.16.1.1; behavior differs across ABIs (a
+     * va_list-by-value ABI would leave the chained s_prev_vprintf
+     * reading garbage). Copy once, consume the copy. */
     va_list ap2;
     va_copy(ap2, args);
     char buf[MICHI_LOG_ENTRY_PAYLOAD_MAX];
@@ -305,10 +309,14 @@ static void crash_stage(void)
         const size_t plen = (e->len > 0 && e->len <= MICHI_LOG_ENTRY_PAYLOAD_MAX)
                                 ? (size_t)e->len - 1
                                 : 0;
-        if (budget < 14 + plen) { /* "%c %010u %s\n" = 14 + plen bytes */
+        if (budget < MICHI_LOG_TAIL_PREFIX_LEN + 1 + plen) {
+            /* M9: a rendered line is MICHI_LOG_TAIL_LINE_FMT
+             * ("%c %010u %s\n") = MICHI_LOG_TAIL_PREFIX_LEN prefix
+             * (level + space + 10-digit t_ms + space) + payload +
+             * '\n' (1 byte). */
             break;
         }
-        budget -= 14 + plen;
+        budget -= MICHI_LOG_TAIL_PREFIX_LEN + 1 + plen;
         win_start = (head + slots - i) % slots;
         win_count++;
     }
@@ -438,12 +446,16 @@ static void journal_append(const michi_log_journal_item_t *item)
         }
     }
     const size_t expect = strlen(line);
-    /* F5: verify the write AND the close - SPIFFS buffers, so an error
-     * may surface only at fclose(). On failure the journal latches
-     * degraded and stops trying until the next start_journal(). */
-    if (fwrite(line, 1, expect, f) != expect || fclose(f) != 0) {
+    /* F5/M1: verify the write AND the close - SPIFFS buffers, so an
+     * error may surface only at fclose(). Both are evaluated separately
+     * so the close ALWAYS runs: an early-return on write failure would
+     * leak the fd and exhaust the SPIFFS max_files=8 pool. On failure
+     * the journal latches degraded and stops trying until the next
+     * start_journal(). */
+    const size_t written = fwrite(line, 1, expect, f);
+    const int rc = fclose(f);
+    if (written != expect || rc != 0) {
         journal_mark_degraded(expect);
-        return;
     }
 }
 
@@ -511,16 +523,43 @@ static void log_state_observer(const michi_event_t *ev)
 /* Prune crash_<seq>.txt files beyond MICHI_LOG_CRASH_DUMP_KEEP: the seq
  * in the name is the boot_seq of the crashed boot, monotonically
  * increasing - the highest seq is the newest dump. Keep the NEWEST K,
- * delete the oldest extras. */
+ * delete the oldest extras.
+ *
+ * Convergence (M2): the scan cap MAX_DUMPS=64 exceeds any realistic dump
+ * count (KEEP ranges 1..16), but a directory with MORE than 64 canonical
+ * dumps is not fully converged in ONE pass - the next dump's prune picks
+ * up the remainder (every crash dump write triggers a prune), so the
+ * count converges to <= KEEP over successive writes. The cap bounds the
+ * sort; it never unbounds storage. */
 static void journal_prune_crash_dumps(void)
 {
+    enum { MAX_DUMPS = 64 };
+    /* M2c: the found[][]/seqs arrays (64 x 80 + 64 x 4 = 5376 B) run on
+     * the app_main stack (3584 B) via the flush path - heap-allocate
+     * (PSRAM first, internal RAM fallback, freed at the end) instead. */
     const int keep = CONFIG_MICHI_LOG_CRASH_DUMP_KEEP;
-    enum { MAX_DUMPS = 16 };
-    char found[MAX_DUMPS][80];
-    uint32_t seqs[MAX_DUMPS];
+    char (*found)[80] = NULL;
+    uint32_t *seqs = NULL;
+    found = heap_caps_malloc((size_t)MAX_DUMPS * 80, MALLOC_CAP_SPIRAM);
+    if (found == NULL) {
+        found = malloc((size_t)MAX_DUMPS * 80);
+    }
+    seqs = heap_caps_malloc((size_t)MAX_DUMPS * sizeof(uint32_t),
+                            MALLOC_CAP_SPIRAM);
+    if (seqs == NULL) {
+        seqs = malloc((size_t)MAX_DUMPS * sizeof(uint32_t));
+    }
+    if (found == NULL || seqs == NULL) {
+        ESP_LOGW(TAG, "crash dump: prune skipped (alloc failed)");
+        free(found);
+        free(seqs);
+        return;
+    }
     int n = 0;
     DIR *d = opendir(MICHI_LOG_LOGS_DIR);
     if (d == NULL) {
+        free(seqs);
+        free(found);
         return;
     }
     struct dirent *de;
@@ -541,30 +580,32 @@ static void journal_prune_crash_dumps(void)
         }
     }
     closedir(d);
-    if (n <= keep) {
-        return;
-    }
-    /* insertion sort ascending by seq (oldest first) */
-    for (int i = 1; i < n; i++) {
-        const uint32_t s = seqs[i];
-        char f[sizeof(found[0])];
-        memcpy(f, found[i], sizeof(f));
-        int j = i - 1;
-        while (j >= 0 && seqs[j] > s) {
-            seqs[j + 1] = seqs[j];
-            memcpy(found[j + 1], found[j], sizeof(found[j]));
-            j--;
+    if (n > keep) {
+        /* insertion sort ascending by seq (oldest first) */
+        for (int i = 1; i < n; i++) {
+            const uint32_t s = seqs[i];
+            char f[sizeof(found[0])];
+            memcpy(f, found[i], sizeof(f));
+            int j = i - 1;
+            while (j >= 0 && seqs[j] > s) {
+                seqs[j + 1] = seqs[j];
+                memcpy(found[j + 1], found[j], sizeof(found[j]));
+                j--;
+            }
+            seqs[j + 1] = s;
+            memcpy(found[j + 1], f, sizeof(f));
         }
-        seqs[j + 1] = s;
-        memcpy(found[j + 1], f, sizeof(f));
-    }
-    for (int i = 0; i < n - keep; i++) {
-        if (unlink(found[i]) != 0) {
-            ESP_LOGW(TAG, "crash dump: prune %s failed", found[i]);
-        } else {
-            ESP_LOGI(TAG, "crash dump: pruned %s (keep=%d)", found[i], keep);
+        for (int i = 0; i < n - keep; i++) {
+            if (unlink(found[i]) != 0) {
+                ESP_LOGW(TAG, "crash dump: prune %s failed", found[i]);
+            } else {
+                ESP_LOGI(TAG, "crash dump: pruned %s (keep=%d)",
+                         found[i], keep);
+            }
         }
     }
+    free(seqs);
+    free(found);
 }
 
 static void journal_flush_crash_dump(void)
@@ -583,10 +624,31 @@ static void journal_flush_crash_dump(void)
         s_crash_staging_len = 0;
         return;
     }
-    /* F5: verify the write and the close; a failed dump is abandoned
-     * with a clear reason (F8), never silently kept around. */
+    /* F5/M1/M2b: verify the write AND the close - SPIFFS buffers, so an
+     * error may surface only at fclose(); both are evaluated separately
+     * so the close ALWAYS runs. When the write fails the usual cause is
+     * a FULL SPIFFS: prune the old crash dumps first (frees space) and
+     * retry ONCE before abandoning (converges: after the prune, either
+     * the dump fits or SPIFFS is genuinely out of space). */
     const size_t expect = s_crash_staging_len;
-    if (fwrite(s_crash_staging, 1, expect, f) != expect || fclose(f) != 0) {
+    size_t written = fwrite(s_crash_staging, 1, expect, f);
+    if (written != expect) {
+        fclose(f);
+        journal_prune_crash_dumps();
+        f = fopen(path, "w");
+        if (f == NULL) {
+            ESP_LOGW(TAG, "crash dump: dump abandoned: reopen after "
+                          "prune failed (%s)", path);
+            journal_mark_degraded(expect);
+            heap_caps_free(s_crash_staging);
+            s_crash_staging = NULL;
+            s_crash_staging_len = 0;
+            return;
+        }
+        written = fwrite(s_crash_staging, 1, expect, f);
+    }
+    const int rc = fclose(f);
+    if (written != expect || rc != 0) {
         ESP_LOGW(TAG, "crash dump: dump abandoned: write failed bytes=%u",
                  (unsigned)expect);
         journal_mark_degraded(expect);
@@ -688,6 +750,17 @@ esp_err_t michi_log_start_journal(void)
     if (s_journal_queue == NULL || !s_observer_ok) {
         return ESP_ERR_NO_MEM;
     }
+    /* M3: a previous shutdown that timed out is UNCONFIRMED - the
+     * s_journal_quit flag marks it. Re-arming would spawn a second
+     * journal task while the presumed-gone one may still hold the queue
+     * (and SPIFFS syscalls). Refuse instead of silently clearing the
+     * flag: it is only cleared by a CONFIRMED exit (shutdown) or a
+     * reboot (which also resolves the in-flight syscalls, per M4). */
+    if (s_journal_quit) {
+        ESP_LOGE(TAG, "journal: previous shutdown unconfirmed - start "
+                      "refused until reboot");
+        return ESP_ERR_INVALID_STATE;
+    }
 
     esp_vfs_spiffs_conf_t conf = {
         .base_path = MICHI_LOG_SPIFFS_BASE,
@@ -726,23 +799,33 @@ esp_err_t michi_log_start_journal(void)
             seq = 0;
         }
         s_boot_seq = (seq == UINT32_MAX) ? UINT32_MAX : seq + 1;
-        if (nvs_set_u32(h, MICHI_LOG_NVS_BOOT_SEQ_KEY, s_boot_seq) == ESP_OK &&
-            nvs_commit(h) != ESP_OK) {
-            /* F17: the boot_seq is the crash-dump naming key - a failed
-             * commit means the next boot may reuse a seq and overwrite a
-             * dump. */
-            ESP_LOGW(TAG, "journal: boot_seq commit failed");
+        /* F17/M6: the boot_seq is the crash-dump naming key - a failed
+         * SET or COMMIT means the next boot may reuse a seq and
+         * overwrite a dump. Both are checked (no silent short-circuit:
+         * a set error is reported even when the commit succeeds). */
+        const esp_err_t set_err = nvs_set_u32(h, MICHI_LOG_NVS_BOOT_SEQ_KEY,
+                                              s_boot_seq);
+        const esp_err_t commit_err = nvs_commit(h);
+        if (set_err != ESP_OK || commit_err != ESP_OK) {
+            ESP_LOGW(TAG, "journal: boot_seq persist failed (set=%s "
+                          "commit=%s) - next boot may overwrite a dump",
+                     esp_err_to_name(set_err), esp_err_to_name(commit_err));
         }
         nvs_close(h);
     }
 
+    /* M5: reset the degraded latch BEFORE the flush - a flush that fails
+     * (e.g. SPIFFS full) re-latches so the 'events not written until
+     * restart' warning (journal_mark_degraded) is only emitted when it
+     * is actually true. */
+    s_journal_degraded = false;
+
     journal_flush_crash_dump();
 
-    /* F5/F3: a fresh start re-arms the journal (degraded latch and the
-     * quit flag from a previous shutdown must not carry over to the new
-     * task). */
-    s_journal_degraded = false;
-    s_journal_quit = false;
+    /* F5: a fresh start re-arms the journal. NOTE: the quit flag is NOT
+     * cleared here (M3) - it is the unconfirmed-shutdown marker and is
+     * only cleared by a confirmed exit in michi_log_shutdown() or a
+     * reboot. */
 
     BaseType_t t = xTaskCreate(journal_task, "michi_log",
                                CONFIG_MICHI_LOG_TASK_STACK_BYTES, NULL,
@@ -896,6 +979,7 @@ esp_err_t michi_log_shutdown(void)
     if (s_journal_task != NULL) {
         /* F3: save OUR handle under the mux BEFORE enqueuing QUIT - the
          * task notifies this handle (never its own). */
+        bool flag_path = false;
         portENTER_CRITICAL(&s_journal_mux);
         s_shutdown_done = xTaskGetCurrentTaskHandle();
         portEXIT_CRITICAL(&s_journal_mux);
@@ -906,6 +990,7 @@ esp_err_t michi_log_shutdown(void)
         } else {
             /* Queue full: the QUIT never lands - set the flag the task
              * polls and notify it directly (both under the mux). */
+            flag_path = true;
             portENTER_CRITICAL(&s_journal_mux);
             s_journal_quit = true;
             const TaskHandle_t task = s_journal_task;
@@ -913,8 +998,26 @@ esp_err_t michi_log_shutdown(void)
             xTaskNotifyGive(task);
         }
         if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500)) == 0) {
-            ESP_LOGW(TAG, "journal: shutdown timeout - task did not exit "
-                          "within 500 ms (flag forces it out)");
+            /* M3/M4: UNCONFIRMED shutdown - the task is presumed stuck
+             * in a SPIFFS syscall. Mark it with the quit flag (a later
+             * start_journal() is refused until reboot) and DO NOT
+             * unregister SPIFFS: the in-flight syscall still owns it
+             * (convergence depends on those syscalls completing, which
+             * the reboot guarantees). */
+            portENTER_CRITICAL(&s_journal_mux);
+            s_journal_quit = true;
+            portEXIT_CRITICAL(&s_journal_mux);
+            ESP_LOGW(TAG, "journal: shutdown timed out, SPIFFS left "
+                          "mounted (start refused until reboot)");
+            s_journal_task = NULL;
+            return ESP_OK;
+        }
+        if (flag_path) {
+            /* Confirmed exit: the quit flag served its purpose and the
+             * journal may re-arm on a later start_journal(). */
+            portENTER_CRITICAL(&s_journal_mux);
+            s_journal_quit = false;
+            portEXIT_CRITICAL(&s_journal_mux);
         }
         s_journal_task = NULL;
     }

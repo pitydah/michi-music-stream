@@ -67,13 +67,14 @@ menu "Michi Music Stream Log"
     config MICHI_LOG_TAIL_MAX_ENTRIES_RESPONSE
         int "Maximum tail entries per /logs response"
         default 200
-        range 50 2000
+        range 50 500
         help
           Hard cap for the count query parameter of GET
-          /api/v1/receiver/logs (default 100). Bounds the response size
-          (each entry renders to at most ~519 bytes). The cap is 200
-          rather than 500 because cJSON allocates ~260 KB of internal
-          heap for a 500-entry array on top of the entry buffers.
+          /api/v1/receiver/logs (handler default 100). Bounds the
+          response size (each entry renders to at most ~519 bytes). The
+          range is capped at 500: default 200; larger values spike
+          internal-RAM cJSON usage (~130 KB at 200, ~1 MB at 2000) on
+          top of the PSRAM entry buffers.
 
     config MICHI_LOG_TASK_STACK_BYTES
         int "Journal task stack (bytes)"

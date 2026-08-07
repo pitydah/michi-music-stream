@@ -1568,8 +1568,8 @@ static esp_err_t diagnostics_get_handler(httpd_req_t *req)
  *   offset               journal byte offset (pagination)
  * The response always carries boot_seq, tail_available and
  * journal_available; source=tail adds the "tail" array (each entry:
- * t_ms, level I|W|E|D|V, line = raw ESP_LOG payload with tag and
- * key=value); source=journal adds the "journal" object (offset,
+ * t_ms, level I|W|E|D|V (or '?' for non-esp_log formats), line = raw
+ * ESP_LOG payload with tag and key=value); source=journal adds the "journal" object (offset,
  * next_offset, lines). Zero-secret guarantee: no token/challenge/nonce
  * VALUE is ever part of a log format string anywhere in the firmware
  * (verified at review time); the tail can therefore never leak one. */
@@ -1621,7 +1621,13 @@ static cJSON *logs_tail_array(int count)
                                 (lvl == 'E') ? "E" :
                                 (lvl == 'D') ? "D" :
                                 (lvl == 'V') ? "V" : "?";
-            const long t_ms = strtol(&line[2], NULL, 10);
+            /* M11/M12: t_ms starts at MICHI_LOG_TAIL_T_OFFSET - level at
+             * index 0, space at 1, the 10-digit field at 2 (derived from
+             * MICHI_LOG_TAIL_PREFIX_LEN, asserted at compile time in
+             * michi_log.c). Parsed with strtoul: the u32 wrap at 2^32 ms
+             * is real (coherent with the README contract). */
+            const unsigned long t_ms =
+                strtoul(&line[MICHI_LOG_TAIL_T_OFFSET], NULL, 10);
             const char *payload =
                 strlen(line) > MICHI_LOG_TAIL_PREFIX_LEN
                     ? &line[MICHI_LOG_TAIL_PREFIX_LEN] : "";
