@@ -40,6 +40,7 @@
 #include "michi_board.h"
 #include "michi_dac.h"
 #include "michi_product_profile.h"
+#include "michi_state.h"
 #include "michi_volume.h"
 
 #define TAG "michi_audio"
@@ -622,6 +623,19 @@ static bool session_drain(session_t *s)
  * Session task (owns the socket and the jitter buffer; self-deletes)
  * ------------------------------------------------------------------ */
 
+/* F14: broadcast the session-ending failure on the bus (MICHI_EVENT_ERROR,
+ * data = esp_err_t) so the michi_state last-error slot and the display
+ * surface the cause. Best-effort: a dropped post is logged, never fatal.
+ * Called ONLY from the session self-end paths (never on stop() teardown). */
+static void session_post_error(esp_err_t data)
+{
+    const esp_err_t rc = michi_state_post(MICHI_EVENT_ERROR, (uint32_t)data);
+    if (rc != ESP_OK) {
+        ESP_LOGW(TAG, "session: error event post failed: %s",
+                 esp_err_to_name(rc));
+    }
+}
+
 static void session_task(void *arg)
 {
     session_t *s = (session_t *)arg;
@@ -635,6 +649,7 @@ static void session_task(void *arg)
     s->sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (s->sock < 0) {
         ESP_LOGE(TAG, "session: socket() failed (errno %d)", errno);
+        session_post_error(ESP_FAIL);
         self_end = true;
         goto out;
     }
@@ -650,6 +665,7 @@ static void session_task(void *arg)
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
     if (bind(s->sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         ESP_LOGE(TAG, "session: bind :%u failed (errno %d)", (unsigned)s->port, errno);
+        session_post_error(ESP_FAIL);
         self_end = true;
         goto out;
     }
@@ -673,6 +689,7 @@ static void session_task(void *arg)
         session_recv(s);
         if (!session_drain(s)) {
             ESP_LOGE(TAG, "session: pipeline rejected a write - ending session");
+            session_post_error(ESP_ERR_INVALID_STATE);
             s_session_run = false;
             self_end = true;
             break;
@@ -687,6 +704,7 @@ static void session_task(void *arg)
                 m_add(&s_metrics.underruns, 1);
             }
             if (!write_silence(s, s->samples_per_packet)) {
+                session_post_error(ESP_ERR_INVALID_STATE);
                 self_end = true;
                 break;
             }

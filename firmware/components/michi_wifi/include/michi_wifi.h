@@ -134,6 +134,21 @@ const char *michi_wifi_get_ssid(void);
 esp_err_t michi_wifi_get_rssi(int8_t *out_rssi);
 
 /**
+ * @brief Get the number of reconnects armed this boot (phase 14
+ *        diagnostics).
+ *
+ * Counts every armed exponential-backoff attempt (one per disconnect /
+ * failed connect), under the same mux as the retry counter. Monotonic
+ * per boot: unlike the internal retry counter it is NOT reset when the
+ * link comes up, so a support engineer can see the reconnect pressure
+ * over the unit's lifetime.
+ *
+ * @param out Receives the reconnect count.
+ * @return ESP_OK; ESP_ERR_INVALID_ARG on NULL out.
+ */
+esp_err_t michi_wifi_get_reconnect_count(uint32_t *out);
+
+/**
  * @brief Shut the network subsystem down: provisioning stopped (with
  *        cooperative task join), reconnect timer cancelled, handlers
  *        unregistered, Wi-Fi stopped/deinitialized, mDNS retired.

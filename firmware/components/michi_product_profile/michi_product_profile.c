@@ -37,6 +37,7 @@
 #include "michi_version.h"
 
 #define MICHI_PROFILE_VALIDATED_SAMPLE_RATE 48000
+#define MICHI_PROFILE_VALIDATED_BIT_DEPTH 16
 #define MICHI_PROFILE_VOLUME_MIN 0
 #define MICHI_PROFILE_VOLUME_MAX 100
 
@@ -94,6 +95,7 @@ esp_err_t michi_product_profile_refresh(void)
     p.max_sample_rate = caps->max_sample_rate;
     p.validated_sample_rate = MICHI_PROFILE_VALIDATED_SAMPLE_RATE;
     p.max_bit_depth = caps->max_bit_depth;
+    p.validated_bit_depth = MICHI_PROFILE_VALIDATED_BIT_DEPTH;
     p.channels = caps->channels;
     p.snr_db = caps->snr_db;
 

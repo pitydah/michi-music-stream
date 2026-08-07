@@ -168,6 +168,11 @@ static volatile bool s_network_ready;
 static volatile bool s_plan_applied;
 static volatile michi_boot_plan_t s_boot_plan;
 static volatile int s_retry;
+/* Lifetime (per-boot) reconnect counter (phase 14 diagnostics): incremented
+ * under the mux once per armed backoff attempt (arm_reconnect). Unlike
+ * s_retry it is NOT reset on GOT_IP: it reports how many reconnects this
+ * boot has needed. */
+static volatile uint32_t s_reconnects;
 /* Provisioning sessions failed this cycle (F7): counts toward
  * MICHI_PROV_RETRY_MAX before the automatic retries are exhausted. */
 static volatile int s_prov_retries;
@@ -360,6 +365,9 @@ static void arm_reconnect(void)
              s_ssid_cache, (unsigned)retry, delay_ms);
     portENTER_CRITICAL(&s_mux);
     s_retry = retry + 1;
+    /* F14: one reconnect per armed backoff attempt (monotonic, see the
+     * s_reconnects declaration). */
+    s_reconnects++;
     portEXIT_CRITICAL(&s_mux);
 }
 
@@ -1406,6 +1414,17 @@ esp_err_t michi_wifi_get_rssi(int8_t *out_rssi)
         return ESP_ERR_NOT_FOUND; /* not connected: no link to measure */
     }
     *out_rssi = ap.rssi;
+    return ESP_OK;
+}
+
+esp_err_t michi_wifi_get_reconnect_count(uint32_t *out)
+{
+    if (out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    portENTER_CRITICAL(&s_mux);
+    *out = s_reconnects;
+    portEXIT_CRITICAL(&s_mux);
     return ESP_OK;
 }
 

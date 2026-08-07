@@ -127,6 +127,28 @@ typedef struct {
 } michi_event_t;
 
 /**
+ * @brief Snapshot of the LAST error captured by the FSM (phase 14
+ *        diagnostics, michi_state_get_last_error).
+ *
+ * Captured by the FSM task (single writer, under the state mux) from:
+ *  - every dispatched MICHI_EVENT_ERROR (data = the esp_err_t broadcast);
+ *  - every dispatched MICHI_EVENT_UPDATE_FAILED (data = the esp_err_t,
+ *    OTA uses its own event - captured by the same slot so the cause
+ *    surfaces in diagnostics without a duplicated error broadcast);
+ *  - a transition REQUEST to RECOVERABLE_ERROR/FATAL_ERROR, ONLY when no
+ *    error event was ever captured or the last capture was itself a
+ *    request (never overwrites a real error event: producers post the
+ *    event before requesting the state, so the event wins).
+ *
+ * `recorded == false` means no error has been captured this boot.
+ */
+typedef struct {
+    michi_event_id_t event; /*!< MICHI_EVENT_ERROR, MICHI_EVENT_UPDATE_FAILED */
+    uint32_t data;          /*!< The esp_err_t carried by the event; 0 for a request-only capture */
+    bool recorded;          /*!< false = no error captured yet this boot */
+} michi_last_error_t;
+
+/**
  * @brief Observer callback, invoked from the FSM task.
  *
  * MUST NOT block (no vTaskDelay, no blocking I/O). May call
@@ -226,6 +248,24 @@ michi_state_t michi_state_get(void);
  * @return Static string; "UNKNOWN" for out-of-range values; never NULL.
  */
 const char *michi_state_name(michi_state_t s);
+
+/**
+ * @brief Copy the LAST error captured by the FSM (phase 14 diagnostics).
+ *
+ * Producers that broadcast MICHI_EVENT_ERROR (data = esp_err_t):
+ *  - michi_wifi: retry chain exhausted (ESP_ERR_WIFI_NOT_CONNECT) before
+ *    requesting RECOVERABLE_ERROR;
+ *  - michi_audio: session engine self-end (socket/bind failure, pipeline
+ *    write rejection - the session-ending failures).
+ * OTA (michi_ota) uses its OWN event MICHI_EVENT_UPDATE_FAILED with the
+ * same payload shape; it is captured by the same slot (no duplicated
+ * error broadcast). See michi_last_error_t for the capture rules.
+ *
+ * @param out Output struct (must not be NULL).
+ * @return ESP_OK; ESP_ERR_INVALID_ARG on NULL out; ESP_ERR_NOT_FOUND when
+ *         no error has been captured this boot (out->recorded = false).
+ */
+esp_err_t michi_state_get_last_error(michi_last_error_t *out);
 
 #ifdef __cplusplus
 }

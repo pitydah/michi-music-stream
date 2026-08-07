@@ -49,6 +49,7 @@ typedef struct {
     uint32_t max_sample_rate;         /* silicon capability (from caps) */
     uint32_t validated_sample_rate;   /* 48000: system validation baseline */
     uint8_t max_bit_depth;            /* from caps */
+    uint8_t validated_bit_depth;      /* 16: system validation baseline (meta 1) */
     uint8_t channels;                 /* from caps */
     uint16_t snr_db;                  /* from caps */
     char supported_codecs[2][16];     /* "pcm_s16le" (+ "pcm_s24le" when max_bit_depth >= 24) */

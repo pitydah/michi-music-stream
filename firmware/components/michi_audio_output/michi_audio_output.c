@@ -69,6 +69,20 @@ static size_t s_prefill_bytes = 0;
 static uint8_t s_bit_depth = 16;
 static uint8_t s_chunk[MICHI_AUDIO_CHUNK_BYTES] __attribute__((aligned(4)));
 
+/* F14 diagnostics: I2S error counter, incremented where the failures are
+ * logged (i2s_channel_write in the consumer task, i2s_channel_disable in
+ * stop()). Written from two contexts (task + caller), read from any task:
+ * every access runs under s_err_lock. */
+static volatile uint32_t s_error_count = 0;
+static portMUX_TYPE s_err_lock = portMUX_INITIALIZER_UNLOCKED;
+
+static void err_count_inc(void)
+{
+    portENTER_CRITICAL(&s_err_lock);
+    s_error_count++;
+    portEXIT_CRITICAL(&s_err_lock);
+}
+
 /* ------------------------------------------------------------------
  * Ring (SPSC: producer writes head, consumer writes tail; all access
  * under s_ring_lock). Indices are masked to the (power-of-two) size;
@@ -188,6 +202,7 @@ static void i2s_task(void *arg)
             /* Data was dequeued but could not be written: drop it and
              * keep the pipeline moving. */
             ESP_LOGW(TAG, "i2s_channel_write failed: %s", esp_err_to_name(err));
+            err_count_inc();
         }
         if (!s_run) {
             break;
@@ -423,6 +438,7 @@ esp_err_t michi_audio_output_stop(void)
     esp_err_t err = i2s_channel_disable(s_tx);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "stop: i2s_channel_disable failed: %s", esp_err_to_name(err));
+        err_count_inc();
     }
     /* 4) Join on the done flag with a timeout. The task sets it right
      *    before self-deleting; after observing it, s_task is stale and is
@@ -485,4 +501,15 @@ esp_err_t michi_audio_output_deinit(void)
 bool michi_audio_output_is_running(void)
 {
     return s_running;
+}
+
+esp_err_t michi_audio_output_get_error_count(uint32_t *out)
+{
+    if (out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    portENTER_CRITICAL(&s_err_lock);
+    *out = s_error_count;
+    portEXIT_CRITICAL(&s_err_lock);
+    return ESP_OK;
 }

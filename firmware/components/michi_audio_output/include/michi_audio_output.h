@@ -166,6 +166,20 @@ esp_err_t michi_audio_output_deinit(void);
  */
 bool michi_audio_output_is_running(void);
 
+/**
+ * @brief Get the I2S error counter (phase 14 diagnostics).
+ *
+ * Counts the failures that today are only logged: i2s_channel_write
+ * failures in the consumer task (transient: the chunk is dropped and the
+ * pipeline keeps moving) and i2s_channel_disable failures in stop().
+ * Session-ending pipeline rejections are NOT counted here - the RTP
+ * engine posts MICHI_EVENT_ERROR for those (michi_state last-error slot).
+ *
+ * @param out Receives the error count.
+ * @return ESP_OK; ESP_ERR_INVALID_ARG on NULL out.
+ */
+esp_err_t michi_audio_output_get_error_count(uint32_t *out);
+
 #ifdef __cplusplus
 }
 #endif

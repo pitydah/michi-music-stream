@@ -39,6 +39,7 @@
 #include "cJSON.h"
 
 #include "michi_audio.h"
+#include "michi_audio_output.h"
 #include "michi_dac.h"
 #include "michi_display.h"
 #include "michi_http.h"
@@ -1339,6 +1340,42 @@ static const char *ota_state_name(michi_ota_state_t st)
     }
 }
 
+/* F14: esp_reset_reason() -> stable diagnostic name (documented in the
+ * README Diagnostics section). The mapping is explicit per enum value so
+ * an IDF rename never silently renames a string. */
+static const char *reset_reason_name(void)
+{
+    switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:    return "POWERON";
+    case ESP_RST_EXT:        return "EXT";
+    case ESP_RST_SW:         return "SW";
+    case ESP_RST_PANIC:      return "PANIC";
+    case ESP_RST_INT_WDT:    return "INT_WDT";
+    case ESP_RST_TASK_WDT:   return "TWDT";
+    case ESP_RST_WDT:        return "OWDT";
+    case ESP_RST_DEEPSLEEP:  return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT:   return "BROWNOUT";
+    case ESP_RST_SDIO:       return "SDIO";
+    case ESP_RST_USB:        return "USB_UART";
+    case ESP_RST_JTAG:       return "USB_JTAG";
+    case ESP_RST_EFUSE:      return "EFUSE";
+    case ESP_RST_PWR_GLITCH: return "PWR_GLITCH";
+    case ESP_RST_CPU_LOCKUP: return "CPU_LOCKUP";
+    case ESP_RST_UNKNOWN:
+    default:                 return "UNKNOWN";
+    }
+}
+
+/* F14: event ids captured by the michi_state last-error slot -> names. */
+static const char *last_error_event_name(michi_event_id_t id)
+{
+    switch (id) {
+    case MICHI_EVENT_ERROR:          return "error";
+    case MICHI_EVENT_UPDATE_FAILED:  return "update_failed";
+    default:                         return "unknown";
+    }
+}
+
 /* GET /api/v1/receiver/diagnostics (Bearer STATUS): uptime, heap, PSRAM,
  * Wi-Fi link, audio metrics, DAC state. Diagnostic data only - no
  * secrets (the SSID is a network name, fine; the password is never
@@ -1359,8 +1396,14 @@ static esp_err_t diagnostics_get_handler(httpd_req_t *req)
                                 (double)(uint64_t)(esp_timer_get_time() / 1000000)) == NULL ||
         cJSON_AddNumberToObject(root, "heap_free",
                                 (double)esp_get_free_heap_size()) == NULL ||
+        cJSON_AddNumberToObject(root, "heap_min_free",
+                                (double)esp_get_minimum_free_heap_size()) == NULL ||
         cJSON_AddNumberToObject(root, "psram_free",
-                                (double)heap_caps_get_free_size(MALLOC_CAP_SPIRAM)) == NULL) {
+                                (double)heap_caps_get_free_size(MALLOC_CAP_SPIRAM)) == NULL ||
+        cJSON_AddNumberToObject(root, "psram_size",
+                                (double)heap_caps_get_total_size(MALLOC_CAP_SPIRAM)) == NULL ||
+        cJSON_AddStringToObject(root, "reset_reason",
+                                reset_reason_name()) == NULL) {
         send_err = ESP_ERR_NO_MEM;
     }
     if (send_err == ESP_OK) {
@@ -1369,13 +1412,17 @@ static esp_err_t diagnostics_get_handler(httpd_req_t *req)
             send_err = ESP_ERR_NO_MEM;
         } else {
             int8_t rssi = 0;
+            uint32_t reconnects = 0;
             const esp_err_t rssi_err = michi_wifi_get_rssi(&rssi);
             if (cJSON_AddBoolToObject(wifi, "connected",
                                       rssi_err == ESP_OK) == NULL ||
                 cJSON_AddStringToObject(wifi, "ssid",
                                         michi_wifi_get_ssid()) == NULL ||
                 (rssi_err == ESP_OK &&
-                 cJSON_AddNumberToObject(wifi, "rssi_dbm", rssi) == NULL)) {
+                 cJSON_AddNumberToObject(wifi, "rssi_dbm", rssi) == NULL) ||
+                (michi_wifi_get_reconnect_count(&reconnects) == ESP_OK &&
+                 cJSON_AddNumberToObject(wifi, "reconnects",
+                                         reconnects) == NULL)) {
                 send_err = ESP_ERR_NO_MEM;
             }
         }
@@ -1416,11 +1463,93 @@ static esp_err_t diagnostics_get_handler(httpd_req_t *req)
     }
     if (send_err == ESP_OK) {
         const michi_dac_caps_t *caps = michi_dac_get_caps();
+        const michi_product_profile_t *p = michi_product_profile_get();
         cJSON *dac = cJSON_AddObjectToObject(root, "dac");
         if (dac == NULL ||
             cJSON_AddBoolToObject(dac, "detected", caps->detected) == NULL ||
             cJSON_AddBoolToObject(dac, "initialized", caps->initialized) == NULL ||
-            cJSON_AddStringToObject(dac, "model", caps->model) == NULL) {
+            cJSON_AddStringToObject(dac, "model", caps->model) == NULL ||
+            cJSON_AddStringToObject(dac, "tier",
+                                    michi_product_profile_tier_name()) == NULL ||
+            cJSON_AddNumberToObject(dac, "sample_rate",
+                                    (double)p->validated_sample_rate) == NULL ||
+            cJSON_AddNumberToObject(dac, "bit_depth",
+                                    (double)p->validated_bit_depth) == NULL) {
+            send_err = ESP_ERR_NO_MEM;
+        }
+    }
+    if (send_err == ESP_OK) {
+        /* F14 session block: the session layer snapshot (no token, ever).
+         * On no active session only {"active": false} is emitted. */
+        michi_session_info_t info;
+        cJSON *session = cJSON_AddObjectToObject(root, "session");
+        if (session == NULL) {
+            send_err = ESP_ERR_NO_MEM;
+        } else if (michi_session_get_info(&info) != ESP_OK) {
+            if (cJSON_AddBoolToObject(session, "active", false) == NULL) {
+                send_err = ESP_ERR_NO_MEM;
+            }
+        } else if (cJSON_AddBoolToObject(session, "active", true) == NULL ||
+                   cJSON_AddStringToObject(session, "session_id",
+                                           info.session_id) == NULL ||
+                   cJSON_AddStringToObject(session, "codec",
+                                           info.codec) == NULL ||
+                   cJSON_AddNumberToObject(session, "sample_rate",
+                                           (double)info.sample_rate) == NULL ||
+                   cJSON_AddNumberToObject(session, "bit_depth",
+                                           (double)info.bit_depth) == NULL ||
+                   cJSON_AddNumberToObject(session, "channels",
+                                           (double)info.channels) == NULL ||
+                   cJSON_AddNumberToObject(session, "stream_port",
+                                           (double)info.stream_port) == NULL ||
+                   cJSON_AddNumberToObject(session, "buffer_ms",
+                                           (double)info.buffer_ms) == NULL ||
+                   cJSON_AddNumberToObject(session, "volume",
+                                           (double)info.volume) == NULL ||
+                   cJSON_AddBoolToObject(session, "paused",
+                                         info.paused) == NULL ||
+                   cJSON_AddNumberToObject(session, "ssrc",
+                                           (double)info.ssrc) == NULL ||
+                   cJSON_AddStringToObject(session, "source_addr",
+                                           info.source_addr) == NULL) {
+            send_err = ESP_ERR_NO_MEM;
+        }
+    }
+    if (send_err == ESP_OK) {
+        uint32_t i2s_errors = 0;
+        const bool have_i2s = michi_audio_output_get_error_count(&i2s_errors) == ESP_OK;
+        cJSON *le = cJSON_AddObjectToObject(root, "last_error");
+        if ((have_i2s &&
+             cJSON_AddNumberToObject(root, "i2s_errors",
+                                     i2s_errors) == NULL) ||
+            le == NULL) {
+            send_err = ESP_ERR_NO_MEM;
+        } else {
+            michi_last_error_t last;
+            const esp_err_t le_err = michi_state_get_last_error(&last);
+            if (le_err == ESP_OK) {
+                if (cJSON_AddStringToObject(le, "event",
+                                            last_error_event_name(last.event)) == NULL ||
+                    cJSON_AddNumberToObject(le, "data",
+                                            (double)last.data) == NULL) {
+                    send_err = ESP_ERR_NO_MEM;
+                }
+            } else if (cJSON_AddNullToObject(le, "event") == NULL ||
+                       cJSON_AddNumberToObject(le, "data", 0) == NULL) {
+                send_err = ESP_ERR_NO_MEM;
+            }
+        }
+    }
+    if (send_err == ESP_OK) {
+        const michi_product_profile_t *p = michi_product_profile_get();
+        cJSON *fw = cJSON_AddObjectToObject(root, "firmware");
+        if (fw == NULL ||
+            cJSON_AddStringToObject(fw, "version",
+                                    p->firmware_version) == NULL ||
+            cJSON_AddStringToObject(fw, "build_date",
+                                    p->build_date) == NULL ||
+            cJSON_AddStringToObject(fw, "board",
+                                    p->board_model) == NULL) {
             send_err = ESP_ERR_NO_MEM;
         }
     }

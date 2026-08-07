@@ -201,6 +201,15 @@ static volatile michi_state_t s_current;
 static volatile bool s_initialized;
 static volatile uint32_t s_drops;
 
+/* F14 last-error slot: written ONLY by the FSM task (single writer), read
+ * by any task via michi_state_get_last_error under s_state_mux. The
+ * from_request flag keeps the request-capture from ever overwriting a real
+ * error event (see michi_last_error_t in the header). */
+static bool s_last_error_recorded;
+static bool s_last_error_from_request;
+static michi_event_id_t s_last_error_event;
+static uint32_t s_last_error_data;
+
 static portMUX_TYPE s_state_mux = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE s_obs_mux = portMUX_INITIALIZER_UNLOCKED;
 static michi_observer_t s_observers[CONFIG_MICHI_STATE_MAX_OBSERVERS];
@@ -306,6 +315,33 @@ static bool map_exists_for_id(michi_event_id_t id)
 
 /* Transition request validated once at request() time; re-validated here
  * because the state may have changed while the event was queued. */
+static void capture_error_event(michi_event_id_t id, uint32_t data)
+{
+    portENTER_CRITICAL(&s_state_mux);
+    s_last_error_event = id;
+    s_last_error_data = data;
+    s_last_error_recorded = true;
+    s_last_error_from_request = false;
+    portEXIT_CRITICAL(&s_state_mux);
+}
+
+/* F14: a request to an error state with no accompanying error event
+ * (e.g. the event post was dropped) still records the failure, with
+ * data = 0. It never overwrites a REAL error event: producers post the
+ * event before requesting, so the event capture wins. */
+static void capture_error_request(michi_state_t target)
+{
+    (void)target;
+    portENTER_CRITICAL(&s_state_mux);
+    if (!s_last_error_recorded || s_last_error_from_request) {
+        s_last_error_event = MICHI_EVENT_ERROR;
+        s_last_error_data = 0; /* no error code was broadcast */
+        s_last_error_recorded = true;
+        s_last_error_from_request = true;
+    }
+    portEXIT_CRITICAL(&s_state_mux);
+}
+
 static void handle_transition_request(michi_state_t target)
 {
     if (target >= MICHI_STATE_COUNT) {
@@ -316,6 +352,10 @@ static void handle_transition_request(michi_state_t target)
         ESP_LOGW(TAG, "state: request rejected=to=%s from=%s (state changed since request)",
                  state_name(target), state_name(s_current));
         return;
+    }
+    if (target == MICHI_STATE_RECOVERABLE_ERROR ||
+        target == MICHI_STATE_FATAL_ERROR) {
+        capture_error_request(target);
     }
     apply_transition(target, s_current);
 }
@@ -345,6 +385,13 @@ static void state_task(void *arg)
         }
 
         ESP_LOGI(TAG, "state: event=%d data=%u", (int)ev.id, (unsigned)ev.data);
+
+        /* F14: capture the last error cause (also for out-of-contract
+         * broadcasts - the event IS the error regardless of mapping). */
+        if (ev.id == MICHI_EVENT_ERROR ||
+            ev.id == MICHI_EVENT_UPDATE_FAILED) {
+            capture_error_event(ev.id, ev.data);
+        }
 
         if (ev.id == MICHI_EVENT_TRANSITION_REQUEST) {
             /* Internal: never broadcast; the resulting STATE_CHANGED is. */
@@ -383,6 +430,22 @@ static void state_task(void *arg)
 const char *michi_state_name(michi_state_t s)
 {
     return state_name(s);
+}
+
+esp_err_t michi_state_get_last_error(michi_last_error_t *out)
+{
+    if (out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    portENTER_CRITICAL(&s_state_mux);
+    const bool recorded = s_last_error_recorded;
+    if (recorded) {
+        out->event = s_last_error_event;
+        out->data = s_last_error_data;
+    }
+    portEXIT_CRITICAL(&s_state_mux);
+    out->recorded = recorded;
+    return recorded ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
 
 michi_state_t michi_state_get(void)

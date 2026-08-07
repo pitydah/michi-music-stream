@@ -543,6 +543,18 @@ alongside the pairing ones: `MICHI_EVENT_SESSION_STARTED` is posted once
 per lifecycle step (negotiated → engine starting → running) and the
 from-keyed lookup advances the chain IDLE → SESSION_PENDING → BUFFERING →
 PLAYING — the same pattern as `MICHI_EVENT_PAIRING_STARTED`.
+
+Phase 14: the FSM captures the LAST error cause into a single slot
+(`michi_state_get_last_error()`, exposed by `GET /diagnostics` →
+`last_error`). Producers of `MICHI_EVENT_ERROR` (data = `esp_err_t`):
+michi_wifi when the retry chain exhausts
+(`ESP_ERR_WIFI_NOT_CONNECT`, before requesting `RECOVERABLE_ERROR`) and
+michi_audio when the RTP session self-ends (socket/bind failure,
+pipeline write rejection — the session-ending failures). OTA posts its
+own `MICHI_EVENT_UPDATE_FAILED` (same payload shape) which the same slot
+captures — no duplicated error broadcast. A `RECOVERABLE_ERROR` /
+`FATAL_ERROR` transition REQUEST without a preceding error event is
+captured with data 0, and never overwrites a real error event.
 `MICHI_EVENT_SESSION_CLOSED` ends the session from any session state
 (four map entries), and `MICHI_EVENT_SESSION_PAUSED`/`RESUMED` switch
 between PLAYING and PAUSED (pause also stops the ENGINE — see the
@@ -1388,7 +1400,7 @@ envelope for failures.
 | `/api/v1/receiver/sessions/current` | PATCH | Bearer | PLAYBACK | `volume` / `paused`; token in body or `X-Michi-Session` |
 | `/api/v1/receiver/sessions/current` | DELETE | Bearer | PLAYBACK | Stop; token in `X-Michi-Session` header |
 | `/api/v1/receiver/now-playing` | PUT | Bearer | PLAYBACK | `source`/`title`/`artist` → display |
-| `/api/v1/receiver/diagnostics` | GET | Bearer | STATUS | Uptime, heap, PSRAM, wifi rssi, audio metrics, DAC, OTA state |
+| `/api/v1/receiver/diagnostics` | GET | Bearer | STATUS | Uptime, reset reason, heap/PSRAM, wifi (ssid/rssi/reconnects), audio+RTP metrics, I2S errors, DAC, session, OTA, last error, firmware (see Diagnostics) |
 | `/api/v1/receiver/updates` | POST | Bearer | OTA | Body `{url}` → signed manifest URL; **202** `ota_started` (phase 13) |
 
 ### Session contract
@@ -1463,12 +1475,40 @@ phase-12 field names.
 - **Heartbeat semantics**: the response always carries the ACTIVE
   session id (server truth); a mismatched client id is not an error —
   the response lets the client discover the real id.
-- **Diagnostics**: audio metrics are engine counters (see the Audio
-  engine section); `wifi.rssi_dbm` is omitted when not connected;
-  `audio.ssrc` appears once a source was accepted into the stream;
-  `ota` reports `{state, percent, error}` (error only on
-  `failed`). `wifi.ssid` exposes the network NAME only (never the
-  password) — intentional, diagnostics are Bearer-gated (STATUS).
+- **Diagnostics**: full field reference below.
+
+## Diagnostics: `GET /api/v1/receiver/diagnostics`
+
+Bearer STATUS. One-shot snapshot of the whole subsystem state for support
+engineers — diagnostic data only, NO secrets: the session token is never
+included, OTA error text is a failure description, and `wifi.ssid`
+exposes the network NAME only (never the password) — intentional, the
+endpoint is Bearer-gated (STATUS).
+
+Field contract (extended in phase 14; pre-existing names are stable for
+phase 11/12 clients — the RTP metrics keep living under `audio`, not
+`rtp`):
+
+| Field | Source | Notes |
+|---|---|---|
+| `uptime_seconds` | `esp_timer_get_time()` | Seconds since boot |
+| `reset_reason` | `esp_reset_reason()` | `POWERON` \| `SW` \| `OWDT` \| `TWDT` \| `INT_WDT` \| `PANIC` \| `DEEPSLEEP` \| `BROWNOUT` \| `EXT` \| `SDIO` \| `USB_UART` \| `USB_JTAG` \| `EFUSE` \| `PWR_GLITCH` \| `CPU_LOCKUP` \| `UNKNOWN` |
+| `heap_free` | `esp_get_free_heap_size()` | Free internal heap (PSRAM excluded) |
+| `heap_min_free` | `esp_get_minimum_free_heap_size()` | All-time low since boot — the value that matters for leak diagnosis |
+| `psram_free` / `psram_size` | `heap_caps_get_*_size(MALLOC_CAP_SPIRAM)` | Free / total PSRAM |
+| `wifi.connected` | `michi_wifi_get_rssi()` result | `true` = an AP link is measurable |
+| `wifi.ssid` | `michi_wifi_get_ssid()` | Network NAME only (intentional exposure, see above); `""` when unprovisioned |
+| `wifi.rssi_dbm` | `michi_wifi_get_rssi()` | Omitted when not connected |
+| `wifi.reconnects` | `michi_wifi_get_reconnect_count()` | Backoff attempts armed this boot (monotonic, not reset on link-up) |
+| `audio.*` | `michi_audio_get_metrics()` | RTP engine counters (received/lost/late/duplicate/reordered/underruns/overruns/drops_*/jitter_us/buffer_ms/packets_in_buffer/last_seq/last_timestamp) + `session_active`, `ssrc`; keep name for phase 11/12 clients |
+| `session` | `michi_session_get_info()` | `{active:false}` when no session; else `session_id`, `codec`, `sample_rate`, `bit_depth`, `channels`, `stream_port`, `buffer_ms` (clamped), `volume` (applied), `paused`, `ssrc`, `source_addr`. The session TOKEN is never exposed |
+| `i2s_errors` | `michi_audio_output_get_error_count()` | `i2s_channel_write` (transient drop) + `i2s_channel_disable` failures |
+| `dac.model` / `detected` / `initialized` | `michi_dac_get_caps()` | |
+| `dac.tier` | `michi_product_profile_tier_name()` | `standard` \| `hifi` \| `diagnostic` |
+| `dac.sample_rate` / `bit_depth` | Product profile validated baseline | 48000 / 16 — the format the DAC is CONFIGURED with (not the silicon maximum; that is `audio`-independent and lives in the profile as capability) |
+| `ota` | `michi_ota_get_state()` | `{state, percent}`; `error` only on `failed` (failure description, never a credential) |
+| `last_error` | `michi_state_get_last_error()` | `{event, data}`: `event` = `error` (MICHI_EVENT_ERROR: wifi retries exhausted, audio session self-end) or `update_failed` (OTA); `data` = the `esp_err_t`. `event: null` when nothing was captured this boot. A transition REQUEST to an error state without a preceding error event is captured with `data: 0` |
+| `firmware` | Product profile | `version`, `build_date`, `board` |
 
 ## OTA updates: `components/michi_ota`
 
