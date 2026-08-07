@@ -1552,24 +1552,31 @@ phase 0) is mounted ONLY by this component.
 
 When `journal.1` grows past `MICHI_LOG_JOURNAL_MAX_KB` (default 256 KB)
 the rename chain shifts (`journal.1 → journal.2`, the oldest file is
-dropped; `MICHI_LOG_JOURNAL_FILES` selects the chain length). Storage
-consumption is bounded by `files × max` (default 2 × 256 KB) plus crash
-dumps on the ~8.25 MB partition — SPIFFS wear is spread over the whole
-partition by its own wear leveling, and the journal write rate (events
-only, not log lines) keeps erase cycles negligible.
+dropped; `MICHI_LOG_JOURNAL_FILES` selects the chain length; with
+`files = 1` rotation truncates `journal.1` in place). Storage
+consumption is bounded by `files × max` (default 2 × 256 KB) plus
+`MICHI_LOG_CRASH_DUMP_KEEP` (default 4) crash dumps on the ~8.25 MB
+partition — SPIFFS wear is spread over the whole partition by its own
+wear leveling, and the journal write rate (events only, not log lines)
+keeps erase cycles negligible.
 
 ### Crash dump
 
 On a crash reset (`PANIC`/`INT_WDT`/`TASK_WDT`/`WDT`), `michi_log_init()`
 checks the PSRAM ring BEFORE writing to it: same address (the ring is
 the first PSRAM allocation of every boot of the same build), magic
-`0x4D4C5247`, matching slot size and non-empty content → the last
-`MICHI_LOG_CRASH_DUMP_KB` (default 8 KB) are staged and written to
-`/spiffs/logs/crash_<boot_seq_prev>.txt` when the journal starts. Any
-mismatch (cold PSRAM, different build, PSRAM not first allocation)
-skips with a log line — a dump is never invented. The previous boot's
-entries are treated as untrusted (a crash may have interrupted a ring
-write): payloads are bounded-copied before printing.
+`0x4D4C5247`, matching slot size, sane ring geometry and non-empty
+content → the last `MICHI_LOG_CRASH_DUMP_KB` (default 8 KB) are staged
+and written to `/spiffs/logs/crash_<boot_seq_prev>.txt` when the journal
+starts. The dump keeps the NEWEST lines that fit the budget — the ones
+just before the crash are the most valuable. Any mismatch (cold PSRAM,
+different build, PSRAM not first allocation, corrupt header) skips with
+a log line — a dump is never invented. The previous boot's entries are
+treated as untrusted (a crash may have interrupted a ring write or the
+header): every header field and payload is validated and bounded-copied
+before printing. Only `MICHI_LOG_CRASH_DUMP_KEEP` (default 4) dumps are
+retained; when a new one is written the oldest beyond the cap are
+deleted (the `boot_seq` in the file name orders them).
 
 ### Endpoint contract
 
@@ -1577,8 +1584,9 @@ write): payloads are bounded-copied before printing.
 
 Query parameters are optional and strictly validated (400 on any
 violation): `source` (default `tail`), `count` (tail only, default 100,
-max `MICHI_LOG_TAIL_MAX_ENTRIES_RESPONSE` = 500), `offset` (journal
-only, `>= 0`, sanity-capped at 16 MB).
+max `MICHI_LOG_TAIL_MAX_ENTRIES_RESPONSE` = 200 — capped because cJSON
+allocates ~260 KB of internal heap for a 500-entry array), `offset`
+(journal only, `>= 0`, sanity-capped at 16 MB).
 
 ```json
 {
@@ -1595,13 +1603,24 @@ only, `>= 0`, sanity-capped at 16 MB).
 - `tail`: the raw ESP_LOG payload (tag + key=value), level letter and
   uptime ms; entries are single-line by construction (the ring sanitizes
   embedded newlines); payloads longer than 504 bytes are truncated in
-  the tail only — the console is not.
+  the tail only — the console is not. `t_ms` is uptime in ms as a u32:
+  it wraps at 2^32 ms ≈ 49.7 days of uptime (documented; clients must
+  not assume monotonicity across reboots).
 - `journal`: `offset`/`next_offset` pagination (repeat with
   `next_offset` to page; a page is trimmed to the last complete line; a
   single line longer than the 16 KB page is skipped — journal lines are
-  short by construction).
+  short by construction). Pagination order: `journal.1` is served
+  first — it is the NEWEST file; chronological clients (oldest first)
+  page across the chain in reverse (`journal.N` is the oldest). The
+  sentinel is `next_offset == offset`: that means the end of the
+  journal — stop paging.
 - When the tail or the journal is unavailable, its boolean is `false`
   and the corresponding field is omitted.
+- Permissions: this endpoint is Bearer-gated at STATUS, so the tail
+  (which may include controller IDs and the SSID in log payloads) is
+  readable by any STATUS token. Those IDs are documented as
+  non-secret device identifiers; the controller LIST endpoint still
+  requires CONTROLLER_ADMIN.
 
 ### Zero-secret guarantee
 

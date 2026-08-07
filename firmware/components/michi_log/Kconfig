@@ -39,7 +39,20 @@ menu "Michi Music Stream Log"
           How much of the previous boot's tail is copied to
           /spiffs/logs/crash_<boot_seq_prev>.txt after a crash reset
           (PANIC/INT_WDT/TASK_WDT/WDT) with a valid ring magic. Skipped
-          (never invented) when the magic does not match.
+          (never invented) when the magic does not match. The dump keeps
+          the NEWEST lines that fit: the ones just before the crash are
+          the most valuable.
+
+    config MICHI_LOG_CRASH_DUMP_KEEP
+        int "Crash dumps kept on SPIFFS"
+        default 4
+        range 1 16
+        help
+          Number of crash_<seq>.txt files retained on the storage
+          partition. When a new dump is written, the oldest dumps beyond
+          this cap are deleted (the seq in the name orders them: highest
+          seq = newest dump). Bounds the storage consumed by crash dumps
+          to KEEP x max file size.
 
     config MICHI_LOG_QUEUE_LEN
         int "Journal event queue length"
@@ -53,12 +66,14 @@ menu "Michi Music Stream Log"
 
     config MICHI_LOG_TAIL_MAX_ENTRIES_RESPONSE
         int "Maximum tail entries per /logs response"
-        default 500
+        default 200
         range 50 2000
         help
           Hard cap for the count query parameter of GET
           /api/v1/receiver/logs (default 100). Bounds the response size
-          (each entry renders to at most ~520 bytes).
+          (each entry renders to at most ~519 bytes). The cap is 200
+          rather than 500 because cJSON allocates ~260 KB of internal
+          heap for a 500-entry array on top of the entry buffers.
 
     config MICHI_LOG_TASK_STACK_BYTES
         int "Journal task stack (bytes)"

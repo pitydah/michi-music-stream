@@ -5,10 +5,20 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include <inttypes.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Shared geometry of the tail ring, exported so michi_http can size its
+ * per-entry buffers without magic numbers. */
+#define MICHI_LOG_ENTRY_PAYLOAD_MAX 504 /* bytes of payload per ring slot */
+#define MICHI_LOG_TAIL_LINE_FMT "%c %010" PRIu32 " %s\n" /* get_tail() line */
+#define MICHI_LOG_TAIL_PREFIX_LEN 13 /* "<level> <t_ms:010u> " before payload */
+/* Worst-case rendered line: prefix + payload + '\n' + NUL. */
+#define MICHI_LOG_TAIL_LINE_MAX \
+    (MICHI_LOG_TAIL_PREFIX_LEN + MICHI_LOG_ENTRY_PAYLOAD_MAX + 2)
 
 /**
  * @brief Hybrid log registry (phase 16): volatile tail + durable journal.
@@ -111,6 +121,9 @@ esp_err_t michi_log_get_tail(char *out, size_t out_len, uint32_t max_entries);
  * to get the next page). A line longer than the page buffer is skipped
  * (journal lines are short by construction - documented).
  *
+ * Sentinel: *next_offset == offset means the END of the journal - stop
+ * paging (the requested offset is past the last byte).
+ *
  * @param out         Output buffer (must not be NULL).
  * @param out_len     Buffer size (page).
  * @param offset      Byte offset into the journal (>= 0).
@@ -123,22 +136,37 @@ esp_err_t michi_log_get_journal(char *out, size_t out_len, uint32_t offset,
 
 /**
  * @brief Current boot sequence number (0 until start_journal()).
+ *
+ * @return The boot sequence (>= 1 after start_journal(); 0 before).
  */
 uint32_t michi_log_get_boot_seq(void);
 
 /**
  * @brief true when the tail ring is available (PSRAM allocated at init).
+ *
+ * @return true when michi_log_get_tail() can be called.
  */
 bool michi_log_tail_available(void);
 
 /**
  * @brief true when the journal is available (SPIFFS mounted).
+ *
+ * @return true when michi_log_get_journal() can be called.
  */
 bool michi_log_journal_available(void);
 
 /**
  * @brief Stop the journal task (flushes in-flight events) and unregister
  *        SPIFFS. Idempotent; safe when the journal was never started.
+ *
+ * Shutdown handshake contract: the CALLER's task handle is saved under
+ * the journal mux BEFORE the QUIT item is enqueued; the journal task
+ * notifies THAT handle (never itself) after it has drained the queue and
+ * exited. If the QUIT cannot be enqueued (queue full), the s_journal_quit
+ * flag is set under the mux and the journal task is notified directly -
+ * it polls the flag with a bounded receive timeout. The caller waits on
+ * its own handle for at most 500 ms; on timeout a clear warning is
+ * logged (the task is presumed gone - the flag guarantees it exits).
  *
  * @return ESP_OK.
  */

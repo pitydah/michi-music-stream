@@ -1575,10 +1575,11 @@ static esp_err_t diagnostics_get_handler(httpd_req_t *req)
  * (verified at review time); the tail can therefore never leak one. */
 static cJSON *logs_tail_array(int count)
 {
-    /* Line format from michi_log_get_tail: "<level> <t_ms:010u> <payload>".
-     * The payload is the raw ESP_LOG line (tag + key=value), single-line
-     * by construction (the ring sanitizes embedded newlines). */
-    const size_t line_max = 520;
+    /* Line format from michi_log_get_tail: "<level> <t_ms:010u> <payload>"
+     * (MICHI_LOG_TAIL_LINE_FMT; shared constants in michi_log.h). The
+     * payload is the raw ESP_LOG line (tag + key=value), single-line by
+     * construction (the ring sanitizes embedded newlines). */
+    const size_t line_max = MICHI_LOG_TAIL_LINE_MAX;
     const size_t buf_len = (size_t)count * line_max + 1;
     char *buf = heap_caps_malloc(buf_len, MALLOC_CAP_SPIRAM);
     if (buf == NULL) {
@@ -1613,12 +1614,17 @@ static cJSON *logs_tail_array(int count)
                 return NULL;
             }
             char lvl = line[0];
-            const char *level = (lvl == 'E') ? "E" :
+            /* F12: expose the raw level letter; '?' (non-esp_log format)
+             * is a documented contract value, NOT mapped to 'I'. */
+            const char *level = (lvl == 'I') ? "I" :
                                 (lvl == 'W') ? "W" :
+                                (lvl == 'E') ? "E" :
                                 (lvl == 'D') ? "D" :
-                                (lvl == 'V') ? "V" : "I";
+                                (lvl == 'V') ? "V" : "?";
             const long t_ms = strtol(&line[2], NULL, 10);
-            const char *payload = strlen(line) >= 14 ? &line[13] : "";
+            const char *payload =
+                strlen(line) > MICHI_LOG_TAIL_PREFIX_LEN
+                    ? &line[MICHI_LOG_TAIL_PREFIX_LEN] : "";
             if (cJSON_AddNumberToObject(item, "t_ms", (double)t_ms) == NULL ||
                 cJSON_AddStringToObject(item, "level", level) == NULL ||
                 cJSON_AddStringToObject(item, "line", payload) == NULL) {
@@ -1735,7 +1741,11 @@ static esp_err_t logs_get_handler(httpd_req_t *req)
     }
     cJSON *root = cJSON_CreateObject();
     if (root == NULL) {
-        return ESP_ERR_NO_MEM;
+        /* F9: an OOM must still produce a response (500), never a
+         * connection dropped without an answer. */
+        return michi_http_send_error(req, 500, "internal_error",
+                                     "out of memory while building logs "
+                                     "response");
     }
     esp_err_t send_err = ESP_OK;
     if (cJSON_AddNumberToObject(root, "boot_seq",
@@ -1772,7 +1782,13 @@ static esp_err_t logs_get_handler(httpd_req_t *req)
         send_err = michi_http_send_json(req, 200, root);
     }
     cJSON_Delete(root);
-    return send_err;
+    if (send_err != ESP_OK) {
+        /* F9: any allocation failure while building the payload must
+         * still produce a response - the client pages on errors. */
+        return michi_http_send_error(req, 500, "internal_error",
+                                     "failed to build logs response");
+    }
+    return ESP_OK;
 }
 
 /* POST /api/v1/receiver/updates (Bearer OTA, phase 13): body {url} where
