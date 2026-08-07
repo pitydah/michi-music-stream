@@ -433,16 +433,16 @@ static void journal_append(const michi_log_journal_item_t *item)
         ESP_LOGW(TAG, "journal: open %s failed (event dropped)", path);
         return;
     }
-    if (fseek(f, 0, SEEK_END) == 0) {
-        const long sz = ftell(f);
-        if (sz >= (long)journal_max_bytes()) {
-            fclose(f);
-            journal_rotate();
-            f = fopen(path, "a");
-            if (f == NULL) {
-                ESP_LOGW(TAG, "journal: reopen after rotate failed");
-                return;
-            }
+    /* "a" mode starts at end-of-file (C11 7.21.5.3), so ftell() gives the
+     * current size directly - no fseek needed (cppcheck seekOnAppendedFile). */
+    const long sz = ftell(f);
+    if (sz >= (long)journal_max_bytes()) {
+        fclose(f);
+        journal_rotate();
+        f = fopen(path, "a");
+        if (f == NULL) {
+            ESP_LOGW(TAG, "journal: reopen after rotate failed");
+            return;
         }
     }
     const size_t expect = strlen(line);
