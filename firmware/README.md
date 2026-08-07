@@ -1671,6 +1671,69 @@ the next update).
 | `MICHI_OTA_HTTP_TIMEOUT_MS` | 10000 | Per-read HTTP timeout (manifest + binary) |
 | `MICHI_OTA_STACK_BYTES` | 10240 | OTA task stack (mbedTLS + HTTP frames; transfer buffers are heap-allocated) |
 
+## Testing & CI (phase 15)
+
+Every push/PR runs the full suite in GitHub Actions (`.github/workflows/ci.yml`).
+**No release may be cut while any job fails** — the firmware has no release
+workflow; the rule is manual: CI green is the gate, a failed stage blocks any
+new OTA-signed binary.
+
+### CI jobs
+
+| Job | Runner | Runs |
+|---|---|---|
+| `test` | ubuntu-latest | Contract tests (`tests/contract/test_contract.py`), JSON schema validation (`tests/contract/test_schema.py`), simulator unit tests + behavior scenarios (`simulator/tests/test_simulator.py`, `test_scenarios.py`), HTTP integration (pytest), smoke launch (`scripts/test_receiver_simulator.sh`) |
+| `host-tests` | ubuntu-latest | C unit tests of the REAL firmware logic compiled host-side (`make -C tests/host test`); installs `libcjson-dev` first |
+| `static-analysis` | ubuntu-latest | `cppcheck --enable=warning,performance,portability` on `components` + `main` with `--error-exitcode=1` (no suppressions needed today; if a false positive appears, suppress BY ID — never `--suppress=*`) |
+| `firmware` | espressif/idf:release-v5.3 container | Build (ESP32-S3), binary size ≤ 4 MiB, sdkconfig defaults greps, artifact upload (`firmware-esp32s3`: app, bootloader, partition table, ota_data_initial) |
+
+The IDF build runs with `-Werror` by default (`CONFIG_COMPILER_WARNINGS` is
+on): a single compiler warning fails the `firmware` job.
+
+### Host-side C tests (tests/host/)
+
+The tests compile the **same** `.c` files the components build — no
+reimplementation, no duplication:
+
+- `test_semver.c` → `components/michi_ota/semver.c` (strict semver parse/compare);
+- `test_pairing_validators.c` → `components/michi_pairing/validators.c`
+  (id/charset, hex decode/encode, constant-time `token_matches` with the
+  no-early-return sweep);
+- `test_json_helpers.c` → `components/michi_http/json_helpers.c` (checked
+  cJSON accessors) against the system cJSON — CI installs `libcjson-dev`.
+
+Run locally (needs `cc`; `test_json_helpers` additionally needs
+`libcjson-dev`, otherwise it is skipped with a message):
+
+```bash
+make -C tests/host test
+```
+
+### Python suites
+
+```bash
+python3 tests/contract/test_contract.py   # v1-lite contract on examples/*.json
+python3 tests/contract/test_schema.py     # JSON Schema draft-07 (info + diagnostics)
+python3 simulator/tests/test_simulator.py # simulator unit tests
+python3 simulator/tests/test_scenarios.py # wifi/RTP/pairing/OTA behavior scenarios
+bash scripts/test_receiver_simulator.sh   # smoke: launch + GET info
+```
+
+### What lives where (firmware vs simulator)
+
+- **Pure logic** (semver, pairing validators, JSON helpers) is tested
+  host-side against the real firmware sources.
+- **Hardware-mockable behavior**: the only firmware mock is the mock DAC
+  driver (`MICHI_DAC_MOCK` in `main/Kconfig.projbuild`, probe outcome via
+  `MICHI_DAC_MOCK_PROBE_OK`) — for CI/board-bringup, never a substitute for
+  the real probe.
+- **Network/RTP/OTA scenarios live in the SIMULATOR** (`receiver_sim.py`
+  behavior models + `tests/test_scenarios.py`): wifi loss → reconnect with
+  exponential backoff, RTP loss/reorder/duplicates → metrics + silence,
+  pairing window expiry → window closed, OTA failure → `failed` state. The
+  simulator models the firmware's behavior; the REAL device is validated on
+  hardware (next section).
+
 ## Hardware validation pending
 
 Phase 1 assigns default pins from free GPIOs, but **no cable was measured**. Before

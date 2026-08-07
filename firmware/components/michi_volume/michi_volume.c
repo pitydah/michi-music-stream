@@ -88,7 +88,13 @@ void michi_volume_apply(uint8_t *buf, size_t bytes, uint8_t bit_depth)
         int16_t *p = (int16_t *)buf;
         const size_t samples = bytes / 2;
         for (size_t i = 0; i < samples; i++) {
-            p[i] = (int16_t)(((int32_t)p[i] * factor) >> 15);
+            /* Unsigned view before the shift (same pattern as the 24-bit
+             * path): right-shifting a negative value is implementation-
+             * defined in C11 6.5.7p5, not UB - cppcheck flags it as
+             * shiftNegativeLHS. Truncating the logical shift to int16_t
+             * produces the same bits as the arithmetic shift. */
+            const uint32_t us = (uint32_t)((int32_t)p[i] * factor);
+            p[i] = (int16_t)(us >> 15);
         }
     } else if (bit_depth == 24) {
         /* 24-bit samples are 3-byte packed, little-endian with byte[2] as
@@ -106,9 +112,15 @@ void michi_volume_apply(uint8_t *buf, size_t bytes, uint8_t bit_depth)
             } else if (s < -0x800000) {
                 s = -0x800000;
             }
-            buf[i]     = (uint8_t)(s & 0xFF);
-            buf[i + 1] = (uint8_t)((s >> 8) & 0xFF);
-            buf[i + 2] = (uint8_t)((s >> 16) & 0xFF);
+            /* Unsigned view before shifting: right-shifting a negative
+             * value is implementation-defined in C11 6.5.7p5, not UB
+             * (cppcheck flags it as shiftNegativeLHS); the bytes of a
+             * two's-complement negative are identical when the value is
+             * reinterpreted as unsigned. */
+            const uint64_t us = (uint64_t)s;
+            buf[i]     = (uint8_t)(us & 0xFF);
+            buf[i + 1] = (uint8_t)((us >> 8) & 0xFF);
+            buf[i + 2] = (uint8_t)((us >> 16) & 0xFF);
         }
     } else if (!s_digital_warned) {
         s_digital_warned = true;

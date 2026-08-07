@@ -194,57 +194,9 @@ esp_err_t michi_http_read_body(httpd_req_t *req, char *buf, size_t buf_len,
     return ESP_OK;
 }
 
-bool michi_http_json_get_string(const cJSON *obj, const char *key,
-                                char *out, size_t out_len)
-{
-    if (obj == NULL || key == NULL || out == NULL || out_len == 0) {
-        return false;
-    }
-    const cJSON *item = cJSON_GetObjectItem(obj, key);
-    if (item == NULL || !cJSON_IsString(item) ||
-        item->valuestring == NULL) {
-        return false;
-    }
-    size_t len = strlen(item->valuestring);
-    if (len >= out_len) {
-        return false; /* value does not fit: fail, do not truncate */
-    }
-    memcpy(out, item->valuestring, len + 1);
-    return true;
-}
-
-bool michi_http_json_get_int(const cJSON *obj, const char *key, int *out)
-{
-    if (obj == NULL || key == NULL || out == NULL) {
-        return false;
-    }
-    const cJSON *item = cJSON_GetObjectItem(obj, key);
-    if (item == NULL || !cJSON_IsNumber(item)) {
-        return false; /* exact type: no strings, no bools, no coercion */
-    }
-    /* Exact type PLUS range: fractional or out-of-int-range numbers fail
-     * (never truncated); the (int) cast is safe after the range checks. */
-    const double d = item->valuedouble;
-    if (d < (double)INT_MIN || d > (double)INT_MAX ||
-        d != (double)(int)d) {
-        return false;
-    }
-    *out = item->valueint;
-    return true;
-}
-
-bool michi_http_json_get_bool(const cJSON *obj, const char *key, bool *out)
-{
-    if (obj == NULL || key == NULL || out == NULL) {
-        return false;
-    }
-    const cJSON *item = cJSON_GetObjectItem(obj, key);
-    if (item == NULL || !cJSON_IsBool(item)) {
-        return false;
-    }
-    *out = cJSON_IsTrue(item);
-    return true;
-}
+/* JSON access helpers (michi_http_json_get_string/int/bool) live in
+ * json_helpers.c (F15: extracted for host-side testing - the component
+ * and tests/host compile the SAME source). */
 
 /* Distinguish "field absent" from "field present but does not fit":
  * michi_http_json_get_string fails on BOTH, and an oversize VALUE is a
@@ -1376,6 +1328,20 @@ static const char *last_error_event_name(michi_event_id_t id)
     }
 }
 
+/* F15: the error-state target captured with the last error -> names.
+ * The default maps to "none" (not "unknown"): the diagnostics schema
+ * reserves "unknown" and this branch is unreachable - any state not
+ * listed is captured as an event without a request, i.e. no target. */
+static const char *last_error_target_name(michi_state_t t)
+{
+    switch (t) {
+    case MICHI_STATE_RECOVERABLE_ERROR: return "recoverable";
+    case MICHI_STATE_FATAL_ERROR:       return "fatal";
+    case MICHI_STATE_COUNT:             return "none"; /* event capture, no request */
+    default:                            return "none";
+    }
+}
+
 /* GET /api/v1/receiver/diagnostics (Bearer STATUS): uptime, heap, PSRAM,
  * Wi-Fi link, audio metrics, DAC state. Diagnostic data only - no
  * secrets (the SSID is a network name, fine; the password is never
@@ -1531,11 +1497,14 @@ static esp_err_t diagnostics_get_handler(httpd_req_t *req)
                 if (cJSON_AddStringToObject(le, "event",
                                             last_error_event_name(last.event)) == NULL ||
                     cJSON_AddNumberToObject(le, "data",
-                                            (double)last.data) == NULL) {
+                                            (double)last.data) == NULL ||
+                    cJSON_AddStringToObject(le, "target",
+                                            last_error_target_name(last.target)) == NULL) {
                     send_err = ESP_ERR_NO_MEM;
                 }
             } else if (cJSON_AddNullToObject(le, "event") == NULL ||
-                       cJSON_AddNumberToObject(le, "data", 0) == NULL) {
+                       cJSON_AddNumberToObject(le, "data", 0) == NULL ||
+                       cJSON_AddStringToObject(le, "target", "none") == NULL) {
                 send_err = ESP_ERR_NO_MEM;
             }
         }

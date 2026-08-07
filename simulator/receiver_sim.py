@@ -116,6 +116,12 @@ class SimulatorState:
         self.last_heartbeat = 0.0
         self.session_started_at = 0.0
 
+        # Network model (F15): L2 link + exponential backoff reconnect.
+        self.wifi_connected = True
+        self.wifi_retry = 0
+        self.wifi_backoff_s = 0.0
+        self.wifi_reconnects = 0
+
         # Logging
         log.info("Simulator initialized: %s (%s)", config["device_id"], config["type"])
         log.info("  service: %s", config["service"])
@@ -155,6 +161,12 @@ class SimulatorState:
         )
 
     def pair_confirm(self, nonce: str, initiator_id: str, token: str) -> tuple:
+        if self.window_open and time.time() >= self.window_expires:
+            # F15: the window can expire without the timer firing (the
+            # sim has no background task); close it on first contact.
+            self.window_open = False
+            self.current_nonce = ""
+            log.info("Pairing window EXPIRED (closed on contact)")
         if not self.window_open:
             return (
                 409,
@@ -324,6 +336,149 @@ class SimulatorState:
             "build_date": "2026-06-29",
             "ota_supported": self.config["features"]["ota_update"],
         }
+
+    # ── Network model (F15) ─────────────────────────────────
+    # Models the firmware's reconnect chain (michi_wifi): link loss
+    # arms the next attempt with exponential backoff
+    # (base * 2**retry, capped), a successful reconnect resets the chain.
+
+    def wifi_link_loss(self):
+        """L2 link dropped (firmware: MICHI_EVENT_WIFI_DISCONNECTED)."""
+        self.wifi_connected = False
+        self.wifi_retry = 0
+
+    def wifi_next_backoff(self) -> float:
+        """Arm the next reconnect attempt; returns the backoff seconds
+        (0.0 when the link is up). Exhausting the chain is modeled by
+        the caller reaching the firmware's retry max (CONFIG_MICHI_WIFI_RETRY_MAX)."""
+        if self.wifi_connected:
+            return 0.0
+        self.wifi_retry += 1
+        self.wifi_backoff_s = min(
+            WIFI_BACKOFF_BASE_S * (2 ** (self.wifi_retry - 1)),
+            WIFI_BACKOFF_MAX_S,
+        )
+        return self.wifi_backoff_s
+
+    def wifi_reconnect_ok(self):
+        """Reconnect succeeded: link up, chain reset."""
+        self.wifi_connected = True
+        self.wifi_retry = 0
+        self.wifi_reconnects += 1
+
+
+# ── Behavior models (F15) ──────────────────────────────────
+#
+# The simulator models the FIRMWARE's behavior for CI scenario testing.
+# These are NOT the real firmware: the network/RTP/OTA behavior of the
+# actual device is validated on HARDWARE. The models below capture the
+# behavioral contract (reconnect backoff, jitter buffer metrics and
+# silence, pairing window expiry, OTA lifecycle) so the scenarios run
+# in CI on the host.
+
+WIFI_BACKOFF_BASE_S = 5.0   # firmware: MICHI_WIFI_RECONNECT_BASE_MS default 5000ms, chain 5s/10s/20s cap 300s
+WIFI_BACKOFF_MAX_S = 300.0  # firmware: backoff cap (5 min)
+
+
+class RtpJitterBufferModel:
+    """RTP jitter buffer behavior model (firmware michi_audio, F11).
+
+    Feed packets with their RTP sequence number; the model classifies
+    each arrival and keeps the firmware metrics:
+      - in-order arrival          -> played
+      - gap vs the expected seq   -> lost (silence fills the gap) + played
+      - late arrival of a seq below the expected one -> reordered
+      - repeat of a seen seq      -> duplicate
+    Note: ANY unseen seq < next_expected is classified reordered - this
+    model has NO window bound (the firmware's real buffer window is not
+    modeled here; a packet arriving after its window expired would be
+    dropped on hardware but is counted reordered in this model).
+    """
+
+    def __init__(self, silence_ms_per_pkt: float = 20.0):
+        self.silence_ms_per_pkt = silence_ms_per_pkt
+        self.next_expected = None
+        self.seen = set()
+        self.received = 0
+        self.played = 0
+        self.lost = 0
+        self.reordered = 0
+        self.duplicate = 0
+        self.silence_ms = 0.0
+
+    def push(self, seq: int) -> str:
+        """Feed one packet. Returns 'played', 'reordered', 'duplicate'
+        or 'silence' (gap filled with silence); updates the metrics."""
+        self.received += 1
+        if self.next_expected is None:
+            self.next_expected = seq + 1  # first packet: played, next expected
+            self.played += 1
+            self.seen.add(seq)
+            return "played"
+        if seq == self.next_expected:
+            self.played += 1
+            self.next_expected += 1
+            self.seen.add(seq)
+            return "played"
+        if seq < self.next_expected:
+            if seq in self.seen:
+                self.duplicate += 1
+                return "duplicate"
+            self.reordered += 1
+            self.seen.add(seq)
+            return "reordered"
+        gap = seq - self.next_expected
+        self.lost += gap
+        self.silence_ms += gap * self.silence_ms_per_pkt
+        self.played += 1
+        self.next_expected = seq + 1
+        self.seen.add(seq)
+        return "silence"
+
+    def metrics(self) -> dict:
+        return {
+            "received": self.received,
+            "played": self.played,
+            "lost": self.lost,
+            "reordered": self.reordered,
+            "duplicate": self.duplicate,
+            "silence_ms": round(self.silence_ms, 1),
+        }
+
+
+class OtaModel:
+    """OTA lifecycle model (firmware michi_ota, F13): idle -> fetching ->
+    validating -> downloading -> verifying -> applying -> done|failed."""
+
+    STATES = ("idle", "fetching", "validating", "downloading",
+              "verifying", "applying", "done", "failed")
+
+    def __init__(self):
+        self.state = "idle"
+        self.percent = 0
+        self.error = ""
+
+    def start(self, url: str) -> tuple:
+        if self.state != "idle":
+            return (False, "busy")
+        self.state = "fetching"
+        self.percent = 5
+        return (True, "started")
+
+    def download(self, percent: int) -> bool:
+        if self.state in ("done", "failed"):
+            return False
+        self.state = "downloading"
+        self.percent = percent
+        return True
+
+    def fail(self, err: str):
+        self.state = "failed"
+        self.error = err
+
+    def finish(self):
+        self.state = "done"
+        self.percent = 100
 
 
 # ── Flask app factory ───────────────────────────────────────

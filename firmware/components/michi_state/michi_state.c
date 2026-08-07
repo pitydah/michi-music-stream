@@ -209,6 +209,9 @@ static bool s_last_error_recorded;
 static bool s_last_error_from_request;
 static michi_event_id_t s_last_error_event;
 static uint32_t s_last_error_data;
+/* F15: the error state a transition request targeted (RECOVERABLE_ERROR /
+ * FATAL_ERROR); MICHI_STATE_COUNT when the capture came from an event. */
+static michi_state_t s_last_error_target;
 
 static portMUX_TYPE s_state_mux = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE s_obs_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -322,16 +325,19 @@ static void capture_error_event(michi_event_id_t id, uint32_t data)
     s_last_error_data = data;
     s_last_error_recorded = true;
     s_last_error_from_request = false;
+    s_last_error_target = MICHI_STATE_COUNT; /* no request involved */
     portEXIT_CRITICAL(&s_state_mux);
 }
 
 /* F14: a request to an error state with no accompanying error event
  * (e.g. the event post was dropped) still records the failure, with
  * data = 0. It never overwrites a REAL error event: producers post the
- * event before requesting, so the event capture wins. */
+ * event before requesting, so the event capture wins. F15: the TARGET
+ * of the request (RECOVERABLE vs FATAL) is always recorded - it is
+ * orthogonal to the event capture and survives a preceding report_error
+ * (the last request's error state is the useful diagnostic context). */
 static void capture_error_request(michi_state_t target)
 {
-    (void)target;
     portENTER_CRITICAL(&s_state_mux);
     if (!s_last_error_recorded || s_last_error_from_request) {
         s_last_error_event = MICHI_EVENT_ERROR;
@@ -339,6 +345,7 @@ static void capture_error_request(michi_state_t target)
         s_last_error_recorded = true;
         s_last_error_from_request = true;
     }
+    s_last_error_target = target;
     portEXIT_CRITICAL(&s_state_mux);
 }
 
@@ -442,10 +449,31 @@ esp_err_t michi_state_get_last_error(michi_last_error_t *out)
     if (recorded) {
         out->event = s_last_error_event;
         out->data = s_last_error_data;
+        out->target = s_last_error_target;
     }
     portEXIT_CRITICAL(&s_state_mux);
     out->recorded = recorded;
     return recorded ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
+esp_err_t michi_state_report_error(michi_event_id_t event, uint32_t data)
+{
+    if (event != MICHI_EVENT_ERROR && event != MICHI_EVENT_UPDATE_FAILED) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* Capture FIRST, under the state mux: guaranteed even when the bus
+     * queue is full (the FSM must stay free to drain). */
+    capture_error_event(event, data);
+    /* Then broadcast best-effort for the observers (display/LED/API);
+     * a dropped post is logged, never fatal. When the event IS
+     * dispatched the FSM re-captures the same (event, data) - idempotent
+     * by construction (capture_error_event is a plain overwrite). */
+    const esp_err_t rc = michi_state_post(event, data);
+    if (rc != ESP_OK) {
+        ESP_LOGW(TAG, "state: report_error event=%d data=%u post failed: %s",
+                 (int)event, (unsigned)data, esp_err_to_name(rc));
+    }
+    return ESP_OK;
 }
 
 michi_state_t michi_state_get(void)

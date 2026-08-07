@@ -9,3 +9,7 @@ __pycache__/
 .DS_Store
 # Local AI runtime state
 .atl/
+# Host test binaries (built by tests/host/Makefile; sources stay tracked)
+/tests/host/test_semver
+/tests/host/test_pairing_validators
+/tests/host/test_json_helpers

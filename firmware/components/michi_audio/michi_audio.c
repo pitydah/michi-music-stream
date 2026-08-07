@@ -623,17 +623,13 @@ static bool session_drain(session_t *s)
  * Session task (owns the socket and the jitter buffer; self-deletes)
  * ------------------------------------------------------------------ */
 
-/* F14: broadcast the session-ending failure on the bus (MICHI_EVENT_ERROR,
- * data = esp_err_t) so the michi_state last-error slot and the display
- * surface the cause. Best-effort: a dropped post is logged, never fatal.
- * Called ONLY from the session self-end paths (never on stop() teardown). */
+/* F15: session self-end failures go through michi_state_report_error -
+ * the cause is captured directly (guaranteed under the state mux) and
+ * the bus broadcast is best-effort. Called ONLY from the session
+ * self-end paths (never on stop() teardown). */
 static void session_post_error(esp_err_t data)
 {
-    const esp_err_t rc = michi_state_post(MICHI_EVENT_ERROR, (uint32_t)data);
-    if (rc != ESP_OK) {
-        ESP_LOGW(TAG, "session: error event post failed: %s",
-                 esp_err_to_name(rc));
-    }
+    (void)michi_state_report_error(MICHI_EVENT_ERROR, (uint32_t)data);
 }
 
 static void session_task(void *arg)

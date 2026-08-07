@@ -141,10 +141,17 @@ typedef struct {
  *    event before requesting the state, so the event wins).
  *
  * `recorded == false` means no error has been captured this boot.
+ *
+ * `target` (F15): the error STATE the FSM was requested to enter
+ * (MICHI_STATE_RECOVERABLE_ERROR or MICHI_STATE_FATAL_ERROR) when the
+ * capture came from a transition request; MICHI_STATE_COUNT when the
+ * capture came from an error event (no request involved, e.g. captured
+ * via michi_state_report_error before the state request landed).
  */
 typedef struct {
     michi_event_id_t event; /*!< MICHI_EVENT_ERROR, MICHI_EVENT_UPDATE_FAILED */
     uint32_t data;          /*!< The esp_err_t carried by the event; 0 for a request-only capture */
+    michi_state_t target;   /*!< Requested error state; MICHI_STATE_COUNT = no request */
     bool recorded;          /*!< false = no error captured yet this boot */
 } michi_last_error_t;
 
@@ -202,6 +209,29 @@ esp_err_t michi_state_post(michi_event_id_t id, uint32_t data);
  * @return Same as post(); never blocks.
  */
 esp_err_t michi_state_post_from_isr(michi_event_id_t id, uint32_t data);
+
+/**
+ * @brief Report an error: capture it directly AND broadcast best-effort.
+ *
+ * F15: captures the error under the state mux IMMEDIATELY (guaranteed
+ * even when the bus queue is full - the FSM must stay free to drain) and
+ * then posts the event to the bus for the observers (display/LED/diag-
+ * nostics). The post is best-effort: a full queue drops it and is
+ * logged, never fatal. The FSM re-captures the same event when it is
+ * dispatched (idempotent: same event/data).
+ *
+ * Producers that used to post MICHI_EVENT_ERROR / MICHI_EVENT_UPDATE_FAILED
+ * directly (michi_audio session self-end, michi_wifi retry chain
+ * exhaustion, michi_ota failures) call this instead: the cause is never
+ * lost to queue pressure.
+ *
+ * @param event MICHI_EVENT_ERROR or MICHI_EVENT_UPDATE_FAILED (anything
+ *        else: ESP_ERR_INVALID_ARG, nothing captured, nothing posted).
+ * @param data  The esp_err_t payload.
+ * @return ESP_OK (captured; the post may still have been dropped and is
+ *         logged internally); ESP_ERR_INVALID_ARG for unsupported events.
+ */
+esp_err_t michi_state_report_error(michi_event_id_t event, uint32_t data);
 
 /**
  * @brief Request a state transition, validated against the transition table.

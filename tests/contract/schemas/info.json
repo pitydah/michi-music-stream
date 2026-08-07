@@ -1,0 +1,62 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Michi Music Stream receiver info",
+    "description": "GET /api/v1/receiver/info - receiver identity and capabilities (v1-lite contract).",
+    "type": "object",
+    "required": [
+        "service", "name", "device_id", "api_version", "michi_link_version",
+        "firmware", "type", "roles", "auth", "output", "supported_codecs",
+        "features"
+    ],
+    "additionalProperties": true,
+    "properties": {
+        "service": {
+            "type": "string",
+            "enum": ["michi-stream-standard", "michi-stream-hifi"]
+        },
+        "name": {"type": "string", "minLength": 1},
+        "device_id": {"type": "string", "minLength": 1},
+        "api_version": {"type": "string", "minLength": 1},
+        "michi_link_version": {"type": "string", "minLength": 1},
+        "firmware": {"type": "string", "minLength": 1},
+        "type": {"type": "string", "minLength": 1},
+        "roles": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1,
+            "contains": {"const": "audio_receiver"}
+        },
+        "auth": {
+            "type": "object",
+            "$comment": "Strict identity contract: the receiver's auth block is fixed (RECEIVER_BUTTON, no refresh) and no field may be added or renamed - any extra key is a breaking contract change. The other subschemas keep additionalProperties:true because they describe capabilities that may grow.",
+            "required": ["required", "strategy", "token_refresh"],
+            "additionalProperties": false,
+            "properties": {
+                "required": {"type": "boolean", "const": true},
+                "strategy": {"type": "string", "const": "RECEIVER_BUTTON"},
+                "token_refresh": {"type": "boolean", "const": false}
+            }
+        },
+        "output": {
+            "type": "object",
+            "required": ["connector", "max_sample_rate", "max_bit_depth", "channels"],
+            "additionalProperties": true,
+            "properties": {
+                "connector": {"type": "string"},
+                "max_sample_rate": {"type": "integer", "minimum": 1},
+                "max_bit_depth": {"type": "integer", "minimum": 1},
+                "channels": {"type": "integer", "const": 2},
+                "dac": {"type": "string"}
+            }
+        },
+        "supported_codecs": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1
+        },
+        "features": {
+            "type": "object",
+            "additionalProperties": {"type": "boolean"}
+        }
+    }
+}

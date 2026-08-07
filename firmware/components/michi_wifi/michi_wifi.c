@@ -326,7 +326,10 @@ static void fail_retry_chain(int retry)
 {
     ESP_LOGE(TAG, "subsystem=wifi state=failed phase=9 retry=%u",
              (unsigned)retry);
-    michi_state_post(MICHI_EVENT_ERROR, ESP_ERR_WIFI_NOT_CONNECT);
+    /* F15: report_error captures the cause directly (guaranteed even with
+     * a full bus queue) and posts best-effort for the observers. */
+    (void)michi_state_report_error(MICHI_EVENT_ERROR,
+                                   ESP_ERR_WIFI_NOT_CONNECT);
     michi_state_request(MICHI_STATE_RECOVERABLE_ERROR);
 }
 

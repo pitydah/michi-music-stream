@@ -14,11 +14,11 @@
 #include "esp_timer.h"
 #include "nvs.h"
 
-#include "mbedtls/constant_time.h"
 #include "mbedtls/sha256.h"
 
 #include "michi_pairing.h"
 #include "michi_state.h"
+#include "validators.h"
 
 #define TAG "michi_pairing"
 
@@ -29,7 +29,6 @@
 #define MICHI_PAIRING_CHALLENGE_BYTES 16
 #define MICHI_PAIRING_TOKEN_BYTES 32
 #define MICHI_PAIRING_DIGEST_BYTES 32
-#define MICHI_PAIRING_ID_MAX 31
 #define MICHI_PAIRING_ID_LEN (MICHI_PAIRING_ID_MAX + 1) /* + NUL */
 
 #define MICHI_PAIRING_CHALLENGE_HEX_LEN (2 * MICHI_PAIRING_CHALLENGE_BYTES)
@@ -87,84 +86,18 @@ static michi_pairing_blob_t s_blob;
 
 /* --- constant-time comparisons --------------------------------------- */
 
-/* mbedtls_ct_memcmp (mbedtls/constant_time.h, mbedTLS 3.6 in IDF 5.3):
- * constant-time buffer comparison - time is independent of the data and
- * of equality (it does depend on n, which is fixed here: digests are
- * always 32 bytes, so no length oracle exists). */
-static bool ct_equal(const uint8_t *a, const uint8_t *b, size_t n)
-{
-    return mbedtls_ct_memcmp(a, b, n) == 0;
-}
-
-/* --- hex helpers ------------------------------------------------------ */
-
-static uint8_t hex_val(char c)
-{
-    if (c >= '0' && c <= '9') {
-        return (uint8_t)(c - '0');
-    }
-    if (c >= 'a' && c <= 'f') {
-        return (uint8_t)(c - 'a' + 10);
-    }
-    if (c >= 'A' && c <= 'F') {
-        return (uint8_t)(c - 'A' + 10);
-    }
-    return 0xff;
-}
-
-static bool hex_decode(const char *src, size_t src_len, uint8_t *dst,
-                       size_t dst_len)
-{
-    if (src == NULL || src_len != 2 * dst_len) {
-        return false;
-    }
-    for (size_t i = 0; i < dst_len; i++) {
-        const uint8_t hi = hex_val(src[2 * i]);
-        const uint8_t lo = hex_val(src[2 * i + 1]);
-        if (hi > 15 || lo > 15) {
-            return false;
-        }
-        dst[i] = (uint8_t)((hi << 4) | lo);
-    }
-    return true;
-}
-
-static void hex_encode(const uint8_t *src, size_t len, char *dst)
-{
-    static const char digits[] = "0123456789abcdef";
-    for (size_t i = 0; i < len; i++) {
-        dst[2 * i] = digits[src[i] >> 4];
-        dst[2 * i + 1] = digits[src[i] & 0x0f];
-    }
-    dst[2 * len] = '\0';
-}
-
-static bool id_valid(const char *id)
-{
-    if (id == NULL) {
-        return false;
-    }
-    const size_t len = strlen(id);
-    if (len == 0 || len > MICHI_PAIRING_ID_MAX) {
-        return false;
-    }
-    for (size_t i = 0; i < len; i++) {
-        const char c = id[i];
-        const bool alnum = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                           (c >= '0' && c <= '9');
-        if (!alnum && c != '-') {
-            return false;
-        }
-    }
-    return true;
-}
+/* michi_pairing_token_matches (validators.c, F15): constant-time buffer
+ * comparison - loops over ALL bytes with a volatile accumulator, no
+ * early return on data. Time is independent of the data and of equality
+ * (it does depend on n, which is fixed here: digests are always 32
+ * bytes, so no length oracle exists). */
 
 /* --- digest ----------------------------------------------------------- */
 
 static esp_err_t digest_of_token(const char *token_hex, uint8_t *out)
 {
     uint8_t raw[MICHI_PAIRING_TOKEN_BYTES];
-    if (!hex_decode(token_hex, MICHI_PAIRING_TOKEN_HEX_LEN, raw,
+    if (!michi_pairing_hex_decode(token_hex, MICHI_PAIRING_TOKEN_HEX_LEN, raw,
                     sizeof(raw))) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -482,7 +415,7 @@ esp_err_t michi_pairing_get_challenge(const char *initiator_id,
     }
     /* Identity contract error (same rule as confirm): rejected without
      * consuming an issue. */
-    if (!id_valid(initiator_id)) {
+    if (!michi_pairing_id_valid(initiator_id)) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -505,7 +438,7 @@ esp_err_t michi_pairing_get_challenge(const char *initiator_id,
      * challenge+owner pair. The id is not secret, so the later confirm
      * comparison uses plain strcmp. */
     strlcpy(s_challenge_owner, initiator_id, sizeof(s_challenge_owner));
-    hex_encode(s_challenge, sizeof(s_challenge), out_hex);
+    michi_pairing_hex_encode(s_challenge, sizeof(s_challenge), out_hex);
 
     ESP_LOGI(TAG, "pairing: window=active issued=%u owner=%s",
              (unsigned)s_challenge_issued, initiator_id);
@@ -531,7 +464,7 @@ esp_err_t michi_pairing_confirm(const char *challenge_hex,
     /* Identity contract error: rejected without consuming an attempt (it
      * is not an authentication attempt; well-formed ids with wrong
      * challenges still burn attempts - the brute-force cap holds). */
-    if (!id_valid(initiator_id)) {
+    if (!michi_pairing_id_valid(initiator_id)) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -553,7 +486,7 @@ esp_err_t michi_pairing_confirm(const char *challenge_hex,
         return ESP_ERR_INVALID_STATE;
     }
 
-    if (!hex_decode(challenge_hex, MICHI_PAIRING_CHALLENGE_HEX_LEN, challenge,
+    if (!michi_pairing_hex_decode(challenge_hex, MICHI_PAIRING_CHALLENGE_HEX_LEN, challenge,
                     sizeof(challenge))) {
         const esp_err_t err =
             fail_confirm("malformed_request", ESP_ERR_INVALID_ARG);
@@ -563,7 +496,7 @@ esp_err_t michi_pairing_confirm(const char *challenge_hex,
     /* Constant-time challenge check: never reveal the comparison result
      * by timing. A well-formed wrong challenge is an authentication
      * attempt and consumes one of the window's attempts. */
-    if (!ct_equal(challenge, s_challenge, sizeof(challenge))) {
+    if (!michi_pairing_token_matches(challenge, s_challenge, sizeof(challenge))) {
         const esp_err_t err = fail_confirm("proof_mismatch", ESP_ERR_NOT_FOUND);
         xSemaphoreGive(s_mutex);
         return err;
@@ -670,7 +603,7 @@ esp_err_t michi_pairing_validate_token(const char *token_hex,
         const uint8_t *ref = (i < s_blob.count)
                                  ? s_blob.controllers[i].digest
                                  : dummy;
-        if (ct_equal(ref, digest, sizeof(digest))) {
+        if (michi_pairing_token_matches(ref, digest, sizeof(digest))) {
             matched = (int)i;
         }
     }
@@ -706,7 +639,7 @@ esp_err_t michi_pairing_revoke(const char *controller_id)
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (!id_valid(controller_id)) {
+    if (!michi_pairing_id_valid(controller_id)) {
         return ESP_ERR_INVALID_ARG;
     }
 

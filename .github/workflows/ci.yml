@@ -14,12 +14,65 @@ jobs:
         run: pip install -r requirements.txt
       - name: Contract tests
         run: python3 tests/contract/test_contract.py
+      - name: JSON schema tests
+        run: python3 tests/contract/test_schema.py
       - name: Simulator unit tests
         run: python3 simulator/tests/test_simulator.py
+      - name: Simulator behavior scenarios
+        run: python3 simulator/tests/test_scenarios.py
       - name: Simulator HTTP integration tests
         run: python3 -m pytest simulator/tests/test_integration_http.py -v
       - name: Smoke test (launch + info)
         run: bash scripts/test_receiver_simulator.sh
+
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libcjson-dev
+        run: sudo apt-get update && sudo apt-get install -y libcjson-dev
+      - name: Host unit tests (semver, pairing validators, json helpers)
+        # make clean first: forces a rebuild, so stale binaries with
+        # equal mtimes are never run in CI.
+        run: |
+          make -C tests/host clean
+          make -C tests/host test
+
+  static-analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cppcheck
+        run: sudo apt-get update && sudo apt-get install -y cppcheck
+      - name: cppcheck (warning, performance, portability)
+        working-directory: firmware
+        # No suppressions needed today (verified on release-v5.3 sources);
+        # if a NEW false positive appears, suppress it BY ID with a
+        # comment - never a global --suppress=*.
+        # Per-component -I: each component's own include/ mirrors the
+        # IDF dependency graph, so headers resolve without requiring the
+        # IDF build metadata. Limitation: headers from components NOT in
+        # this -I list (or from IDF itself) still need --suppress=missingIncludeSystem.
+        run: |
+          cppcheck --enable=warning,performance,portability \
+            --suppress=missingIncludeSystem --error-exitcode=1 \
+            -I components \
+            -I components/michi_audio/include \
+            -I components/michi_audio_output/include \
+            -I components/michi_board/include \
+            -I components/michi_button/include \
+            -I components/michi_dac/include \
+            -I components/michi_display/include \
+            -I components/michi_http/include \
+            -I components/michi_led/include \
+            -I components/michi_ota/include \
+            -I components/michi_pairing/include \
+            -I components/michi_product_profile/include \
+            -I components/michi_session/include \
+            -I components/michi_state/include \
+            -I components/michi_volume/include \
+            -I components/michi_wifi/include \
+            -I main components main
 
   firmware:
     runs-on: ubuntu-latest
@@ -46,3 +99,13 @@ jobs:
           grep -q '^#define CONFIG_SPIRAM 1$' build/config/sdkconfig.h
           grep -q '^#define CONFIG_SPIRAM_MODE_OCT 1$' build/config/sdkconfig.h
           grep -q '^#define CONFIG_ESPTOOLPY_FLASHSIZE_16MB 1$' build/config/sdkconfig.h
+      - name: Upload firmware artifacts (ESP32-S3)
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-esp32s3
+          if-no-files-found: error
+          path: |
+            firmware/build/michi-music-stream.bin
+            firmware/build/bootloader/bootloader.bin
+            firmware/build/partition_table/partition-table.bin
+            firmware/build/ota_data_initial.bin

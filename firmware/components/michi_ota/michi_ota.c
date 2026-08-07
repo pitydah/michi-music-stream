@@ -58,6 +58,7 @@
 #include "michi_led.h"
 #include "michi_ota.h"
 #include "michi_ota_pubkey.h"
+#include "semver.h"
 #include "michi_product_profile.h"
 #include "michi_session.h"
 #include "michi_state.h"
@@ -198,53 +199,8 @@ static void log_url_safe(const char *url, const char *what)
 /* ------------------------------------------------------------------
  * Strict semver (x.y.z numeric only; used for downgrade prevention)
  * ------------------------------------------------------------------ */
-
-/* Strict semver (x.y.z numeric only; used for downgrade prevention).
- * Mirrors the signer's validation: every component is digit-only (no
- * leading whitespace, no sign, no leading zeros - '01.2.3' is rejected)
- * and fits in uint16_t. */
-static bool semver_parse(const char *s, uint16_t out[3])
-{
-    uint16_t v[3] = {0};
-    for (int i = 0; i < 3; i++) {
-        const char *p = s;
-        if (*p == '\0' || !isdigit((unsigned char)*p)) {
-            return false;
-        }
-        if (*p == '0' && isdigit((unsigned char)p[1])) {
-            return false; /* leading zero: '01' rejected */
-        }
-        unsigned long part = 0;
-        while (isdigit((unsigned char)*p)) {
-            part = part * 10 + (unsigned long)(*p - '0');
-            if (part > 65535) {
-                return false;
-            }
-            p++;
-        }
-        v[i] = (uint16_t)part;
-        if (i < 2) {
-            if (*p != '.') {
-                return false;
-            }
-            s = p + 1;
-        } else if (*p != '\0') {
-            return false;
-        }
-    }
-    memcpy(out, v, sizeof(v));
-    return true;
-}
-
-static int semver_cmp(const uint16_t a[3], const uint16_t b[3])
-{
-    for (int i = 0; i < 3; i++) {
-        if (a[i] != b[i]) {
-            return a[i] < b[i] ? -1 : 1;
-        }
-    }
-    return 0;
-}
+/* semver_parse/semver_cmp live in semver.c (F15: extracted so the
+ * host-side tests compile the SAME source - no reimplementation). */
 
 /* ESP-IDF 5.3 has no esp_ota_img_state_name() helper (verified: only
  * esp_ota_get_state_partition in app_update); the name mapping is local. */
@@ -687,6 +643,9 @@ static void ota_task(void *arg)
     michi_ota_manifest_t m;
 
     if (manifest == NULL) {
+        /* F15: assign err BEFORE set_failed so the done: report_error
+         * carries the real cause (NO_MEM) and not the ESP_OK default. */
+        err = ESP_ERR_NO_MEM;
         set_failed(ESP_ERR_NO_MEM, "manifest buffer");
         goto done;
     }
@@ -756,7 +715,9 @@ done:
     ESP_LOGI(TAG, "ota: stack_hwm=%u",
              (unsigned)uxTaskGetStackHighWaterMark(NULL));
     free(manifest);
-    michi_state_post(MICHI_EVENT_UPDATE_FAILED, (uint32_t)err);
+    /* F15: report_error captures the cause directly (guaranteed even with
+     * a full bus queue) and posts best-effort for the observers. */
+    (void)michi_state_report_error(MICHI_EVENT_UPDATE_FAILED, (uint32_t)err);
     michi_state_request(MICHI_STATE_IDLE);
     xSemaphoreTake(s_ctx.mutex, portMAX_DELAY);
     s_ctx.task = NULL; /* redundant with set_failed, kept as defense */
