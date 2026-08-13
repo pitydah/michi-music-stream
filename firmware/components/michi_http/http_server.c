@@ -224,7 +224,12 @@ esp_err_t michi_http_read_body(httpd_req_t *req, char *buf, size_t buf_len,
             }
             continue;
         }
-        if (ret <= 0) {
+        /* httpd_req_recv reports socket failures as positive sentinels
+         * (HTTPD_SOCK_ERR_INVALID = 0x1002, HTTPD_SOCK_ERR_FAIL = 0x1003);
+         * anything >= HTTPD_SOCK_ERR_TIMEOUT is an error, never a byte
+         * count. Accepting them as bytes would corrupt the stack buffer
+         * terminator below. */
+        if (ret <= 0 || ret >= HTTPD_SOCK_ERR_TIMEOUT) {
             return ESP_ERR_INVALID_STATE;
         }
         received += (size_t)ret;
