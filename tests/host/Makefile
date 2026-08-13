@@ -1,12 +1,13 @@
 # Host-side unit tests for the universal firmware (F15).
 #
 # Compiles the REAL firmware sources (semver.c, validators.c,
-# json_helpers.c) - no reimplementations. The firmware components keep
-# these files on their SRCS list; the tests compile the SAME .c.
+# json_helpers.c, canonical_json.c) - no reimplementations. The firmware
+# components keep these files on their SRCS list; the tests compile the
+# SAME .c.
 #
-#   make test   - build + run every test (needs cc; test_json_helpers
-#                 additionally needs libcjson-dev - CI installs it via
-#                 `apt install libcjson-dev`; without it the test is
+#   make test   - build + run every test (needs cc; the cJSON tests
+#                 additionally need libcjson-dev - CI installs it via
+#                 `apt install libcjson-dev`; without it they are
 #                 skipped with a clear message)
 #   make clean  - remove the test binaries
 
@@ -15,7 +16,9 @@ CFLAGS  ?= -std=c11 -O2 -Wall -Wextra -Werror
 CPPFLAGS = -Ishim \
            -I../../firmware/components/michi_ota \
            -I../../firmware/components/michi_pairing \
-           -I../../firmware/components/michi_http/include
+           -I../../firmware/components/michi_http/include \
+           -I../../firmware/components/michi_product_profile/include \
+           -I../../firmware/components/michi_dac/include
 
 FIRMWARE = ../../firmware/components
 
@@ -27,7 +30,7 @@ CJSON_LIBS   := $(shell pkg-config --libs libcjson 2>/dev/null)
 SHIMS := $(wildcard shim/*.h)
 
 TESTS := test_semver test_pairing_validators \
-         $(if $(filter yes,$(HAS_CJSON)),test_json_helpers)
+         $(if $(filter yes,$(HAS_CJSON)),test_json_helpers test_http_canonical)
 
 .PHONY: all test clean
 
@@ -38,8 +41,10 @@ test: all
 	for t in test_semver test_pairing_validators; do ./$$t; done; \
 	if [ "$(HAS_CJSON)" = "yes" ]; then \
 	    ./test_json_helpers; \
+	    ./test_http_canonical; \
 	else \
 	    echo "SKIP test_json_helpers (libcjson-dev not installed - CI installs it)"; \
+	    echo "SKIP test_http_canonical (libcjson-dev not installed - CI installs it)"; \
 	fi
 
 test_semver: test_semver.c $(FIRMWARE)/michi_ota/semver.c \
@@ -56,5 +61,11 @@ test_json_helpers: test_json_helpers.c $(FIRMWARE)/michi_http/json_helpers.c \
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CJSON_CFLAGS) -o $@ test_json_helpers.c \
 	    $(FIRMWARE)/michi_http/json_helpers.c $(CJSON_LIBS)
 
+test_http_canonical: test_http_canonical.c $(FIRMWARE)/michi_http/canonical_json.c \
+                     $(FIRMWARE)/michi_http/include/michi_http.h $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CJSON_CFLAGS) -o $@ test_http_canonical.c \
+	    $(FIRMWARE)/michi_http/canonical_json.c $(CJSON_LIBS)
+
 clean:
-	rm -f test_semver test_pairing_validators test_json_helpers
+	rm -f test_semver test_pairing_validators test_json_helpers \
+	      test_http_canonical
