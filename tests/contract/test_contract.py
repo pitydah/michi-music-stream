@@ -201,4 +201,5 @@ def run():
     print(f"\n{ok}/{len(tests)} contract tests passed")
     return ok == len(tests)
 
-sys.exit(0 if run() else 1)
+if __name__ == "__main__":
+    sys.exit(0 if run() else 1)
