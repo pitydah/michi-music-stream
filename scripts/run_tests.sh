@@ -10,6 +10,13 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 echo "=== Michi Music Stream — Test Suite ==="
 echo ""
 
+# ── Vendored contract sync check ─────────────────────────────
+echo "--- contract sync check ---"
+cd "$PROJECT_DIR"
+python3 scripts/sync_michi_link_contract.py --check
+SYNC_EXIT=$?
+echo ""
+
 # ── Simulator tests ──────────────────────────────────────────
 echo "--- simulator tests ---"
 cd "$PROJECT_DIR/simulator"
@@ -40,12 +47,13 @@ echo ""
 
 # ── Results ──────────────────────────────────────────────────
 echo "=== Results ==="
+echo "  contract sync:   $([ $SYNC_EXIT -eq 0 ] && echo 'PASS' || echo 'FAIL')"
 echo "  simulator unit:  $([ $SIM_EXIT -eq 0 ] && echo 'PASS' || echo 'FAIL')"
 echo "  simulator HTTP:  $([ $HTTP_EXIT -eq 0 ] && echo 'PASS' || echo 'FAIL')"
 echo "  contract:        $([ $CONT_EXIT -eq 0 ] && echo 'PASS' || echo 'FAIL')"
 echo "  E2E:             $([ $E2E_EXIT -eq 0 ] && echo 'PASS' || echo 'FAIL')"
 
-if [ $SIM_EXIT -ne 0 ] || [ $HTTP_EXIT -ne 0 ] || [ $CONT_EXIT -ne 0 ] || [ $E2E_EXIT -ne 0 ]; then
+if [ $SYNC_EXIT -ne 0 ] || [ $SIM_EXIT -ne 0 ] || [ $HTTP_EXIT -ne 0 ] || [ $CONT_EXIT -ne 0 ] || [ $E2E_EXIT -ne 0 ]; then
     exit 1
 fi
 exit 0
