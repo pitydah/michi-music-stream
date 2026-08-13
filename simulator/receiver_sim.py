@@ -349,7 +349,9 @@ class SimulatorState:
             "session_id": session_id,
             "status": status,
             "expires_at": session["expires_at"],
-            "attempts_remaining": session["attempts_remaining"],
+            # pair-status.schema.json pins attempts_remaining to 1..5; a
+            # consumed (locked) session reports the schema floor.
+            "attempts_remaining": max(1, session["attempts_remaining"]),
         }
 
     def pairing_confirm(self, session_id, pin, michi_id, public_key):

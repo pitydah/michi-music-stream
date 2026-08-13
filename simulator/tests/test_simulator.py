@@ -4,6 +4,7 @@
 import os
 import re
 import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from receiver_sim import (
@@ -256,6 +257,20 @@ def test_pairing_confirm_locked_429_after_five():
         code, _ = s.pairing_confirm(sid, wrong, CONTROLLER_IDENTITY["michi_id"], CONTROLLER_IDENTITY["public_key"])
     assert code == 429
     assert s.pairing_sessions[sid]["status"] == "locked"
+    # GET pair/status on a locked session must still emit a body that
+    # validates against the vendored pair-status.schema.json (attempts_remaining 1..5).
+    from referencing import Registry, Resource
+    from jsonschema import Draft7Validator
+    import json as _json
+    schema_path = Path(__file__).resolve().parents[2] / "contracts" / "michi-link" / "schemas" / "pair-status.schema.json"
+    schema = _json.loads(schema_path.read_text())
+    registry = Registry().with_resource(schema["$id"], Resource.from_contents(schema))
+    validator = Draft7Validator(schema, registry=registry)
+    code3, body3 = s.pairing_status(sid)
+    assert code3 == 200
+    assert body3["status"] == "locked"
+    assert body3["attempts_remaining"] == 1
+    assert validator.is_valid(body3), list(validator.iter_errors(body3))
     code2, body2 = s.pairing_confirm(sid, real, CONTROLLER_IDENTITY["michi_id"], CONTROLLER_IDENTITY["public_key"])
     assert code2 == 429
     assert body2["error"]["code"] == "RATE_LIMITED"
