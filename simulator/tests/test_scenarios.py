@@ -3,7 +3,7 @@
 
 These are SIMULATOR scenarios, not firmware tests: the simulator models
 the firmware's behavior (wifi reconnect backoff, RTP jitter buffer
-handling with metrics and silence, pairing window expiry, OTA lifecycle)
+handling with metrics and silence, pairing window expiry, session lease)
 so the scenarios run in CI on the host. The REAL firmware is validated
 on HARDWARE (see firmware/README.md, Testing & CI).
 
@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from receiver_sim import (
     SimulatorState,
     STANDARD_CONFIG,
+    CONTROLLER_IDENTITY,
     WIFI_BACKOFF_BASE_S,
     WIFI_BACKOFF_MAX_S,
     RtpJitterBufferModel,
@@ -24,8 +25,19 @@ from receiver_sim import (
 )
 
 
-def std_state():
-    return SimulatorState(STANDARD_CONFIG)
+class FakeClock:
+    def __init__(self, start=1000.0):
+        self.t = start
+
+    def __call__(self):
+        return self.t
+
+    def advance(self, seconds):
+        self.t += seconds
+
+
+def std_state(clock=None):
+    return SimulatorState(STANDARD_CONFIG, mono_clock=clock or FakeClock())
 
 
 # ── wifi loss -> reconnect with backoff ─────────────────────
@@ -134,31 +146,80 @@ def test_rtp_metrics_consistency():
     print("PASS rtp metrics consistency")
 
 
-# ── pairing window expiry ───────────────────────────────────
+# ── pairing window expiry (canonical v1-lite) ───────────────
 
-def test_pairing_window_expired_closes():
-    s = std_state()
-    s.pair_start("micro_001")
+def test_pairing_window_expired_status_expired():
+    clock = FakeClock()
+    s = std_state(clock)
+    s.open_pairing_window()
+    _, started = s.pairing_start(CONTROLLER_IDENTITY)
+    sid = started["session_id"]
     assert s.window_open is True
 
-    # Expire the window (the sim has no background timer; expiry is
-    # evaluated on first contact). 121 > 120: the window is 120s
-    # (receiver_sim.py), so 121 forces expiry.
-    s.window_expires = s.window_expires - 121
-    code, body = s.pair_confirm(s.current_nonce, "micro_001", "tok_x")
-    assert code == 409
-    assert body["error"]["code"] == "pairing_window_closed"
+    # Expire the window (the sim has no background task; expiry is
+    # evaluated on first contact). 121 > 120.
+    clock.advance(121)
+    code, status = s.pairing_status(sid)
+    assert code == 200
+    assert status["status"] == "expired"
+
+    # A new pair/start in the closed window is rejected on first contact.
+    code3, body3 = s.pairing_start(CONTROLLER_IDENTITY)
+    assert code3 == 403
+    assert body3["error"]["code"] == "FORBIDDEN"
     assert s.window_open is False
-    assert s.current_nonce == ""
-    print("PASS pairing window expired -> closed")
+
+    code2, body2 = s.pairing_confirm(
+        sid, "000000", CONTROLLER_IDENTITY["michi_id"], CONTROLLER_IDENTITY["public_key"]
+    )
+    assert code2 == 404
+    assert body2["error"]["code"] == "PAIRING_NOT_FOUND"
+    print("PASS pairing window expired -> status expired")
 
 
 def test_pairing_window_valid_before_expiry():
-    s = std_state()
-    s.pair_start("micro_001")
-    code, body = s.pair_confirm(s.current_nonce, "micro_001", "tok_x")
-    assert code == 200 and body["status"] == "paired"
-    print("PASS pairing window confirm before expiry")
+    clock = FakeClock()
+    s = std_state(clock)
+    s.open_pairing_window()
+    _, started = s.pairing_start(CONTROLLER_IDENTITY)
+    sid = started["session_id"]
+    pin = s.pairing_sessions[sid]["pin"]
+    clock.advance(60)
+    code, body = s.pairing_confirm(
+        sid, pin, CONTROLLER_IDENTITY["michi_id"], CONTROLLER_IDENTITY["public_key"]
+    )
+    assert code == 200
+    assert body["expires_in"] == 0
+    print("PASS pairing confirm before window expiry")
+
+
+def test_session_lease_expiry_closes():
+    clock = FakeClock()
+    s = std_state(clock)
+    s.open_pairing_window()
+    _, started = s.pairing_start(CONTROLLER_IDENTITY)
+    sid = started["session_id"]
+    pin = s.pairing_sessions[sid]["pin"]
+    s.pairing_confirm(sid, pin, CONTROLLER_IDENTITY["michi_id"], CONTROLLER_IDENTITY["public_key"])
+    payload = {
+        "transport": "rtp_udp",
+        "codec": "pcm_s16le",
+        "sample_rate": 48000,
+        "bit_depth": 16,
+        "channels": 2,
+        "packet_ms": 10,
+        "buffer_ms": 120,
+        "payload_type": 97,
+        "ssrc": 305419896,
+        "volume": 70,
+    }
+    s.session_create(payload, source_ip="127.0.0.1")
+    clock.advance(31)
+    code, body = s.session_state()
+    assert code == 404
+    assert s.session_id is None
+    assert s.lease_expirations == 1
+    print("PASS session lease expiry closes")
 
 
 # ── OTA lifecycle ───────────────────────────────────────────
@@ -203,8 +264,9 @@ def run():
         test_rtp_reorder,
         test_rtp_duplicates,
         test_rtp_metrics_consistency,
-        test_pairing_window_expired_closes,
+        test_pairing_window_expired_status_expired,
         test_pairing_window_valid_before_expiry,
+        test_session_lease_expiry_closes,
         test_ota_failed_state,
         test_ota_success_lifecycle,
     ]
@@ -219,4 +281,5 @@ def run():
     return ok == len(tests)
 
 
-sys.exit(0 if run() else 1)
+if __name__ == "__main__":
+    sys.exit(0 if run() else 1)
