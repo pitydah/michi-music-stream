@@ -53,6 +53,7 @@
 #include "sdkconfig.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 
@@ -133,9 +134,9 @@ static void request_id_generate(char *out, size_t out_len)
     /* UUID v4: time_low - time_mid - 4xxx - (10xx variant) - node. */
     snprintf(out, out_len, "%08" PRIx32 "-%04x-4%03x-%04x-%08" PRIx32,
              a,
-             b & 0xFFFFu,                          /* time_mid */
-             (b >> 16) & 0xFFFu,                   /* version 4 + time_hi */
-             (uint32_t)((c & 0x3FFFu) | 0x8000u),  /* variant 10 + clock_seq */
+             (unsigned int)(b & 0xFFFFu),          /* time_mid */
+             (unsigned int)((b >> 16) & 0xFFFu),   /* version 4 + time_hi */
+             (unsigned int)((c & 0x3FFFu) | 0x8000u), /* variant 10 + clock_seq */
              d);
 }
 
