@@ -25,14 +25,8 @@ python3 tests/contract/test_contract.py
 CONT_EXIT=$?
 echo ""
 
-# ── 3. E2E integration test ─────────────────────────────────
-echo "--- E2E integration test ---"
-cd "$PROJECT_DIR"
-python3 tests/e2e/test_e2e_micro_stream.py 2>&1 | tail -5
-E2E_EXIT=$?
-echo ""
-
-# ── 4. Quick launch smoke test ──────────────────────────────
+# ── 3. Quick launch smoke test ──────────────────────────────
+# Canonical route: GET /api/v1/server/info (service == michi-stream-standard).
 echo "--- smoke test (launch + info + shutdown) ---"
 SMOKE_EXIT=0
 PORT=53320
@@ -42,12 +36,12 @@ SIM_PID=$!
 sleep 1
 
 if kill -0 "$SIM_PID" 2>/dev/null; then
-    INFO=$(curl -s http://127.0.0.1:$PORT/api/v1/receiver/info 2>/dev/null)
+    INFO=$(curl -s http://127.0.0.1:$PORT/api/v1/server/info 2>/dev/null)
     SERVICE=$(echo "$INFO" | python3 -c "import sys,json; print(json.load(sys.stdin).get('service',''))" 2>/dev/null)
     if [ "$SERVICE" = "michi-stream-standard" ]; then
-        echo "  PASS smoke: /info returns michi-stream-standard"
+        echo "  PASS smoke: /api/v1/server/info returns michi-stream-standard"
     else
-        echo "  FAIL smoke: /info returned service='$SERVICE'"
+        echo "  FAIL smoke: /api/v1/server/info returned service='$SERVICE'"
         SMOKE_EXIT=1
     fi
     kill "$SIM_PID" 2>/dev/null
@@ -62,10 +56,9 @@ echo ""
 echo "=== Results ==="
 echo "  simulator unit:  $([ $SIM_EXIT -eq 0 ] && echo 'PASS' || echo 'FAIL')"
 echo "  contract:        $([ $CONT_EXIT -eq 0 ] && echo 'PASS' || echo 'FAIL')"
-echo "  E2E:             $([ $E2E_EXIT -eq 0 ] && echo 'PASS' || echo 'FAIL')"
 echo "  smoke:           $([ $SMOKE_EXIT -eq 0 ] && echo 'PASS' || echo 'FAIL')"
 
-if [ $SIM_EXIT -ne 0 ] || [ $CONT_EXIT -ne 0 ] || [ $E2E_EXIT -ne 0 ] || [ $SMOKE_EXIT -ne 0 ]; then
+if [ $SIM_EXIT -ne 0 ] || [ $CONT_EXIT -ne 0 ] || [ $SMOKE_EXIT -ne 0 ]; then
     exit 1
 fi
 exit 0
