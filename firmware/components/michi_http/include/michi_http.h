@@ -8,28 +8,38 @@
 #include "esp_http_server.h"
 #include "cJSON.h"
 
+#include "michi_product_profile.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /**
- * @brief HTTP API layer (phases 4 + 12: the Michi Link Receiver API).
+ * @brief HTTP API layer: the canonical Michi Link receiver v1-lite
+ *        surface (MS-03).
  *
- * Serves on port 80:
- *  - Phase 4 (no auth): GET /api/v1/receiver/info, GET /api/v1/receiver/firmware
- *  - Phase 12: status, pairing challenge/confirm (button-opened window
- *    only), controllers list/revoke, sessions (start/current/patch/stop),
- *    now-playing, diagnostics, updates (501 until phase 13), plus the
- *    v1-lite compatibility paths mapped onto the SAME handlers with the
- *    SAME security (see firmware/README.md, Receiver API).
+ * Serves on port 80 ONLY the canonical routes of the vendored bundle
+ * (contracts/michi-link/): /api/v1/server/info, the /api/v1/pair routes,
+ * /api/v1/receiver-lite/session, /heartbeat, /now-playing,
+ * /diagnostics and /firmware. No legacy route is kept.
  *
- * Every protected endpoint runs the Bearer gate (michi_pairing_validate_token
- * + permission bit) BEFORE touching its body; the token value is never
- * logged. All handlers follow the contract below; no handler may deviate
- * from it.
+ * /server/info emits the exact receiver v1-lite profile (build_info_json;
+ * the identity group is NOT emitted yet - it requires the persistent
+ * Ed25519 identity of michi_identity, MS-04). Receiver-button pairing
+ * (MS-06), the canonical RTP session/lease (MS-07/MS-08), the certified
+ * now-playing payload and the OTA flow answer 501 NOT_IMPLEMENTED after
+ * the route-table auth and the strict JSON body gate; the matching
+ * feature flag in /server/info is false. Diagnostics is implemented (its
+ * response shape is not frozen by the contract).
+ *
+ * Every error response uses the single canonical envelope
+ * {error:{code,message,request_id,details}} built by
+ * michi_http_build_error() and sent by michi_http_send_error(), which
+ * derives the code from the HTTP status per the section 2.7 map. Unknown
+ * routes answer the canonical 404 envelope.
  *
  * ------------------------------------------------------------------
- * Handler contract (P0-1/P0-2 fixed by construction)
+ * Handler contract (fixed by construction)
  * ------------------------------------------------------------------
  * Every handler that parses a JSON body MUST follow this exact order:
  *
@@ -55,7 +65,7 @@ extern "C" {
  */
 
 /**
- * @brief Start the HTTP server and register the read-only endpoints.
+ * @brief Start the HTTP server and register the canonical endpoints.
  *
  * Idempotent: a second call while running returns ESP_OK.
  *
@@ -72,7 +82,7 @@ esp_err_t michi_http_init(void);
 esp_err_t michi_http_stop(void);
 
 /**
- * @brief Read a request body completely (P0-3 fixed).
+ * @brief Read a request body completely.
  *
  * Reads exactly Content-Length bytes (rejecting a missing or malformed
  * header - strict parse, no trailing junk), never more than buf_len - 1
@@ -92,13 +102,13 @@ esp_err_t michi_http_stop(void);
  *         ESP_ERR_TIMEOUT when the client stalls (socket timeout retried
  *         or total deadline exceeded);
  *         ESP_ERR_INVALID_STATE on a socket/parse error (caller answers
- *         400 Bad Request).
+ *         400).
  */
 esp_err_t michi_http_read_body(httpd_req_t *req, char *buf, size_t buf_len,
                                size_t *out_len);
 
 /**
- * @brief Checked JSON string getter (P0-4 fixed).
+ * @brief Checked JSON string getter.
  *
  * Requires an exact JSON string type AND a value that fits in out (the
  * caller's size IS the limit); on any violation returns false and leaves
@@ -110,7 +120,7 @@ bool michi_http_json_get_string(const cJSON *obj, const char *key,
                                 char *out, size_t out_len);
 
 /**
- * @brief Checked JSON integer getter (P0-4 fixed).
+ * @brief Checked JSON integer getter.
  *
  * Requires an exact JSON number type AND an integer value that fits in
  * int: strings are NOT coerced, fractional or out-of-range values fail
@@ -121,7 +131,7 @@ bool michi_http_json_get_string(const cJSON *obj, const char *key,
 bool michi_http_json_get_int(const cJSON *obj, const char *key, int *out);
 
 /**
- * @brief Checked JSON bool getter (P0-4 fixed).
+ * @brief Checked JSON bool getter.
  *
  * Requires an exact JSON boolean type.
  *
@@ -130,18 +140,65 @@ bool michi_http_json_get_int(const cJSON *obj, const char *key, int *out);
 bool michi_http_json_get_bool(const cJSON *obj, const char *key, bool *out);
 
 /**
- * @brief Send a {error:{code,message,details:{}}} JSON response (P0-5 -
- *        shared with audio_output: error propagation - fixed: returns
- *        the SEND result, ESP_OK once the response was sent - never
- *        ESP_FAIL after responding).
+ * @brief Build the canonical error envelope (contract section 2.7):
  *
- * @param status  HTTP status; supported: 200, 400, 401, 404, 409, 500
- *                (anything else maps to 500).
- * @return ESP_OK when the response was sent; the httpd send error
- *         otherwise.
+ *   { "error": { "code": <code>, "message": <message>,
+ *                "request_id": <request_id>, "details": {...} } }
+ *
+ * details always exists; when field is non-NULL it carries
+ * {"field": <field>}, otherwise it is empty. Pure cJSON (no ESP-IDF
+ * runtime dependency): compiled and tested by the host-side tests.
+ *
+ * @param out_root   Output tree (caller owns it; cJSON_Delete()).
+ * @param code       Canonical error code (e.g. "INVALID_REQUEST").
+ * @param message    Human-readable message.
+ * @param request_id Correlation id (UUID v4 from the caller).
+ * @param field      Optional offending field name (NULL for none).
+ * @return ESP_OK; ESP_ERR_NO_MEM on allocation failure (nothing is
+ *         emitted - the envelope is all-or-nothing);
+ *         ESP_ERR_INVALID_ARG on NULL args.
+ */
+esp_err_t michi_http_build_error(cJSON **out_root, const char *code,
+                                 const char *message, const char *request_id,
+                                 const char *field);
+
+/**
+ * @brief Build the exact receiver v1-lite info profile into root
+ *        (contract section 2.1).
+ *
+ * service is derived from the profile tier (michi-stream-standard or
+ * michi-stream-hifi); name, version, api_version ("v1-lite"), roles
+ * (["audio_receiver"]), auth (RECEIVER_BUTTON), the truthful feature
+ * flags and the certified audio block follow. The identity group
+ * (server_id/identity_scheme/michi_id/public_key) is NOT emitted: it
+ * requires the persistent Ed25519 identity (MS-04). Pure cJSON +
+ * michi_product_profile_t: compiled and tested by the host-side tests.
+ *
+ * @param root Target object (fresh, empty).
+ * @param p    Current product profile snapshot.
+ * @return ESP_OK; ESP_ERR_NO_MEM on allocation failure;
+ *         ESP_ERR_INVALID_ARG on NULL args.
+ */
+esp_err_t build_info_json(cJSON *root, const michi_product_profile_t *p);
+
+/**
+ * @brief Send the single canonical error response.
+ *
+ * The code is derived from the HTTP status per the section 2.7 map
+ * (400 INVALID_REQUEST, 401 UNAUTHORIZED, 403 FORBIDDEN, 404 NOT_FOUND,
+ * 409 CONFLICT, 429 RATE_LIMITED, 500 INTERNAL_ERROR, 501
+ * NOT_IMPLEMENTED - anything else maps to INTERNAL_ERROR), so no handler
+ * can emit a local code. A fresh UUID v4 request_id is generated per
+ * response.
+ *
+ * @param status  HTTP status (see status_to_code map).
+ * @param message Human-readable message.
+ * @param field   Optional offending field name (NULL for none).
+ * @return ESP_OK when the response was sent (never ESP_FAIL after
+ *         responding); the httpd send error otherwise.
  */
 esp_err_t michi_http_send_error(httpd_req_t *req, int status,
-                                const char *code, const char *message);
+                                const char *message, const char *field);
 
 /**
  * @brief Serialize and send a JSON response tree.
