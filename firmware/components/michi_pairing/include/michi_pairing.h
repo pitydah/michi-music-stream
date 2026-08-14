@@ -216,6 +216,15 @@ bool michi_pairing_is_window_open(void);
 bool michi_pairing_uuid_valid(const char *id);
 
 /**
+ * @brief Whether a PIN string is exactly six decimal digits. Pure
+ *        validator; also used by the HTTP layer for /pair/confirm.
+ *
+ * @param pin NUL-terminated string to check (may be NULL -> false).
+ * @return true when the string is a canonical 6-digit PIN.
+ */
+bool michi_pairing_pin_valid(const char *pin);
+
+/**
  * @brief Constant-time byte-sequence comparison (all bytes examined,
  *        no data-dependent early exit). Used for PINs and token digests.
  *
