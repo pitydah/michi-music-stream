@@ -16,6 +16,8 @@ CFLAGS  ?= -std=c11 -O2 -Wall -Wextra -Werror -D_DEFAULT_SOURCE
 CPPFLAGS = -Ishim \
            -I../../firmware/components/michi_ota \
            -I../../firmware/components/michi_pairing \
+           -I../../firmware/components/michi_pairing/include \
+           -I../../firmware/components/michi_identity/include \
            -I../../firmware/components/michi_http/include \
            -I../../firmware/components/michi_product_profile/include \
            -I../../firmware/components/michi_dac/include
