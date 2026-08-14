@@ -1,7 +1,7 @@
 {
   "error": {
-    "code": "pairing_window_closed",
-    "message": "La ventana de pairing no esta abierta. Presione el boton fisico.",
-    "details": {}
+    "code": "FORBIDDEN",
+    "message": "The physical pairing window is closed",
+    "request_id": "550e8400-e29b-41d4-a716-446655440000"
   }
 }

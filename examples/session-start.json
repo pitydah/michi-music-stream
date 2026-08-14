@@ -1,11 +1,12 @@
 {
-  "session_id": "sess_001",
+  "transport": "rtp_udp",
   "codec": "pcm_s16le",
   "sample_rate": 48000,
   "bit_depth": 16,
   "channels": 2,
-  "transport": "udp",
-  "stream_port": 55300,
-  "buffer_ms": 250,
+  "packet_ms": 10,
+  "buffer_ms": 120,
+  "payload_type": 97,
+  "ssrc": 305419896,
   "volume": 70
 }
