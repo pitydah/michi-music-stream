@@ -32,7 +32,11 @@ static uint8_t buf[12 + MICHI_RTP_GUARD_PAYLOAD_BYTES + 16];
 
 static void build_canonical(uint8_t *b, size_t payload_len)
 {
-    memset(b, 0, 12 + payload_len + 16);
+    const size_t total = 12 + payload_len + 16;
+    /* The oversized-payload case (1921) deliberately exceeds the packet
+     * buffer; the guard only reads within the length the caller passes,
+     * so never memset beyond the static buffer. */
+    memset(b, 0, total <= sizeof(buf) ? total : sizeof(buf));
     b[0] = 0x80; /* v2, no pad, no ext, no CSRC */
     b[1] = MICHI_RTP_GUARD_PT_S16LE;
     b[2] = 0x00;
