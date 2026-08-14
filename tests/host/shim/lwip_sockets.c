@@ -17,6 +17,8 @@ static size_t s_capture_len;
 static int s_sent_count;
 static int s_fail_send_next;
 static int s_fail_open_next;
+static struct sockaddr_in s_last_dst;
+static bool s_has_dst;
 
 void test_socket_reset(void)
 {
@@ -25,6 +27,8 @@ void test_socket_reset(void)
     s_sent_count = 0;
     s_fail_send_next = 0;
     s_fail_open_next = 0;
+    memset(&s_last_dst, 0, sizeof(s_last_dst));
+    s_has_dst = false;
 }
 
 int test_socket_sent_count(void)
@@ -54,6 +58,20 @@ void test_socket_fail_next(int n)
 void test_socket_fail_open_next(int n)
 {
     s_fail_open_next = n;
+}
+
+bool test_socket_last_dest(uint32_t *ip_out, uint16_t *port_out)
+{
+    if (!s_has_dst) {
+        return false;
+    }
+    if (ip_out != NULL) {
+        *ip_out = s_last_dst.sin_addr.s_addr;
+    }
+    if (port_out != NULL) {
+        *port_out = s_last_dst.sin_port;
+    }
+    return true;
 }
 
 int socket(int domain, int type, int protocol)
@@ -93,14 +111,16 @@ ssize_t sendto(int s, const void *dataptr, size_t size, int flags,
 {
     (void)s;
     (void)flags;
-    (void)to;
-    (void)tolen;
     if (s_fail_send_next > 0) {
         s_fail_send_next--;
         return -1;
     }
     if (dataptr == NULL || size == 0) {
         return -1;
+    }
+    if (to != NULL && tolen >= sizeof(struct sockaddr_in)) {
+        memcpy(&s_last_dst, to, sizeof(s_last_dst));
+        s_has_dst = true;
     }
     const size_t n = size > sizeof(s_capture) - 1 ? sizeof(s_capture) - 1
                                                   : size;

@@ -59,6 +59,11 @@ int test_socket_sent_count(void);
 bool test_socket_last_datagram(char *out, size_t out_len,
                                size_t *out_written);
 
+/* Copies the destination of the last captured datagram (raw network
+ * order, as the runtime passed it to sendto). Returns false when
+ * nothing was sent yet. */
+bool test_socket_last_dest(uint32_t *ip_out, uint16_t *port_out);
+
 /* Fail the next N sendto() calls (counts down). */
 void test_socket_fail_next(int n);
 

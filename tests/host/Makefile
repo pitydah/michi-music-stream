@@ -54,7 +54,7 @@ IDENTITY_INC = -I$(IDENTITY_DIR)/include -I$(IDENTITY_DIR)/monocypher \
 
 TESTS := test_semver test_pairing_validators test_michi_identity \
          test_michi_pairing test_michi_session test_rtp_guard \
-         $(if $(filter yes,$(HAS_CJSON)),test_json_helpers test_http_canonical test_michi_discovery test_michi_time test_capability_parity test_pairing_http test_session_http)
+         $(if $(filter yes,$(HAS_CJSON)),test_json_helpers test_http_canonical test_michi_discovery test_michi_time test_capability_parity test_pairing_http test_session_http test_discovery_disc)
 
 .PHONY: all test clean
 
@@ -71,6 +71,7 @@ test: all
 	    ./test_capability_parity; \
 	    ./test_pairing_http; \
 	    ./test_session_http; \
+	    ./test_discovery_disc; \
 	else \
 	    echo "SKIP test_json_helpers (libcjson-dev not installed - CI installs it)"; \
 	    echo "SKIP test_http_canonical (libcjson-dev not installed - CI installs it)"; \
@@ -79,6 +80,7 @@ test: all
 	    echo "SKIP test_capability_parity (libcjson-dev not installed - CI installs it)"; \
 	    echo "SKIP test_pairing_http (libcjson-dev not installed - CI installs it)"; \
 	    echo "SKIP test_session_http (libcjson-dev not installed - CI installs it)"; \
+	    echo "SKIP test_discovery_disc (libcjson-dev not installed - CI installs it)"; \
 	fi
 
 test_semver: test_semver.c $(FIRMWARE)/michi_ota/semver.c \
@@ -240,9 +242,30 @@ test_capability_parity: test_capability_parity.c \
 	    $(FIRMWARE)/michi_http/canonical_json.c \
 	    $(DISCOVERY_DIR)/announce.c $(IDENTITY_SRC) $(CJSON_LIBS)
 
+# DISC suite (runtime discovery hardening): the FULL runtime path -
+# product profile -> runtime discovery state -> canonical serialization
+# -> Ed25519 signature -> JSON datagram -> Michi Link verification.
+# Compiles the SAME firmware sources as test_michi_time (michi_time +
+# michi_discovery runtime + identity + capabilities) plus the REAL
+# /server/info builder (canonical_json.c) for the DISC-05 parity check.
+DISC_SRC = test_discovery_disc.c $(TIME_SRC) $(DISCOVERY_SRC) \
+           $(DISCOVERY_DIR)/michi_discovery.c \
+           $(FIRMWARE)/michi_product_profile/capabilities.c \
+           $(FIRMWARE)/michi_http/canonical_json.c
+
+test_discovery_disc: $(DISC_SRC) \
+                     $(DISCOVERY_DIR)/include/michi_discovery.h \
+                     $(DISCOVERY_DIR)/discovery_nvs.h \
+                     $(TIME_DIR)/include/michi_time.h \
+                     $(FIRMWARE)/michi_http/include/michi_http.h \
+                     $(IDENTITY_SRC) $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(DISCOVERY_INC) $(IDENTITY_INC) \
+	    $(TIME_INC) $(IDENTITY_DEFS) $(CJSON_CFLAGS) -pthread -o $@ \
+	    $(DISC_SRC) $(IDENTITY_SRC) $(CJSON_LIBS)
+
 clean:
 	rm -f test_semver test_pairing_validators test_json_helpers \
 	      test_http_canonical test_michi_identity test_michi_discovery \
 	      test_michi_time test_michi_pairing test_pairing_http \
 	      test_michi_session test_rtp_guard test_session_http \
-	      test_capability_parity
+	      test_capability_parity test_discovery_disc
