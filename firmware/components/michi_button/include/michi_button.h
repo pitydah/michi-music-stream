@@ -21,22 +21,36 @@ extern "C" {
  *   measured edge-to-edge from the ISR-recorded timestamps (sub-tick
  *   accuracy); the pin level is re-checked right before an action fires,
  *   so a mid-window bounce aborts the release.
- * - All actions run in the task, NEVER in the ISR: a short press
- *   (< MICHI_BUTTON_LONG_PRESS_MS) opens the pairing window
- *   (michi_pairing_open_window, phase 10 - the physical press is the
- *   ONLY authority that opens it, there is no network-visible way) and
- *   posts MICHI_EVENT_PAIRING_STARTED when the FSM is in IDLE or
- *   UNPROVISIONED. A long press runs MICHI_BUTTON_LONG_PRESS_ACTION:
- *   recovery (post MICHI_EVENT_RECOVER, default) or factory_reset
- *   (nvs_flash_erase + esp_restart). Posts are retried once after 50 ms
- *   on ESP_ERR_TIMEOUT, then dropped and logged; a window-open failure
- *   is logged without breaking the post.
- * - Anti-accidental gates: actions are ignored unless the FSM state at the
- *   press confirmation AND at the release are both outside BOOTING,
+ * - All actions run in the task, NEVER in the ISR. The gesture
+ *   classification is deterministic (contract in michi_button_gesture.h,
+ *   pure + host-tested):
+ *     - short press (< MICHI_BUTTON_RECOVERY_PRESS_MS, default 5000 ms)
+ *       opens the pairing window (michi_pairing_open_window, phase 10 -
+ *       the physical press is the ONLY authority that opens it, there is
+ *       no network-visible way) and posts MICHI_EVENT_PAIRING_STARTED
+ *       when the FSM is in IDLE or UNPROVISIONED;
+ *     - long press (>= MICHI_BUTTON_RECOVERY_PRESS_MS and
+ *       < MICHI_BUTTON_FACTORY_RESET_PRESS_MS, default 10000 ms) posts
+ *       MICHI_EVENT_RECOVER ONLY when the FSM is in RECOVERABLE_ERROR at
+ *       the release (ignored otherwise);
+ *     - very long press (>= MICHI_BUTTON_FACTORY_RESET_PRESS_MS) runs the
+ *       factory reset (michi_button_factory_reset_run: identity wipe +
+ *       pairing registry wipe + full NVS erase + esp_restart), armed by
+ *       MICHI_BUTTON_FACTORY_ARM_MS (the press must have STARTED at
+ *       least that long after boot). Both gestures are always compiled -
+ *       the physical factory reset must never disappear behind a Kconfig
+ *       choice. Posts are retried once after 50 ms on ESP_ERR_TIMEOUT,
+ *       then dropped and logged; a window-open failure is logged without
+ *       breaking the post.
+ * - Anti-accidental gates: actions are ignored unless the FSM state at
+ *   the press confirmation AND at the release are both outside BOOTING,
  *   SELF_TEST and UPDATING (a press held through boot, or started during
- *   OTA, must never fire on release). A factory reset additionally requires
- *   the press to have started at least MICHI_BUTTON_FACTORY_ARM_MS after
- *   boot (boot-hold / stuck-pin protection); recovery is not armed.
+ *   OTA, must never fire on release). The factory reset additionally
+ *   requires the press to have started at least
+ *   MICHI_BUTTON_FACTORY_ARM_MS after boot (boot-hold / stuck-pin
+ *   protection); recovery is not armed. A corrupt identity does not
+ *   change the FSM state, so the factory-reset gesture stays available
+ *   as the only physical recovery path for a corrupt identity store.
  */
 
 /**

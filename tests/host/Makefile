@@ -53,7 +53,7 @@ IDENTITY_INC = -I$(IDENTITY_DIR)/include -I$(IDENTITY_DIR)/monocypher \
                -I$(IDENTITY_DIR)/blake3
 
 TESTS := test_semver test_pairing_validators test_michi_identity \
-         test_michi_pairing test_michi_session test_rtp_guard \
+         test_michi_pairing test_michi_session test_rtp_guard test_michi_button \
          $(if $(filter yes,$(HAS_CJSON)),test_json_helpers test_http_canonical test_michi_discovery test_michi_time test_capability_parity test_pairing_http test_session_http test_discovery_disc)
 
 .PHONY: all test clean
@@ -62,7 +62,7 @@ all: $(TESTS)
 
 test: all
 	@set -e; \
-	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard; do ./$$t; done; \
+	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard test_michi_button; do ./$$t; done; \
 	if [ "$(HAS_CJSON)" = "yes" ]; then \
 	    ./test_json_helpers; \
 	    ./test_http_canonical; \
@@ -140,6 +140,33 @@ test_michi_pairing: test_michi_pairing.c $(PAIRING_SRC) \
                     $(IDENTITY_DIR)/include/michi_identity.h $(SHIMS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(PAIRING_INC) $(IDENTITY_INC) \
 	    $(IDENTITY_DEFS) -pthread -o $@ test_michi_pairing.c $(PAIRING_SRC)
+
+# michi_button: compiles the REAL gesture module (the exact classification
+# the debounce task runs + the factory-reset orchestration) and the REAL
+# identity sources (the corrupt-identity recovery path, end to end)
+# against the test shims. The pairing side is a call-counter test double
+# (the REAL pairing erase_all is already covered by test_michi_pairing),
+# so the reset wiring is asserted by call counts.
+BUTTON_DIR = $(FIRMWARE)/michi_button
+BUTTON_SRC = $(BUTTON_DIR)/michi_button_gesture.c \
+             shim/michi_pairing_fake.c shim/nvs_flash.c shim/esp_system.c \
+             shim/michi_state.c \
+             $(IDENTITY_DIR)/michi_identity.c $(IDENTITY_DIR)/identity_nvs.c \
+             shim/nvs_fake.c \
+             $(IDENTITY_DIR)/monocypher/monocypher.c \
+             $(IDENTITY_DIR)/monocypher/monocypher-ed25519.c \
+             $(IDENTITY_DIR)/blake3/blake3.c \
+             $(IDENTITY_DIR)/blake3/blake3_dispatch.c \
+             $(IDENTITY_DIR)/blake3/blake3_portable.c
+
+test_michi_button: test_michi_button.c $(BUTTON_SRC) \
+                   $(BUTTON_DIR)/michi_button_gesture.h \
+                   $(PAIRING_DIR)/include/michi_pairing.h \
+                   $(IDENTITY_DIR)/include/michi_identity.h \
+                   $(IDENTITY_DIR)/identity_storage.h $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(BUTTON_DIR) $(PAIRING_INC) \
+	    $(IDENTITY_INC) -I$(IDENTITY_DIR) $(IDENTITY_DEFS) \
+	    -o $@ test_michi_button.c $(BUTTON_SRC)
 
 test_michi_identity: test_michi_identity.c $(IDENTITY_SRC) \
                      $(IDENTITY_DIR)/include/michi_identity.h $(SHIMS)
@@ -268,4 +295,4 @@ clean:
 	      test_http_canonical test_michi_identity test_michi_discovery \
 	      test_michi_time test_michi_pairing test_pairing_http \
 	      test_michi_session test_rtp_guard test_session_http \
-	      test_capability_parity test_discovery_disc
+	      test_capability_parity test_discovery_disc test_michi_button

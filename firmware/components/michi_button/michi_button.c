@@ -10,15 +10,22 @@
 #include "driver/gpio.h"
 #include "esp_err.h"
 #include "esp_log.h"
-#include "esp_system.h"
 #include "esp_timer.h"
-#include "nvs_flash.h"
 
 #include "michi_button.h"
+#include "michi_button_gesture.h"
 #include "michi_pairing.h"
 #include "michi_state.h"
 
 #define TAG "michi_button"
+
+/* Gesture contract (P1-07): the factory-reset band must sit strictly
+ * above the recovery band - otherwise every recovery hold would become a
+ * destructive reset. Enforced at build time on top of the Kconfig range. */
+_Static_assert(CONFIG_MICHI_BUTTON_FACTORY_RESET_PRESS_MS >
+                   CONFIG_MICHI_BUTTON_RECOVERY_PRESS_MS,
+               "MICHI_BUTTON_FACTORY_RESET_PRESS_MS must be greater than "
+               "MICHI_BUTTON_RECOVERY_PRESS_MS");
 
 /* Debounce task priority: below the FSM task (5) so the event bus is never
  * delayed by button work; the task only polls a GPIO and posts events. */
@@ -94,11 +101,13 @@ static void take_edge_snapshot(michi_button_edge_t *out)
     portEXIT_CRITICAL(&s_edge_mux);
 }
 
-/* Hard protection: while the firmware is booting, self-testing or updating,
- * NO button action runs - a factory reset during OTA could brick the unit.
- * The pairing gate (IDLE/UNPROVISIONED only) and the recovery gate
- * (RECOVERABLE_ERROR only) sit on top of it: the FSM would drop the
- * out-of-contract events anyway, the gates keep the logs honest. */
+/* Hard protection (inside the classifier, michi_button_gesture.c): while
+ * the firmware is booting, self-testing or updating, NO button action
+ * runs - a factory reset during OTA could brick the unit. The pairing
+ * gate (IDLE/UNPROVISIONED/PAIRING) and the recovery gate
+ * (RECOVERABLE_ERROR at the release) sit on top of it: the FSM would
+ * drop the out-of-contract events anyway, the gates keep the logs
+ * honest. */
 /* Post with one bounded retry: ESP_ERR_TIMEOUT means the event queue is
  * full (transient - the FSM task drains it), so a 50 ms wait + a second
  * attempt covers the usual spike. If the second post also fails the event
@@ -146,66 +155,54 @@ static void handle_short_press(uint32_t press_ms, michi_state_t st)
              (unsigned)press_ms, michi_state_name(st));
 }
 
-static void handle_long_press(uint32_t press_ms, michi_state_t st)
-{
-#ifdef CONFIG_MICHI_BUTTON_LONG_PRESS_FACTORY_RESET
-    ESP_LOGW(TAG, "button: press_ms=%u action=factory_reset state=%s",
-             (unsigned)press_ms, michi_state_name(st));
-    /* Arm window: the press must have STARTED at least
-     * MICHI_BUTTON_FACTORY_ARM_MS after boot (boot-hold, where the ISR
-     * record is seeded at init, and a stuck pin both trip a press with
-     * ~0 elapsed). Recovery is deliberately NOT armed. */
-    if (s_press_boot_elapsed < CONFIG_MICHI_BUTTON_FACTORY_ARM_MS) {
-        ESP_LOGW(TAG, "button: factory_reset ignored arm_window=%u ms "
-                 "(press_elapsed=%" PRId64 " ms)",
-                 (unsigned)CONFIG_MICHI_BUTTON_FACTORY_ARM_MS,
-                 s_press_boot_elapsed);
-        return;
-    }
-    const esp_err_t err = nvs_flash_erase();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "button: nvs_flash_erase failed: %s - factory reset "
-                 "aborted", esp_err_to_name(err));
-        return;
-    }
-    /* Restart immediately, no log-flush delay: the factory-reset log above
-     * is already in the UART FIFO and survives the reset, and the extra
-     * 200 ms only widened the window in which a concurrent shutdown could
-     * hand the still-running debounce task a stale join handle. */
-    esp_restart();
-#else
-    if (st == MICHI_STATE_RECOVERABLE_ERROR) {
-        ESP_LOGI(TAG, "button: press_ms=%u action=recovery", (unsigned)press_ms);
-        post_with_retry(MICHI_EVENT_RECOVER, 0);
-        return;
-    }
-    ESP_LOGW(TAG, "button: press_ms=%u action=recovery state=%s "
-             "(expected RECOVERABLE_ERROR)",
-             (unsigned)press_ms, michi_state_name(st));
-#endif
-}
-
+/* Deterministic gestures (P1-07, contract in michi_button_gesture.h):
+ *   - short press  (< RECOVERY_PRESS_MS):               pairing window
+ *   - long press   (>= RECOVERY_PRESS_MS, < FACTORY_RESET_PRESS_MS):
+ *     recovery, only when the FSM is in RECOVERABLE_ERROR at the release
+ *   - very long    (>= FACTORY_RESET_PRESS_MS):         factory reset,
+ *     armed (press started >= FACTORY_ARM_MS after boot)
+ * Hard protection: a press that STARTED or ENDED in BOOTING, SELF_TEST
+ * or UPDATING is ignored - a factory reset during OTA could brick the
+ * unit. The classification lives in michi_button_gesture.c (pure, host-
+ * tested); this file executes the chosen action. */
 static void handle_release(uint32_t press_ms)
 {
     const michi_state_t st = michi_state_get();
-    const michi_state_t press_st = s_press_state;
 
-    /* Anti-accidental gate on BOTH flanks: the press must not have started
-     * in a protected state (held through boot - the ISR record is seeded at
-     * init - or started during UPDATING) AND must not be released in one;
-     * otherwise a press that began protected would fire its action once the
-     * FSM reached IDLE. */
-    if (st == MICHI_STATE_BOOTING || st == MICHI_STATE_SELF_TEST ||
-        st == MICHI_STATE_UPDATING || press_st == MICHI_STATE_BOOTING ||
-        press_st == MICHI_STATE_SELF_TEST || press_st == MICHI_STATE_UPDATING) {
-        ESP_LOGW(TAG, "button: action=ignored press_state=%s release_state=%s",
-                 michi_state_name(press_st), michi_state_name(st));
-        return;
-    }
-    if (press_ms >= CONFIG_MICHI_BUTTON_LONG_PRESS_MS) {
-        handle_long_press(press_ms, st);
-    } else {
+    const michi_button_action_t action = michi_button_gesture_classify(
+        press_ms, s_press_state, st, s_press_boot_elapsed,
+        CONFIG_MICHI_BUTTON_RECOVERY_PRESS_MS,
+        CONFIG_MICHI_BUTTON_FACTORY_RESET_PRESS_MS,
+        CONFIG_MICHI_BUTTON_FACTORY_ARM_MS);
+
+    switch (action) {
+    case MICHI_BUTTON_ACTION_PAIRING:
         handle_short_press(press_ms, st);
+        break;
+    case MICHI_BUTTON_ACTION_RECOVERY:
+        ESP_LOGI(TAG, "button: press_ms=%u action=recovery",
+                 (unsigned)press_ms);
+        post_with_retry(MICHI_EVENT_RECOVER, 0);
+        break;
+    case MICHI_BUTTON_ACTION_FACTORY_RESET:
+        ESP_LOGW(TAG, "button: press_ms=%u action=factory_reset state=%s",
+                 (unsigned)press_ms, michi_state_name(st));
+        (void)michi_button_factory_reset_run();
+        break;
+    case MICHI_BUTTON_ACTION_IGNORED_PROTECTED:
+        ESP_LOGW(TAG, "button: action=ignored press_state=%s release_state=%s",
+                 michi_state_name(s_press_state), michi_state_name(st));
+        break;
+    case MICHI_BUTTON_ACTION_IGNORED_ARM:
+        ESP_LOGW(TAG, "button: factory_reset ignored arm_window=%d ms "
+                 "(press_elapsed=%" PRId64 " ms)",
+                 CONFIG_MICHI_BUTTON_FACTORY_ARM_MS, s_press_boot_elapsed);
+        break;
+    case MICHI_BUTTON_ACTION_IGNORED_STATE:
+        ESP_LOGW(TAG, "button: press_ms=%u action=recovery state=%s "
+                 "(expected RECOVERABLE_ERROR)",
+                 (unsigned)press_ms, michi_state_name(st));
+        break;
     }
 }
 

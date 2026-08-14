@@ -24,3 +24,4 @@ __pycache__/
 /tests/host/test_rtp_guard
 /tests/host/test_session_http
 /tests/host/test_discovery_disc
+/tests/host/test_michi_button

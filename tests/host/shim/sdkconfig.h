@@ -5,6 +5,9 @@
  *  - firmware/components/michi_time/Kconfig (fast host values so the
  *    bounded SNTP wait tests run in ms, not seconds - the firmware
  *    defaults stay 10000 ms / 2 retries);
+ *  - firmware/components/michi_button/Kconfig (exact defaults - the
+ *    button gesture tests assert the 5000/10000/10000 contract against
+ *    these);
  *  - CONFIG_LWIP_SNTP_MAX_SERVERS mirrors the IDF 5.3 lwIP Kconfig
  *    default (the esp_netif_sntp shim struct needs it).
  * TEST-ONLY: never compiled into firmware. */
@@ -16,5 +19,12 @@
 #define CONFIG_MICHI_TIME_SYNC_TIMEOUT_MS 250
 #define CONFIG_MICHI_TIME_SYNC_RETRIES 3
 #define CONFIG_MICHI_TIME_TASK_STACK_BYTES 3072
+
+#define CONFIG_MICHI_BUTTON_DEBOUNCE_MS 20
+#define CONFIG_MICHI_BUTTON_RECOVERY_PRESS_MS 5000
+#define CONFIG_MICHI_BUTTON_FACTORY_RESET_PRESS_MS 10000
+#define CONFIG_MICHI_BUTTON_FACTORY_ARM_MS 10000
+#define CONFIG_MICHI_BUTTON_POLL_MS 10
+#define CONFIG_MICHI_BUTTON_TASK_STACK_BYTES 3072
 
 #define CONFIG_LWIP_SNTP_MAX_SERVERS 1
