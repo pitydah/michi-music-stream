@@ -58,6 +58,8 @@ jobs:
         run: |
           cppcheck --enable=warning,performance,portability \
             --suppress=missingIncludeSystem --error-exitcode=1 \
+            -i components/michi_identity/monocypher \
+            -i components/michi_identity/blake3 \
             -I components \
             -I components/michi_audio/include \
             -I components/michi_audio_output/include \
