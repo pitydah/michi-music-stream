@@ -4,4 +4,5 @@ idf_component_register(
              michi_http michi_audio_output michi_volume michi_state
              michi_display michi_led michi_button michi_wifi michi_pairing
              michi_audio michi_session michi_ota michi_sd michi_log
+             michi_identity
 )

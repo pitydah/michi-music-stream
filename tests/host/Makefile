@@ -29,7 +29,7 @@ CJSON_LIBS   := $(shell pkg-config --libs libcjson 2>/dev/null)
 # Every shim header is a dependency: a shim change must rebuild all tests.
 SHIMS := $(wildcard shim/*.h)
 
-TESTS := test_semver test_pairing_validators \
+TESTS := test_semver test_pairing_validators test_michi_identity \
          $(if $(filter yes,$(HAS_CJSON)),test_json_helpers test_http_canonical)
 
 .PHONY: all test clean
@@ -38,7 +38,7 @@ all: $(TESTS)
 
 test: all
 	@set -e; \
-	for t in test_semver test_pairing_validators; do ./$$t; done; \
+	for t in test_semver test_pairing_validators test_michi_identity; do ./$$t; done; \
 	if [ "$(HAS_CJSON)" = "yes" ]; then \
 	    ./test_json_helpers; \
 	    ./test_http_canonical; \
@@ -66,6 +66,27 @@ test_http_canonical: test_http_canonical.c $(FIRMWARE)/michi_http/canonical_json
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CJSON_CFLAGS) -o $@ test_http_canonical.c \
 	    $(FIRMWARE)/michi_http/canonical_json.c $(CJSON_LIBS)
 
+# michi_identity: compiles the REAL component sources + vendored crypto
+# (Monocypher, BLAKE3 portable-only) against the test shims.
+IDENTITY_DIR = $(FIRMWARE)/michi_identity
+IDENTITY_SRC = $(IDENTITY_DIR)/michi_identity.c $(IDENTITY_DIR)/identity_nvs.c \
+               shim/nvs_fake.c \
+               $(IDENTITY_DIR)/monocypher/monocypher.c \
+               $(IDENTITY_DIR)/monocypher/monocypher-ed25519.c \
+               $(IDENTITY_DIR)/blake3/blake3.c \
+               $(IDENTITY_DIR)/blake3/blake3_dispatch.c \
+               $(IDENTITY_DIR)/blake3/blake3_portable.c
+IDENTITY_DEFS = -DMICHI_IDENTITY_TESTING \
+                -DBLAKE3_NO_SSE2 -DBLAKE3_NO_SSE41 -DBLAKE3_NO_AVX2 \
+                -DBLAKE3_NO_AVX512 -DBLAKE3_USE_NEON=0
+IDENTITY_INC = -I$(IDENTITY_DIR)/include -I$(IDENTITY_DIR)/monocypher \
+               -I$(IDENTITY_DIR)/blake3
+
+test_michi_identity: test_michi_identity.c $(IDENTITY_SRC) \
+                     $(IDENTITY_DIR)/include/michi_identity.h $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(IDENTITY_INC) $(IDENTITY_DEFS) \
+	    -o $@ test_michi_identity.c $(IDENTITY_SRC)
+
 clean:
 	rm -f test_semver test_pairing_validators test_json_helpers \
-	      test_http_canonical
+	      test_http_canonical test_michi_identity
