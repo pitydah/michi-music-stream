@@ -40,6 +40,22 @@ jobs:
           make -C tests/host clean
           make -C tests/host test
 
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Vendored contract sync check
+        run: python3 scripts/sync_michi_link_contract.py --check
+      - name: E2E interoperability certification (canonical simulator)
+        run: python3 tests/e2e/run_e2e.py
+
   static-analysis:
     runs-on: ubuntu-latest
     steps:
