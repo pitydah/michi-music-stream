@@ -285,11 +285,15 @@ michi_identity_state_t michi_identity_get_state(void)
 
 esp_err_t michi_identity_factory_reset(void)
 {
-    wipe_ram_identity();
+    /* Erase NVS FIRST: if the flash operation fails we keep the in-RAM
+     * identity intact and the state unchanged, so the device never
+     * advertises a zeroed identity while reporting READY (and a reboot
+     * keeps the persisted seed consistent with RAM). */
     esp_err_t err = michi_identity_nvs_erase();
     if (err != ESP_OK) {
         return err;
     }
+    wipe_ram_identity();
     s_state = MICHI_IDENTITY_UNINITIALIZED;
     ESP_LOGW(TAG, "identity: erased (explicit factory reset)");
     return ESP_OK;

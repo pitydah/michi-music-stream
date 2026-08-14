@@ -387,6 +387,39 @@ static void test_lifecycle_factory_reset(void)
     CHECK(strcmp(id_old, id_new) != 0, "fresh identity differs from the old");
 }
 
+static void test_lifecycle_factory_reset_erase_failure(void)
+{
+    printf("lifecycle: erase failure keeps the identity intact and READY\n");
+    test_nvs_reset();
+    michi_identity_test_reset();
+    CHECK(michi_identity_init() == ESP_OK, "boot generates identity");
+    char id_before[MICHI_IDENTITY_MICHI_ID_LEN];
+    uint8_t pk_before[MICHI_IDENTITY_KEY_BYTES];
+    CHECK(michi_identity_michi_id(id_before, sizeof(id_before)) == ESP_OK,
+          "michi_id captured");
+    CHECK(michi_identity_public_key(pk_before) == ESP_OK, "public key captured");
+
+    test_nvs_force_erase_error("michi_identity", true);
+    CHECK(michi_identity_factory_reset() != ESP_OK, "erase failure surfaces");
+    CHECK(michi_identity_get_state() == MICHI_IDENTITY_READY,
+          "state stays READY (no zeroed identity advertised)");
+    char id_after[MICHI_IDENTITY_MICHI_ID_LEN];
+    uint8_t pk_after[MICHI_IDENTITY_KEY_BYTES];
+    CHECK(michi_identity_michi_id(id_after, sizeof(id_after)) == ESP_OK,
+          "michi_id still readable");
+    CHECK(michi_identity_public_key(pk_after) == ESP_OK,
+          "public key still readable");
+    CHECK(strcmp(id_before, id_after) == 0, "michi_id unchanged on failure");
+    CHECK(memcmp(pk_before, pk_after, sizeof(pk_before)) == 0,
+          "public key unchanged on failure");
+
+    test_nvs_force_erase_error("michi_identity", false);
+    CHECK(michi_identity_factory_reset() == ESP_OK,
+          "reset succeeds once erase works again");
+    CHECK(michi_identity_get_state() == MICHI_IDENTITY_UNINITIALIZED,
+          "state returns to UNINITIALIZED after successful erase");
+}
+
 /* ── sign / verify with the component identity ───────────── */
 
 static void test_sign_verify_roundtrip(void)
@@ -466,6 +499,7 @@ int main(void)
     test_lifecycle_corrupt_sticky();
     test_lifecycle_corrupt_read_error();
     test_lifecycle_factory_reset();
+    test_lifecycle_factory_reset_erase_failure();
     test_sign_verify_roundtrip();
     test_sign_requires_ready();
 

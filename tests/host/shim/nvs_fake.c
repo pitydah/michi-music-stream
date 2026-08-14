@@ -44,6 +44,17 @@ void test_nvs_force_read_error(const char *ns, bool force)
     }
 }
 
+void test_nvs_force_erase_error(const char *ns, bool force)
+{
+    test_nvs_namespace_t *store = test_nvs_store();
+    for (int i = 0; i < TEST_NVS_MAX_NAMESPACES; i++) {
+        if (store[i].present && strcmp(store[i].name, ns) == 0) {
+            store[i].force_erase_error = force;
+            return;
+        }
+    }
+}
+
 bool test_nvs_get_blob(const char *ns, const char *key, uint8_t *out,
                        size_t out_cap, size_t *out_len)
 {
@@ -165,6 +176,9 @@ esp_err_t nvs_erase_key(nvs_handle_t handle, const char *key)
     if (handle < 0 || handle >= TEST_NVS_MAX_NAMESPACES ||
         !store[handle].present) {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (store[handle].force_erase_error) {
+        return ESP_FAIL; /* simulated flash/commit erase failure */
     }
     for (int j = 0; j < TEST_NVS_MAX_NAMESPACES; j++) {
         test_nvs_entry_t *e = &store[handle].entries[j];
