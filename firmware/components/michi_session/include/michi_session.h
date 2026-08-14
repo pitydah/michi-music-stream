@@ -59,16 +59,25 @@ extern "C" {
  *   credential).
  * - No persistence: sessions live in RAM only (NVS untouched). A reboot
  *   ends the session; the controller re-pairs/restarts it.
- * - The lease: POST returns lease_seconds 30 and GET reports
- *   lease_remaining_ms. MS-07 reports the full 30000 ms window (the
- *   heartbeat renewal and the monotonic watchdog are MS-08 - until then
- *   the lease never expires locally).
+ * - The lease (MS-08, contract section 2.6): start and every valid
+ *   heartbeat renew a 30 s lease on the MONOTONIC clock (esp_timer).
+ *   The watchdog is a one-shot esp_timer armed ONLY while a session is
+ *   active; when it fires (30 s without renewal, RTP traffic does NOT
+ *   count) it runs the SAME safe teardown as DELETE, increments
+ *   lease_expirations and returns the layer to idle. API entry points
+ *   reconcile the deadline lazily too (mirroring the simulator
+ *   reference), so GET/PATCH/DELETE/heartbeat on an expired session
+ *   answer 404 and a new start proceeds - even if the timer task is
+ *   delayed. GET reports the REAL remaining window
+ *   (lease_remaining_ms = deadline - monotonic now, floor).
  *
- * Threading: all calls are task-context (the httpd task); a mutex
- * serializes access. stop() may block up to the engine's cooperative
- * join window (~2 s, MICHI_AUDIO_JOIN_TIMEOUT_MS) while the session
- * task winds down; it runs on the httpd task by design (single session,
- * single server task).
+ * Threading: all calls are task-context (the httpd task) except the
+ * watchdog callback (the esp_timer task); a mutex serializes access.
+ * stop() may block up to the engine's cooperative join window (~2 s,
+ * MICHI_AUDIO_JOIN_TIMEOUT_MS) while the session task winds down; it
+ * runs on the httpd task by design (single session, single server
+ * task). The watchdog callback performs the same engine join - the
+ * esp_timer task is blocked at most that long once per lease expiry.
  */
 
 /*!< session_id: UUID v4 (8-4-4-4-12 lowercase hex) + NUL */
@@ -83,7 +92,7 @@ extern "C" {
 #define MICHI_SESSION_SOURCE_ADDR_LEN 16
 /*!< codec string ("pcm_s16le") */
 #define MICHI_SESSION_CODEC_LEN 16
-/*!< initial lease (contract section 2.5/2.6; renewal is MS-08) */
+/*!< lease window (contract section 2.5/2.6; renewal = MS-08) */
 #define MICHI_SESSION_LEASE_SECONDS 30
 #define MICHI_SESSION_LEASE_MS (MICHI_SESSION_LEASE_SECONDS * 1000)
 
@@ -97,6 +106,19 @@ typedef enum {
     MICHI_SESSION_STATE_PAUSED,       /*!< Engine alive, audio suspended */
     MICHI_SESSION_STATE_STOPPING,     /*!< Teardown in progress */
 } michi_session_state_t;
+
+/**
+ * @brief Result of michi_session_heartbeat() (the HTTP layer maps it:
+ *        TOKEN_MISMATCH -> 401, NO_SESSION/SESSION_MISMATCH -> 404,
+ *        SEQUENCE_REPLAY -> 409 CONFLICT without renewing).
+ */
+typedef enum {
+    MICHI_SESSION_HEARTBEAT_OK = 0,      /*!< Lease renewed to 30 s */
+    MICHI_SESSION_HEARTBEAT_NO_SESSION,  /*!< No session (or lease expired first) */
+    MICHI_SESSION_HEARTBEAT_TOKEN_MISMATCH, /*!< Wrong/malformed session token */
+    MICHI_SESSION_HEARTBEAT_SESSION_MISMATCH, /*!< session_id != active session */
+    MICHI_SESSION_HEARTBEAT_SEQUENCE_REPLAY,  /*!< sequence repeated/older: no renew */
+} michi_session_heartbeat_result_t;
 
 /**
  * @brief Snapshot of the active session (michi_session_get_info).
@@ -123,7 +145,9 @@ typedef struct {
     uint16_t buffer_ms;                    /* jitter budget in effect (50..500) */
     uint8_t volume;                        /* APPLIED volume 0-100 */
     bool paused;                           /* true while playback is suspended */
-    uint32_t lease_remaining_ms;           /* 30000 (watchdog = MS-08) */
+    uint32_t lease_remaining_ms;           /* REAL remaining window (monotonic
+                                             deadline - now, floor, clamped
+                                             >= 0; MS-08) */
     uint32_t packets_received;             /* accepted past the guard */
     uint32_t packets_rejected;             /* source/PT/SSRC/size rejects */
     uint32_t packets_lost;                 /* detected seq gaps */
@@ -158,10 +182,14 @@ typedef struct {
  *
  * Must be called after michi_audio_init() (the layer calls into the
  * engine at session start/stop). No NVS access. Safe to call once;
- * repeated calls return ESP_OK (idempotent). On failure app_main
- * continues degraded: no sessions, everything else keeps working.
+ * repeated calls return ESP_OK (idempotent). Creates the lease
+ * watchdog one-shot esp_timer. On failure app_main continues degraded:
+ * no sessions, everything else keeps working (a session without a
+ * watchdog could never expire - the contract demands the watchdog, so
+ * init fails instead of allowing lease-less sessions).
  *
- * @return ESP_OK; ESP_ERR_NO_MEM if the mutex cannot be created.
+ * @return ESP_OK; ESP_ERR_NO_MEM if the mutex or the watchdog timer
+ *         cannot be created.
  */
 esp_err_t michi_session_init(void);
 
@@ -194,6 +222,13 @@ bool michi_session_token_valid(const char *token);
  * is cleaned BEFORE the active check: the zombie state is cleared
  * (SESSION_CLOSED posted, "cleaned dead engine session" logged) and the
  * new start proceeds - a live session still answers ESP_ERR_INVALID_STATE.
+ * A session whose LEASE expired is also reconciled first (the same
+ * teardown as DELETE, lease_expirations incremented): mirroring the
+ * simulator reference, an expired session is released and the new start
+ * proceeds instead of answering 409.
+ *
+ * On success the 30 s lease starts on the MONOTONIC clock (esp_timer)
+ * and the watchdog is armed.
  *
  * The session token is returned in `out_token` (43 base64url chars) -
  * the ONLY time the caller receives it.
@@ -219,8 +254,11 @@ esp_err_t michi_session_start(const michi_session_start_params_t *params,
  *
  * The session token is validated in CONSTANT TIME against the active
  * session (fixed 43-char comparison; malformed tokens are rejected as
- * INVALID_ARG without comparison - no timing side channel). Engine stop
- * is cooperative: this call may block up to the join window. On success
+ * INVALID_ARG without comparison - no timing side channel). The lease
+ * deadline is reconciled FIRST: an expired session is already closed
+ * (lease_expirations incremented) and stop() reports INVALID_STATE
+ * (HTTP 404), mirroring the simulator reference. Engine stop is
+ * cooperative: this call may block up to the join window. On success
  * the engine socket/buffers are freed, the session state is cleared and
  * the token is WIPED FROM RAM (memset) - GET then answers 404.
  *
@@ -274,27 +312,71 @@ esp_err_t michi_session_patch(const char *session_token, bool volume_set,
                               uint8_t volume, bool paused_set, bool paused);
 
 /**
+ * @brief Process a session heartbeat (contract section 2.6, MS-08).
+ *
+ * Guard order mirrors the simulator reference: the lease deadline is
+ * reconciled FIRST (an expired session is closed with the same teardown
+ * as DELETE and lease_expirations is incremented - the heartbeat then
+ * finds no session), then the credential, then the session_id, then the
+ * sequence. `sent_at_ms` is NOT an input: it is informational per the
+ * contract and never used for the local timeout.
+ *
+ * `sequence` is unsigned and STRICTLY increasing within the session
+ * (the first heartbeat of a session may be any value). A valid
+ * heartbeat renews the lease to 30 s on the MONOTONIC clock (esp_timer)
+ * and re-arms the watchdog; a repeated or older sequence does NOT renew
+ * and reports SEQUENCE_REPLAY (HTTP 409 CONFLICT).
+ *
+ * @param session_token The 43-char base64url session token.
+ * @param session_id    UUID v4 of the active session (from the body).
+ * @param sequence      Unsigned heartbeat sequence (strictly increasing).
+ * @return MICHI_SESSION_HEARTBEAT_OK on renewal; NO_SESSION (404);
+ *         TOKEN_MISMATCH (401); SESSION_MISMATCH (404);
+ *         SEQUENCE_REPLAY (409, no renewal).
+ */
+michi_session_heartbeat_result_t michi_session_heartbeat(
+    const char *session_token, const char *session_id, uint32_t sequence);
+
+/**
+ * @brief Cumulative lease-expiry close count (contract metric, MS-08).
+ *
+ * Incremented every time the lease watchdog or the lazy reconciliation
+ * closes a session because the 30 s window expired (never on DELETE or
+ * abort). Survives session closes; reset only by reboot. Exposed by the
+ * diagnostics session block.
+ *
+ * @return The counter (0 before init).
+ */
+uint32_t michi_session_lease_expirations(void);
+
+/**
  * @brief Copy the active session snapshot (token never included).
  *
- * Reconciles reality first: a session whose engine self-terminated is
- * cleaned here (SESSION_CLOSED posted, "cleaned dead engine session"
- * logged) and ESP_ERR_INVALID_STATE is returned (the API answers "no
- * active session"); a stuck FSM is re-driven by re-posting the missing
- * SESSION_STARTED steps (from-keyed, idempotent). Then the packet
- * counters are refreshed LIVE from the engine metrics and
- * lease_remaining_ms reports the lease window (MS-07: the full 30000 ms;
- * the watchdog is MS-08).
+ * Reconciles reality first: a session whose LEASE expired is closed
+ * here (the same teardown as DELETE, lease_expirations incremented) and
+ * ESP_ERR_INVALID_STATE is returned (the API answers "no active
+ * session"); a session whose engine self-terminated is cleaned here
+ * (SESSION_CLOSED posted, "cleaned dead engine session" logged) and
+ * ESP_ERR_INVALID_STATE is returned; a stuck FSM is re-driven by
+ * re-posting the missing SESSION_STARTED steps (from-keyed,
+ * idempotent). Then the packet counters are refreshed LIVE from the
+ * engine metrics and lease_remaining_ms reports the REAL remaining
+ * window on the monotonic clock (deadline - now, floor, clamped >= 0).
  *
  * @param out Output struct (must not be NULL).
  * @return ESP_OK; ESP_ERR_INVALID_STATE (before init, no session
- *         active, or a dead-engine session was just cleaned);
- *         ESP_ERR_INVALID_ARG on NULL out.
+ *         active, or a lease-expired/dead-engine session was just
+ *         cleaned); ESP_ERR_INVALID_ARG on NULL out.
  */
 esp_err_t michi_session_get_info(michi_session_info_t *out);
 
 /**
  * @return true while a session is active (started, not yet stopped).
- *         A PAUSED session is still active.
+ *         A PAUSED session is still active. Reconciles the lease first:
+ *         an expired session is closed (same teardown as DELETE,
+ *         lease_expirations incremented) and false is returned, so the
+ *         HTTP fast paths match the simulator reference (an expired
+ *         session answers 404 / allows a new start instead of 409).
  */
 bool michi_session_active(void);
 

@@ -129,17 +129,18 @@ esp_err_t build_info_json(cJSON *root, const michi_product_profile_t *p)
     }
 
     /* Feature flags are truthful by construction: a flag is true only
-     * while its handler is registered AND implemented. Pairing (MS-06),
-     * session/heartbeat lease (MS-07/MS-08), the certified now-playing
-     * payload and the OTA flow all answer 501 NOT_IMPLEMENTED at this
-     * stage, so their flags are false; diagnostics is implemented (its
-     * response shape is not frozen by the contract). Volume lives inside
-     * the session PATCH mutation, so it shares the session deferral. */
+     * while its handler is registered AND implemented. Session and the
+     * heartbeat lease are implemented (MS-07/MS-08) with positive
+     * tests, and volume lives inside the session PATCH mutation
+     * (implemented with the session), so all three are true. The
+     * certified now-playing payload and the OTA flow still answer 501
+     * NOT_IMPLEMENTED, so their flags are false; diagnostics is
+     * implemented (its response shape is not frozen by the contract). */
     cJSON *feat = cJSON_AddObjectToObject(root, "features");
     if (feat == NULL ||
-        cJSON_AddBoolToObject(feat, "session", false) == NULL ||
-        cJSON_AddBoolToObject(feat, "heartbeat", false) == NULL ||
-        cJSON_AddBoolToObject(feat, "volume", false) == NULL ||
+        cJSON_AddBoolToObject(feat, "session", true) == NULL ||
+        cJSON_AddBoolToObject(feat, "heartbeat", true) == NULL ||
+        cJSON_AddBoolToObject(feat, "volume", true) == NULL ||
         cJSON_AddBoolToObject(feat, "now_playing", false) == NULL ||
         cJSON_AddBoolToObject(feat, "diagnostics", true) == NULL ||
         cJSON_AddBoolToObject(feat, "ota", false) == NULL) {

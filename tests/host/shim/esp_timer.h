@@ -1,9 +1,11 @@
 #pragma once
 /* Shim for host-side tests: esp_timer stand-in with a FAKE monotonic
- * clock and a single one-shot timer (the pairing component owns exactly
- * one). Tests drive time with test_esp_timer_advance(), which fires the
- * timer callback synchronously when the deadline passes - exactly like
- * the esp_timer task would. TEST-ONLY: never compiled into firmware. */
+ * clock and a single one-shot timer (each test binary owns at most one:
+ * the pairing window in the pairing tests, the session lease watchdog in
+ * the session tests). Tests drive time with test_esp_timer_advance(),
+ * which fires the timer callback synchronously when the deadline passes
+ * - exactly like the esp_timer task would. TEST-ONLY: never compiled
+ * into firmware. */
 
 #include <stdbool.h>
 #include <stddef.h>

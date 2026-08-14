@@ -1,5 +1,6 @@
 /*
- * Session lifecycle (MS-07): the single canonical audio session.
+ * Session lifecycle (MS-07/MS-08): the single canonical audio session
+ * plus the heartbeat lease (contract sections 2.5 and 2.6).
  *
  * Design (see include/michi_session.h for the full contract):
  *  - The layer owns the session CONTRACT (strict negotiation without
@@ -29,6 +30,18 @@
  *  - FSM events are best-effort (warn on failure): the session layer is
  *    the API's source of truth; the FSM follows as far as the bus allows.
  *  - No NVS access: sessions are RAM-only by design.
+ *  - THE LEASE (MS-08): start and every valid heartbeat renew a 30 s
+ *    lease on the MONOTONIC esp_timer clock. A one-shot watchdog timer
+ *    is armed ONLY while a session is active; when it fires (30 s
+ *    without renewal - RTP packets do NOT renew) it runs the SAME safe
+ *    teardown as DELETE, increments lease_expirations and returns the
+ *    layer to idle. API entry points reconcile the deadline lazily too
+ *    (mirroring the simulator reference): an expired session answers
+ *    404 / a new start proceeds even if the esp_timer task is delayed.
+ *    GET reports the REAL remaining window (deadline - now, floor).
+ *    heartbeat sequence is strictly increasing within the session; a
+ *    repeated/older sequence returns SEQUENCE_REPLAY (HTTP 409) and
+ *    does NOT renew. sent_at_ms is informational only (never an input).
  */
 
 #include <inttypes.h>
@@ -44,6 +57,7 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_random.h"
+#include "esp_timer.h"
 
 #include "michi_audio.h"
 #include "michi_display.h"
@@ -63,16 +77,24 @@
 #define MICHI_SESSION_BUFFER_MAX_MS 500
 #define MICHI_SESSION_PAYLOAD_TYPE 97
 #define MICHI_SESSION_TOKEN_BYTES 32 /* CSPRNG bytes -> 43 base64url */
+/* Watchdog retry when the engine task did not join within the lease
+ * close (the same retry contract as DELETE's 500 "retry"). */
+#define MICHI_SESSION_LEASE_RETRY_US 1000000ULL
 
 typedef struct {
     michi_session_info_t info;
     char session_token[MICHI_SESSION_TOKEN_LEN];
+    uint32_t last_heartbeat_seq; /* strictly increasing within the session */
+    bool heartbeat_seq_valid;    /* false until the first heartbeat */
+    int64_t lease_deadline_us;   /* monotonic esp_timer deadline */
 } session_ctx_t;
 
 static SemaphoreHandle_t s_mutex;
 static volatile bool s_initialized;
 static session_ctx_t s_session;
 static bool s_active;
+static uint32_t s_lease_expirations;      /* cumulative, reset by reboot */
+static esp_timer_handle_t s_watchdog;     /* armed ONLY with a session */
 
 /* ------------------------------------------------------------------
  * Encoding / validation helpers
@@ -314,10 +336,101 @@ static bool session_reconcile_dead_engine_locked(void)
     }
     ESP_LOGW(TAG, "session: cleaned dead engine session id=%s",
              s_session.info.session_id);
+    esp_timer_stop(s_watchdog); /* the session is gone: watchdog off */
     s_active = false;
     memset(&s_session, 0, sizeof(s_session));
     post_event(MICHI_EVENT_SESSION_CLOSED);
     return true;
+}
+
+/* ------------------------------------------------------------------
+ * Lease teardown (MS-08): the SAME safe close as DELETE
+ * ------------------------------------------------------------------ */
+
+/* Locked core teardown shared by DELETE, abort, the watchdog and the
+ * lazy reconciliation: engine stop (cooperative, may block up to the
+ * join window) + state wipe (the token is wiped from RAM). On engine
+ * stop failure NOTHING is cleared - the session stays active and the
+ * caller applies the retry contract (DELETE answers 500 retry; the
+ * watchdog re-arms). by_lease increments lease_expirations. */
+static esp_err_t session_teardown_locked(bool by_lease)
+{
+    s_session.info.state = MICHI_SESSION_STATE_STOPPING;
+    const esp_err_t err = michi_audio_session_stop();
+    if (err != ESP_OK) {
+        return err;
+    }
+    esp_timer_stop(s_watchdog); /* armed only with a session */
+    s_active = false;
+    memset(&s_session, 0, sizeof(s_session)); /* token wiped from RAM */
+    if (by_lease) {
+        s_lease_expirations++;
+    }
+    return ESP_OK;
+}
+
+/* Post-close duties shared by every lease close path (watchdog + lazy):
+ * log, FSM event and the display clear (the IDLE screen must never show
+ * stale track info). Runs with the mutex HELD (the event post under the
+ * lock follows the dead-engine reconciliation precedent; the display
+ * clear is best-effort, bounded I/O). */
+static void lease_close_duties(void)
+{
+    ESP_LOGW(TAG, "session: lease expired - closed (expirations=%" PRIu32 ")",
+             s_lease_expirations);
+    post_event(MICHI_EVENT_SESSION_CLOSED);
+    if (michi_display_clear_now_playing() != ESP_OK) {
+        ESP_LOGW(TAG, "lease: display clear failed (metadata kept)");
+    }
+}
+
+/* Lease reconciliation, called with s_mutex HELD: when the monotonic
+ * deadline passed, the session is closed with the SAME teardown as
+ * DELETE and the counter is incremented. Returns true when an expiry
+ * closed the session. RTP traffic never renews the lease: only start
+ * and a valid heartbeat do. */
+static bool session_expire_if_needed_locked(void)
+{
+    if (!s_active || esp_timer_get_time() < s_session.lease_deadline_us) {
+        return false;
+    }
+    if (session_teardown_locked(true) != ESP_OK) {
+        /* Engine did not join: the session stays active (DELETE retry
+         * contract); the watchdog will retry. */
+        ESP_LOGW(TAG, "lease: engine did not stop - session kept");
+        return false;
+    }
+    lease_close_duties();
+    return true;
+}
+
+/* The lease watchdog (contract 2.6): a one-shot esp_timer armed only
+ * while a session is active. On expiry it runs the SAME teardown as
+ * DELETE and returns the layer to idle. The callback runs on the
+ * esp_timer task; the engine join may block it up to the join window -
+ * at most once per lease expiry. A renewal that raced the firing
+ * deadline re-arms for the remaining window (no spurious close). */
+static void lease_watchdog_cb(void *arg)
+{
+    (void)arg;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (!s_active) {
+        xSemaphoreGive(s_mutex); /* defensive: armed only with a session */
+        return;
+    }
+    const int64_t now = esp_timer_get_time();
+    if (now < s_session.lease_deadline_us) {
+        (void)esp_timer_start_once(
+            s_watchdog, (uint64_t)(s_session.lease_deadline_us - now));
+        xSemaphoreGive(s_mutex);
+        return;
+    }
+    if (!session_expire_if_needed_locked() && s_active) {
+        /* Engine did not join: keep the session, retry shortly. */
+        (void)esp_timer_start_once(s_watchdog, MICHI_SESSION_LEASE_RETRY_US);
+        ESP_LOGW(TAG, "lease: engine did not stop - watchdog retry");
+    }
+    xSemaphoreGive(s_mutex);
 }
 
 /* FSM reconciliation: the FSM follows the session layer best-effort - a
@@ -363,10 +476,25 @@ esp_err_t michi_session_init(void)
         ESP_LOGE(TAG, "init: mutex creation failed");
         return ESP_ERR_NO_MEM;
     }
+    /* The lease watchdog: a session without a watchdog could never
+     * expire (the contract demands the 30 s close even while RTP flows),
+     * so init fails instead of allowing lease-less sessions. */
+    const esp_timer_create_args_t args = {
+        .callback = lease_watchdog_cb,
+        .arg = NULL,
+        .name = "session_lease",
+    };
+    if (esp_timer_create(&args, &s_watchdog) != ESP_OK) {
+        vSemaphoreDelete(s_mutex);
+        s_mutex = NULL;
+        ESP_LOGE(TAG, "init: watchdog timer creation failed");
+        return ESP_ERR_NO_MEM;
+    }
     s_active = false;
+    s_lease_expirations = 0;
     memset(&s_session, 0, sizeof(s_session));
     s_initialized = true;
-    ESP_LOGI(TAG, "subsystem=session state=ok phase=ms07");
+    ESP_LOGI(TAG, "subsystem=session state=ok phase=ms08");
     return ESP_OK;
 }
 
@@ -395,6 +523,10 @@ esp_err_t michi_session_start(const michi_session_start_params_t *params,
         ESP_LOGW(TAG, "start: rejected state=UPDATING (ota in progress)");
         return ESP_ERR_INVALID_STATE;
     }
+    /* Lease reconciliation first (mirrors the simulator reference): an
+     * expired session is released with the same teardown as DELETE and
+     * the new start proceeds - never a 409 on a dead lease. */
+    (void)session_expire_if_needed_locked();
     if (s_active) {
         if (session_reconcile_dead_engine_locked()) {
             /* The engine died on its own: the zombie was cleaned above -
@@ -469,6 +601,23 @@ esp_err_t michi_session_start(const michi_session_start_params_t *params,
     s_session.info.lease_remaining_ms = MICHI_SESSION_LEASE_MS;
     s_session.info.state = MICHI_SESSION_STATE_PLAYING;
 
+    /* Lease (MS-08): the 30 s window starts on the MONOTONIC clock and
+     * the watchdog is armed - it is live ONLY while a session exists. */
+    s_session.heartbeat_seq_valid = false;
+    s_session.last_heartbeat_seq = 0;
+    s_session.lease_deadline_us =
+        esp_timer_get_time() + MICHI_SESSION_LEASE_MS * 1000LL;
+    if (esp_timer_start_once(s_watchdog,
+                             MICHI_SESSION_LEASE_MS * 1000ULL) != ESP_OK) {
+        /* A session whose lease cannot be enforced must not exist:
+         * roll back completely (engine released) instead. */
+        (void)michi_audio_session_stop();
+        memset(&s_session, 0, sizeof(s_session));
+        xSemaphoreGive(s_mutex);
+        ESP_LOGE(TAG, "start: watchdog arm failed - rolled back to idle");
+        return ESP_ERR_INVALID_STATE;
+    }
+
     s_active = true;
     xSemaphoreGive(s_mutex);
 
@@ -495,6 +644,13 @@ esp_err_t michi_session_stop(const char *session_token)
     }
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
+    /* Lease reconciliation first (mirrors the simulator reference): an
+     * expired session was already closed with the same teardown - the
+     * DELETE answers "no session". */
+    if (session_expire_if_needed_locked()) {
+        xSemaphoreGive(s_mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
     if (!s_active) {
         xSemaphoreGive(s_mutex);
         return ESP_ERR_INVALID_STATE;
@@ -508,16 +664,12 @@ esp_err_t michi_session_stop(const char *session_token)
     /* stopping: cooperative engine teardown (socket + buffers + task;
      * may block up to the join window). ESP_ERR_TIMEOUT: the task did
      * not join - nothing is cleared, retry. */
-    s_session.info.state = MICHI_SESSION_STATE_STOPPING;
-    const esp_err_t err = michi_audio_session_stop();
+    const esp_err_t err = session_teardown_locked(false);
     if (err != ESP_OK) {
         xSemaphoreGive(s_mutex);
         ESP_LOGW(TAG, "stop: engine did not stop: %s", esp_err_to_name(err));
         return err;
     }
-
-    s_active = false;
-    memset(&s_session, 0, sizeof(s_session)); /* token wiped from RAM */
     xSemaphoreGive(s_mutex);
 
     /* The IDLE screen must never show stale track info. */
@@ -537,6 +689,12 @@ esp_err_t michi_session_abort(const char *reason)
     }
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
+    /* Lease reconciliation first: an expired session is already closed
+     * (the OTA teardown of a dead lease is a no-op for the caller). */
+    if (session_expire_if_needed_locked()) {
+        xSemaphoreGive(s_mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
     if (!s_active) {
         xSemaphoreGive(s_mutex);
         return ESP_ERR_INVALID_STATE;
@@ -545,15 +703,12 @@ esp_err_t michi_session_abort(const char *reason)
     /* Cooperative engine stop, same contract as stop() (no credential:
      * this is the privileged internal path used by michi_ota, which
      * cannot present the never-persisted session token). */
-    const esp_err_t err = michi_audio_session_stop();
+    const esp_err_t err = session_teardown_locked(false);
     if (err != ESP_OK) {
         xSemaphoreGive(s_mutex);
         ESP_LOGW(TAG, "abort: engine did not stop: %s", esp_err_to_name(err));
         return err;
     }
-
-    s_active = false;
-    memset(&s_session, 0, sizeof(s_session)); /* token wiped from RAM */
     xSemaphoreGive(s_mutex);
 
     if (michi_display_clear_now_playing() != ESP_OK) {
@@ -582,6 +737,11 @@ esp_err_t michi_session_patch(const char *session_token, bool volume_set,
     }
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
+    /* Lease reconciliation first (mirrors the simulator reference). */
+    if (session_expire_if_needed_locked()) {
+        xSemaphoreGive(s_mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
     if (!s_active) {
         xSemaphoreGive(s_mutex);
         return ESP_ERR_INVALID_STATE;
@@ -631,6 +791,13 @@ esp_err_t michi_session_get_info(michi_session_info_t *out)
     }
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
+    /* Lease reconciliation first: an expired session is closed with the
+     * same teardown as DELETE (lease_expirations incremented) and the
+     * caller reports "no active session". */
+    if (session_expire_if_needed_locked()) {
+        xSemaphoreGive(s_mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
     if (!s_active) {
         xSemaphoreGive(s_mutex);
         return ESP_ERR_INVALID_STATE;
@@ -642,6 +809,13 @@ esp_err_t michi_session_get_info(michi_session_info_t *out)
         return ESP_ERR_INVALID_STATE;
     }
     *out = s_session.info;
+    /* The REAL remaining lease window (monotonic): deadline - now,
+     * floored and clamped >= 0 (the expire check above guarantees it is
+     * still positive here; the clamp is defensive). */
+    const int64_t remaining_us =
+        s_session.lease_deadline_us - esp_timer_get_time();
+    out->lease_remaining_ms =
+        remaining_us > 0 ? (uint32_t)(remaining_us / 1000) : 0;
     xSemaphoreGive(s_mutex);
 
     /* Reconcile the FSM chain: an active session must land the FSM on
@@ -660,9 +834,6 @@ esp_err_t michi_session_get_info(michi_session_info_t *out)
         out->packets_lost = m.lost;
         out->underruns = m.underruns;
     }
-    /* MS-07: the full lease window (heartbeat renewal + the monotonic
-     * watchdog land in MS-08; until then the lease never expires). */
-    out->lease_remaining_ms = MICHI_SESSION_LEASE_MS;
     return ESP_OK;
 }
 
@@ -673,9 +844,90 @@ bool michi_session_active(void)
     }
     bool active;
     xSemaphoreTake(s_mutex, portMAX_DELAY);
+    /* Lease reconciliation: an expired session is closed (the same
+     * teardown as DELETE) before the liveness answer, so the HTTP fast
+     * paths mirror the simulator reference. */
+    (void)session_expire_if_needed_locked();
     active = s_active;
     xSemaphoreGive(s_mutex);
     return active;
+}
+
+michi_session_heartbeat_result_t michi_session_heartbeat(
+    const char *session_token, const char *session_id, uint32_t sequence)
+{
+    if (!s_initialized) {
+        return MICHI_SESSION_HEARTBEAT_NO_SESSION;
+    }
+    if (!michi_session_token_valid(session_token)) {
+        /* Malformed: the HTTP layer already answered 401 (defensive). */
+        return MICHI_SESSION_HEARTBEAT_TOKEN_MISMATCH;
+    }
+    if (session_id == NULL) {
+        return MICHI_SESSION_HEARTBEAT_SESSION_MISMATCH;
+    }
+
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    /* Lease reconciliation first (mirrors the simulator reference): a
+     * heartbeat that arrives after expiry finds NO session. */
+    if (session_expire_if_needed_locked()) {
+        xSemaphoreGive(s_mutex);
+        return MICHI_SESSION_HEARTBEAT_NO_SESSION;
+    }
+    if (!s_active) {
+        xSemaphoreGive(s_mutex);
+        return MICHI_SESSION_HEARTBEAT_NO_SESSION;
+    }
+    if (!token_matches(session_token, s_session.session_token)) {
+        xSemaphoreGive(s_mutex);
+        ESP_LOGW(TAG, "heartbeat: token_mismatch rejected=1");
+        return MICHI_SESSION_HEARTBEAT_TOKEN_MISMATCH;
+    }
+    if (strcmp(session_id, s_session.info.session_id) != 0) {
+        xSemaphoreGive(s_mutex);
+        ESP_LOGW(TAG, "heartbeat: session_id mismatch rejected=1");
+        return MICHI_SESSION_HEARTBEAT_SESSION_MISMATCH;
+    }
+    /* Sequence: strictly increasing within the session. A repeated or
+     * older heartbeat does NOT renew (contract 2.6: 409 CONFLICT). */
+    if (s_session.heartbeat_seq_valid &&
+        sequence <= s_session.last_heartbeat_seq) {
+        xSemaphoreGive(s_mutex);
+        ESP_LOGW(TAG, "heartbeat: sequence %" PRIu32 " replay (last=%" PRIu32
+                      ") - lease NOT renewed",
+                 sequence, s_session.last_heartbeat_seq);
+        return MICHI_SESSION_HEARTBEAT_SEQUENCE_REPLAY;
+    }
+    s_session.last_heartbeat_seq = sequence;
+    s_session.heartbeat_seq_valid = true;
+    /* Renewal: 30 s on the MONOTONIC clock + watchdog re-arm. */
+    s_session.lease_deadline_us =
+        esp_timer_get_time() + MICHI_SESSION_LEASE_MS * 1000LL;
+    s_session.info.lease_remaining_ms = MICHI_SESSION_LEASE_MS;
+    const esp_err_t arm_err = esp_timer_start_once(
+        s_watchdog, MICHI_SESSION_LEASE_MS * 1000ULL);
+    xSemaphoreGive(s_mutex);
+    if (arm_err != ESP_OK) {
+        /* The deadline was extended but the watchdog could not be
+         * re-armed: the lazy reconciliation still enforces the lease on
+         * the next API call. Logged, never fatal. */
+        ESP_LOGW(TAG, "heartbeat: watchdog re-arm failed: %s",
+                 esp_err_to_name(arm_err));
+    }
+    ESP_LOGI(TAG, "session: heartbeat seq=%" PRIu32 " lease=30s",
+             sequence);
+    return MICHI_SESSION_HEARTBEAT_OK;
+}
+
+uint32_t michi_session_lease_expirations(void)
+{
+    if (!s_initialized) {
+        return 0;
+    }
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    const uint32_t n = s_lease_expirations;
+    xSemaphoreGive(s_mutex);
+    return n;
 }
 
 bool michi_session_is_initialized(void)

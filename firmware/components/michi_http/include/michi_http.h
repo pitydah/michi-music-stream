@@ -27,11 +27,12 @@ extern "C" {
  * /server/info emits the exact receiver v1-lite profile (build_info_json;
  * the identity group is NOT emitted yet - it requires the persistent
  * Ed25519 identity of michi_identity, MS-04). Receiver-button pairing
- * (MS-06), the canonical RTP session/lease (MS-07/MS-08), the certified
- * now-playing payload and the OTA flow answer 501 NOT_IMPLEMENTED after
- * the route-table auth and the strict JSON body gate; the matching
- * feature flag in /server/info is false. Diagnostics is implemented (its
- * response shape is not frozen by the contract).
+ * (MS-06), the canonical RTP session (MS-07) and the heartbeat lease
+ * (MS-08) are implemented; the certified now-playing payload and the
+ * OTA flow answer 501 NOT_IMPLEMENTED after the route-table auth and
+ * the strict JSON body gate, and the matching feature flag in
+ * /server/info is false. Diagnostics is implemented (its response shape
+ * is not frozen by the contract).
  *
  * Every error response uses the single canonical envelope
  * {error:{code,message,request_id,details}} built by
@@ -321,6 +322,37 @@ typedef struct {
     bool has_paused; /*!< paused was present */
     bool paused;     /*!< target pause state */
 } michi_http_session_patch_body_t;
+
+/**
+ * @brief Canonical heartbeat body (POST /receiver-lite/heartbeat),
+ *        validated and copied (receiver-heartbeat.schema.json, MS-08).
+ */
+typedef struct {
+    char session_id[MICHI_SESSION_ID_LEN]; /*!< UUID v4 of the session */
+    uint32_t sequence;   /*!< unsigned, strictly increasing per session */
+    int64_t sent_at_ms;  /*!< Unix epoch ms; informational, never used
+                              for the local lease timeout (contract 2.6) */
+} michi_http_heartbeat_body_t;
+
+/**
+ * @brief Parse + copy the canonical heartbeat body (MS-08).
+ *
+ * Strict validation per receiver-heartbeat.schema.json: session_id
+ * (format uuid), sequence (unsigned integer 0..4294967295) and
+ * sent_at_ms (unsigned Unix epoch ms) are required; any other property
+ * is rejected with 400 details.field. `sent_at_ms` is copied for
+ * transparency only - the lease timeout uses the monotonic clock, never
+ * this value.
+ *
+ * @param obj        Parsed request object.
+ * @param out        Copied, validated body.
+ * @param err_field  Buffer (>= 20 bytes) for the field name.
+ * @param err_field_len Size of err_field.
+ * @return true when the body is canonical and everything was copied.
+ */
+bool michi_http_json_get_heartbeat(const cJSON *obj,
+                                   michi_http_heartbeat_body_t *out,
+                                   char *err_field, size_t err_field_len);
 
 /**
  * @brief Parse + copy the canonical session-patch body (MS-07).

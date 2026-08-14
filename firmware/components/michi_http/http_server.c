@@ -27,11 +27,14 @@
  * lifecycle (MS-07) is implemented: POST/GET/PATCH/DELETE
  * /receiver-lite/session with strict body gates, the receiver-picked UDP
  * stream port, the RAM-only 43-char base64url session token and the
- * exact state body. The lease renewal (MS-08), the certified now-playing
- * payload and the OTA flow are NOT implemented yet: their handlers
- * still enforce the route-table auth and the strict JSON body gate,
- * then answer 501 NOT_IMPLEMENTED, and the matching feature flag in
- * /server/info is false. Diagnostics is the only optional extension
+ * exact state body. The heartbeat lease (MS-08) is implemented: POST
+ * /receiver-lite/heartbeat renews the 30 s monotonic lease (strictly
+ * increasing sequence; replay answers 409 without renewing; the session
+ * watchdog closes at 30 s even while RTP flows). The certified
+ * now-playing payload and the OTA flow are NOT implemented yet: their
+ * handlers still enforce the route-table auth and the strict JSON body
+ * gate, then answer 501 NOT_IMPLEMENTED, and the matching feature flag
+ * in /server/info is false. Diagnostics is the only optional extension
  * implemented (its response shape is not frozen by the contract, so the
  * existing snapshot conforms). Unknown routes answer the canonical 404
  * error envelope via the registered httpd 404 handler.
@@ -1008,18 +1011,93 @@ static esp_err_t session_delete_handler(httpd_req_t *req)
     return httpd_resp_send(req, NULL, 0);
 }
 
-/* POST /api/v1/receiver-lite/heartbeat (Bearer): deferred - the
- * monotonic lease renewal lands in MS-08. */
+/* POST /api/v1/receiver-lite/heartbeat (Bearer + X-Michi-Session): the
+ * canonical lease renewal (contract 2.6, MS-08). Guard order mirrors
+ * the simulator reference: bearer -> session exists (404) -> session
+ * token (401) -> body (400) -> sequence replay/session mismatch (409/
+ * 404). The PLAYBACK permission gates it (same as every session
+ * mutation: the contract has no dedicated heartbeat permission). A
+ * valid heartbeat renews the 30 s lease on the MONOTONIC clock; a
+ * repeated/older sequence does NOT renew. sent_at_ms is validated
+ * and then ignored (informational per the contract). */
 static esp_err_t v1lite_heartbeat_handler(httpd_req_t *req)
 {
     char controller_id[MICHI_PAIRING_DEVICE_ID_LEN] = {0};
-    if (!auth_gate(req, MICHI_PERM_STATUS, controller_id,
+    if (!auth_gate(req, MICHI_PERM_PLAYBACK, controller_id,
                      sizeof(controller_id))) {
         return ESP_OK; /* 401/403 already sent (P0-5) */
     }
-    return not_implemented_with_body(req,
-                                     "the canonical heartbeat lease is not "
-                                     "implemented");
+    if (!michi_session_active()) {
+        return michi_http_send_error(req, 404, "no active session", NULL);
+    }
+    char token[MICHI_SESSION_TOKEN_LEN];
+    const esp_err_t token_err = read_session_token(req, token,
+                                                   sizeof(token));
+    if (token_err != ESP_OK) {
+        return token_err; /* 401 already sent (P0-5) */
+    }
+
+    cJSON *root = read_json_body(req);
+    if (root == NULL) {
+        return ESP_OK; /* 400 already sent (P0-5) */
+    }
+    michi_http_heartbeat_body_t body;
+    char field[32] = {0};
+    const bool body_ok = michi_http_json_get_heartbeat(root, &body, field,
+                                                       sizeof(field));
+    cJSON_Delete(root);
+    if (!body_ok) {
+        return michi_http_send_error(req, 400,
+                                     "invalid heartbeat request body",
+                                     field);
+    }
+
+    const michi_session_heartbeat_result_t result =
+        michi_session_heartbeat(token, body.session_id, body.sequence);
+    switch (result) {
+    case MICHI_SESSION_HEARTBEAT_TOKEN_MISMATCH:
+        return michi_http_send_error(req, 401,
+                                     "missing or invalid session token",
+                                     NULL);
+    case MICHI_SESSION_HEARTBEAT_NO_SESSION:
+    case MICHI_SESSION_HEARTBEAT_SESSION_MISMATCH:
+        return michi_http_send_error(req, 404, "no active session", NULL);
+    case MICHI_SESSION_HEARTBEAT_SEQUENCE_REPLAY:
+        return michi_http_send_error(req, 409,
+                                     "heartbeat sequence already seen",
+                                     NULL);
+    case MICHI_SESSION_HEARTBEAT_OK:
+        break;
+    }
+
+    /* 200 (contract 2.6): lease_seconds frozen at 30; the uptime is the
+     * MONOTONIC receiver clock (the same source as diagnostics). */
+    cJSON *resp = cJSON_CreateObject();
+    if (resp == NULL) {
+        return michi_http_send_error(req, 500,
+                                     "out of memory while building "
+                                     "heartbeat response", NULL);
+    }
+    esp_err_t err = ESP_OK;
+    if (cJSON_AddStringToObject(resp, "session_id", body.session_id) == NULL ||
+        cJSON_AddStringToObject(resp, "status", "alive") == NULL ||
+        cJSON_AddNumberToObject(resp, "lease_seconds",
+                                MICHI_SESSION_LEASE_SECONDS) == NULL ||
+        cJSON_AddNumberToObject(resp, "receiver_uptime_ms",
+                                (double)(uint64_t)(esp_timer_get_time() /
+                                                   1000)) == NULL) {
+        err = ESP_ERR_NO_MEM;
+    }
+    if (err == ESP_OK) {
+        err = michi_http_send_json(req, 200, resp);
+    }
+    cJSON_Delete(resp);
+    if (err != ESP_OK) {
+        return michi_http_send_error(req, 500,
+                                     "failed to build heartbeat response",
+                                     NULL);
+    }
+    return ESP_OK;
 }
 
 /* PUT /api/v1/receiver-lite/now-playing (Bearer): deferred - the payload
@@ -1238,11 +1316,17 @@ static esp_err_t diagnostics_get_handler(httpd_req_t *req)
         }
     }
     if (send_err == ESP_OK) {
-        /* F14 session block: the session layer snapshot (no token, ever).
-         * On no active session only {"active": false} is emitted. */
+        /* F14 session block: the session layer snapshot (no token, ever)
+         * plus the lease-expiry counter (MS-08 metric). On no active
+         * session {"active": false, "lease_expirations": <cumulative>}
+         * is emitted - the counter survives session closes. */
         michi_session_info_t info;
         cJSON *session = cJSON_AddObjectToObject(root, "session");
         if (session == NULL) {
+            send_err = ESP_ERR_NO_MEM;
+        } else if (cJSON_AddNumberToObject(
+                       session, "lease_expirations",
+                       (double)michi_session_lease_expirations()) == NULL) {
             send_err = ESP_ERR_NO_MEM;
         } else if (michi_session_get_info(&info) != ESP_OK) {
             if (cJSON_AddBoolToObject(session, "active", false) == NULL) {

@@ -465,3 +465,89 @@ bool michi_http_json_get_session_patch(const cJSON *obj,
     }
     return true;
 }
+
+/* --- heartbeat body gate (MS-08) --------------------------------------- */
+
+/* The canonical heartbeat field names (receiver-heartbeat.schema.json):
+ * additionalProperties is false - anything else is 400. */
+static bool heartbeat_field_known(const char *name)
+{
+    static const char *const k_fields[] = {
+        "session_id", "sequence", "sent_at_ms",
+    };
+    for (size_t i = 0; i < sizeof(k_fields) / sizeof(k_fields[0]); i++) {
+        if (strcmp(name, k_fields[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static const char *heartbeat_extra_field(const cJSON *obj)
+{
+    for (const cJSON *item = obj->child; item != NULL; item = item->next) {
+        if (item->string != NULL && !heartbeat_field_known(item->string)) {
+            return item->string;
+        }
+    }
+    return NULL;
+}
+
+bool michi_http_json_get_heartbeat(const cJSON *obj,
+                                   michi_http_heartbeat_body_t *out,
+                                   char *err_field, size_t err_field_len)
+{
+    if (obj == NULL || out == NULL || err_field == NULL ||
+        err_field_len == 0) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+
+    /* session_id: required, UUID v4 (format uuid). */
+    const cJSON *sid = cJSON_GetObjectItem(obj, "session_id");
+    if (sid == NULL || !cJSON_IsString(sid) || sid->valuestring == NULL ||
+        !michi_pairing_uuid_valid(sid->valuestring) ||
+        strlen(sid->valuestring) >= sizeof(out->session_id)) {
+        snprintf(err_field, err_field_len, "%s", "session_id");
+        return false;
+    }
+    /* sequence: required, unsigned integer (0..4294967295). */
+    const cJSON *seq = cJSON_GetObjectItem(obj, "sequence");
+    if (seq == NULL || !cJSON_IsNumber(seq)) {
+        snprintf(err_field, err_field_len, "%s", "sequence");
+        return false;
+    }
+    const double seq_d = seq->valuedouble;
+    if (seq_d < 0.0 || seq_d > 4294967295.0 ||
+        seq_d != (double)(uint64_t)seq_d) {
+        snprintf(err_field, err_field_len, "%s", "sequence");
+        return false;
+    }
+    /* sent_at_ms: required, unsigned Unix epoch ms. Informational ONLY:
+     * the local lease timeout never reads it (contract 2.6). */
+    const cJSON *sent = cJSON_GetObjectItem(obj, "sent_at_ms");
+    if (sent == NULL || !cJSON_IsNumber(sent)) {
+        snprintf(err_field, err_field_len, "%s", "sent_at_ms");
+        return false;
+    }
+    const double sent_d = sent->valuedouble;
+    /* Integrality is checked BEFORE the int64 cast (a value at the very
+     * top of the double range would be UB to cast); the ceiling is far
+     * beyond any real epoch-ms value. */
+    if (sent_d < 0.0 || sent_d > (double)(INT64_MAX / 2) ||
+        sent_d != (double)(int64_t)sent_d) {
+        snprintf(err_field, err_field_len, "%s", "sent_at_ms");
+        return false;
+    }
+    /* additionalProperties: false. */
+    const char *extra = heartbeat_extra_field(obj);
+    if (extra != NULL) {
+        snprintf(err_field, err_field_len, "%s", extra);
+        return false;
+    }
+    /* Parse -> copy -> delete: only copies leave this helper. */
+    memcpy(out->session_id, sid->valuestring, strlen(sid->valuestring) + 1);
+    out->sequence = (uint32_t)seq_d;
+    out->sent_at_ms = (int64_t)sent_d;
+    return true;
+}

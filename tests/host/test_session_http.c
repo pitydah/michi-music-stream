@@ -1,4 +1,4 @@
-/* Host-side tests for the session HTTP body gates (MS-07).
+/* Host-side tests for the session/heartbeat HTTP body gates (MS-07/MS-08).
  *
  * Compiles the REAL firmware source: components/michi_http/json_helpers.c
  * (linked from the Makefile) against the SYSTEM cJSON - no
@@ -15,6 +15,14 @@
  *    the port; the RTP source IP is the HTTP request peer - never JSON);
  *  - patch: volume only / paused only / both / empty body / extra field /
  *    wrong types.
+ *
+ * Covers receiver-heartbeat.schema.json (MS-08):
+ *  - the canonical heartbeat body (spec section 2.6 example);
+ *  - sequence boundaries 0 / 4294967295 (unsigned, strictly increasing
+ *    within the session - the ordering itself lives in michi_session);
+ *  - rejects: missing/bad session_id (uuid), missing/negative/
+ *    fractional/overflow/string sequence, missing/negative sent_at_ms
+ *    (informational), extra properties (additionalProperties false).
  */
 
 #include <stdio.h>
@@ -395,11 +403,133 @@ static void test_patch(void)
     check_patch_reject("extra field 2", "{\"state\":\"playing\"}", "state");
 }
 
+/* Parse + validate a heartbeat body; returns true when accepted. */
+static bool try_heartbeat(const char *json)
+{
+    cJSON *root = cJSON_Parse(json);
+    if (root == NULL) {
+        return false;
+    }
+    michi_http_heartbeat_body_t body;
+    memset(&body, 0, sizeof(body));
+    const bool ok = michi_http_json_get_heartbeat(root, &body, err_field,
+                                                  sizeof(err_field));
+    cJSON_Delete(root);
+    return ok;
+}
+
+static void check_heartbeat_reject(const char *name, const char *json,
+                                   const char *expect_field)
+{
+    err_field[0] = '\0';
+    const bool ok = try_heartbeat(json);
+    CHECK(!ok, name);
+    CHECK(strcmp(err_field, expect_field) == 0, "field name");
+    if (strcmp(err_field, expect_field) != 0) {
+        printf("      expected field '%s', got '%s'\n", expect_field,
+               err_field);
+    }
+}
+
+static void test_heartbeat(void)
+{
+    printf("session http: heartbeat body gates (MS-08)\n");
+
+    /* The canonical heartbeat (spec section 2.6 example). */
+    {
+        cJSON *root = cJSON_Parse(
+            "{\"session_id\":\"550e8400-e29b-41d4-a716-446655440003\","
+            "\"sequence\":7,\"sent_at_ms\":1786564800000}");
+        michi_http_heartbeat_body_t body;
+        memset(&body, 0, sizeof(body));
+        CHECK(root != NULL &&
+                  michi_http_json_get_heartbeat(root, &body, err_field,
+                                                sizeof(err_field)),
+              "canonical heartbeat accepted");
+        CHECK(strcmp(body.session_id,
+                     "550e8400-e29b-41d4-a716-446655440003") == 0,
+              "session_id copied");
+        CHECK(body.sequence == 7, "sequence copied");
+        CHECK(body.sent_at_ms == 1786564800000LL, "sent_at_ms copied "
+              "(informational)");
+        cJSON_Delete(root);
+    }
+    /* Boundaries: sequence 0 and the unsigned maximum are valid. */
+    {
+        cJSON *root = cJSON_Parse(
+            "{\"session_id\":\"550e8400-e29b-41d4-a716-446655440003\","
+            "\"sequence\":0,\"sent_at_ms\":0}");
+        michi_http_heartbeat_body_t body;
+        memset(&body, 0, sizeof(body));
+        CHECK(root != NULL &&
+                  michi_http_json_get_heartbeat(root, &body, err_field,
+                                                sizeof(err_field)),
+              "sequence 0 accepted (first heartbeat)");
+        cJSON_Delete(root);
+    }
+    {
+        cJSON *root = cJSON_Parse(
+            "{\"session_id\":\"550e8400-e29b-41d4-a716-446655440003\","
+            "\"sequence\":4294967295,\"sent_at_ms\":0}");
+        michi_http_heartbeat_body_t body;
+        memset(&body, 0, sizeof(body));
+        CHECK(root != NULL &&
+                  michi_http_json_get_heartbeat(root, &body, err_field,
+                                                sizeof(err_field)),
+              "sequence 4294967295 accepted (unsigned max)");
+        cJSON_Delete(root);
+    }
+
+    check_heartbeat_reject("missing session_id",
+                           "{\"sequence\":7,\"sent_at_ms\":1}",
+                           "session_id");
+    check_heartbeat_reject("bad session_id uuid",
+                           "{\"session_id\":\"nope\",\"sequence\":7,"
+                           "\"sent_at_ms\":1}",
+                           "session_id");
+    check_heartbeat_reject("missing sequence",
+                           "{\"session_id\":\"550e8400-e29b-41d4-a716-"
+                           "446655440003\",\"sent_at_ms\":1}",
+                           "sequence");
+    check_heartbeat_reject("negative sequence",
+                           "{\"session_id\":\"550e8400-e29b-41d4-a716-"
+                           "446655440003\",\"sequence\":-1,\"sent_at_ms\":1}",
+                           "sequence");
+    check_heartbeat_reject("fractional sequence",
+                           "{\"session_id\":\"550e8400-e29b-41d4-a716-"
+                           "446655440003\",\"sequence\":1.5,\"sent_at_ms\":1}",
+                           "sequence");
+    check_heartbeat_reject("sequence overflow",
+                           "{\"session_id\":\"550e8400-e29b-41d4-a716-"
+                           "446655440003\",\"sequence\":4294967296,"
+                           "\"sent_at_ms\":1}",
+                           "sequence");
+    check_heartbeat_reject("string sequence",
+                           "{\"session_id\":\"550e8400-e29b-41d4-a716-"
+                           "446655440003\",\"sequence\":\"7\","
+                           "\"sent_at_ms\":1}",
+                           "sequence");
+    check_heartbeat_reject("missing sent_at_ms",
+                           "{\"session_id\":\"550e8400-e29b-41d4-a716-"
+                           "446655440003\",\"sequence\":7}",
+                           "sent_at_ms");
+    check_heartbeat_reject("negative sent_at_ms",
+                           "{\"session_id\":\"550e8400-e29b-41d4-a716-"
+                           "446655440003\",\"sequence\":7,\"sent_at_ms\":-1}",
+                           "sent_at_ms");
+    check_heartbeat_reject("extra field",
+                           "{\"session_id\":\"550e8400-e29b-41d4-a716-"
+                           "446655440003\",\"sequence\":7,"
+                           "\"sent_at_ms\":1,\"token\":\"x\"}",
+                           "token");
+}
+
 int main(void)
 {
     test_create_valid();
     test_create_rejects();
     test_patch();
+    test_heartbeat();
     if (failures != 0) {
         printf("session_http: %d FAILURE(S)\n", failures);
         return 1;

@@ -1,9 +1,10 @@
-/* Host-side tests for the canonical session lifecycle (MS-07).
+/* Host-side tests for the canonical session lifecycle (MS-07/MS-08).
  *
  * Compiles the REAL firmware source: components/michi_session/
  * michi_session.c against test doubles for the engine (michi_audio_fake),
- * volume, display and the state bus - the REAL michi_audio.h public
- * header is compiled in, so there is no struct drift.
+ * volume, display, the state bus and the monotonic clock (shim/
+ * esp_timer.c - the REAL public esp_timer API) - the REAL michi_audio.h
+ * public header is compiled in, so there is no struct drift.
  *
  * Covers (contract section 2.5):
  *  - strict negotiation without clamping (limits rejected, no session);
@@ -19,12 +20,24 @@
  *  - stop wipes everything; a new session works after DELETE;
  *  - dead-engine reconciliation;
  *  - metrics mapping (packets_received/rejected/lost/underruns).
+ *
+ * Covers (contract section 2.6, MS-08):
+ *  - heartbeat renews the lease (first sequence may be any value,
+ *    strictly increasing afterwards);
+ *  - repeated/older sequence: SEQUENCE_REPLAY (HTTP 409), no renewal;
+ *  - token/session_id mismatch and heartbeat without a session;
+ *  - the monotonic watchdog: +31 s closes the session with the SAME
+ *    teardown as DELETE (engine stop, display clear, SESSION_CLOSED,
+ *    idle) and increments lease_expirations;
+ *  - RTP traffic does NOT renew the lease (the watchdog closes anyway);
+ *  - GET reflects the REAL lease_remaining_ms (monotonic deadline).
  */
 
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 
+#include "esp_timer.h"
 #include "michi_audio_fake.h"
 #include "michi_session.h"
 #include "michi_state.h"
@@ -46,6 +59,7 @@ static int failures = 0;
 #define SSRC 305419896u
 
 static char g_token[MICHI_SESSION_TOKEN_LEN];
+static char g_session_id[MICHI_SESSION_ID_LEN];
 
 static michi_session_start_params_t make_params(void)
 {
@@ -71,6 +85,7 @@ static void reset_all(void)
     test_volume_reset();
     test_display_reset();
     test_state_reset();
+    test_esp_timer_reset(); /* monotonic clock back to 0; timer disarmed */
 }
 
 /* End any active session with the issued token (idempotent helpers). */
@@ -436,6 +451,181 @@ static void test_ota_gate_and_abort(void)
           "abort posted SESSION_CLOSED");
 }
 
+/* ------------------------------------------------------------------
+ * MS-08: heartbeat + lease
+ * ------------------------------------------------------------------ */
+
+static void test_heartbeat(void)
+{
+    printf("michi_session: heartbeat renews; replay 409 without renew\n");
+    michi_session_start_params_t p = make_params();
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
+          "start ok");
+    michi_session_info_t info;
+    CHECK(michi_session_get_info(&info) == ESP_OK, "get_info ok");
+    memcpy(g_session_id, info.session_id, sizeof(g_session_id));
+
+    /* Malformed/wrong credential (HTTP 401) and id mismatch (HTTP 404). */
+    CHECK(michi_session_heartbeat("not-a-token", g_session_id, 1) ==
+              MICHI_SESSION_HEARTBEAT_TOKEN_MISMATCH,
+          "malformed token rejected (401)");
+    CHECK(michi_session_heartbeat(
+              "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", g_session_id,
+              1) == MICHI_SESSION_HEARTBEAT_TOKEN_MISMATCH,
+          "wrong token rejected (401)");
+    CHECK(michi_session_heartbeat(
+              g_token, "550e8400-e29b-41d4-a716-446655440003",
+              1) == MICHI_SESSION_HEARTBEAT_SESSION_MISMATCH,
+          "foreign session_id rejected (404)");
+
+    /* First heartbeat: any sequence value is valid (e.g. 0). */
+    CHECK(michi_session_heartbeat(g_token, g_session_id, 0) ==
+              MICHI_SESSION_HEARTBEAT_OK,
+          "first heartbeat (seq 0) renews");
+    /* Strictly increasing: seq 1 renews. */
+    CHECK(michi_session_heartbeat(g_token, g_session_id, 1) ==
+              MICHI_SESSION_HEARTBEAT_OK,
+          "increasing sequence renews");
+    /* Repeated and older: 409, no renew. */
+    CHECK(michi_session_heartbeat(g_token, g_session_id, 1) ==
+              MICHI_SESSION_HEARTBEAT_SEQUENCE_REPLAY,
+          "repeated sequence rejected (409)");
+    CHECK(michi_session_heartbeat(g_token, g_session_id, 0) ==
+              MICHI_SESSION_HEARTBEAT_SEQUENCE_REPLAY,
+          "older sequence rejected (409)");
+
+    /* A replay did NOT extend the deadline: the session still closes at
+     * the deadline of the LAST VALID heartbeat (t=0 start: 30 s). */
+    uint32_t before = michi_session_lease_expirations();
+    test_esp_timer_advance(31LL * 1000 * 1000);
+    CHECK(!michi_session_active(), "session closed by the watchdog");
+    CHECK(michi_session_lease_expirations() == before + 1,
+          "lease_expirations incremented once");
+    CHECK(michi_session_heartbeat(g_token, g_session_id, 99) ==
+              MICHI_SESSION_HEARTBEAT_NO_SESSION,
+          "heartbeat after expiry finds no session (404)");
+
+    cleanup_session();
+}
+
+static void test_heartbeat_renewal_extends(void)
+{
+    printf("michi_session: valid heartbeat renews the 30 s window\n");
+    michi_session_start_params_t p = make_params();
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
+          "start ok (t=0)");
+    michi_session_info_t info;
+    CHECK(michi_session_get_info(&info) == ESP_OK, "get_info ok");
+    memcpy(g_session_id, info.session_id, sizeof(g_session_id));
+
+    /* Renew at t=25 s: the window extends to t=55 s. */
+    test_esp_timer_advance(25LL * 1000 * 1000);
+    CHECK(michi_session_heartbeat(g_token, g_session_id, 7) ==
+              MICHI_SESSION_HEARTBEAT_OK, "heartbeat at t=25 renews");
+    test_esp_timer_advance(20LL * 1000 * 1000); /* t=45: old deadline */
+    CHECK(michi_session_active(), "still alive after the OLD deadline");
+    uint32_t before = michi_session_lease_expirations();
+    test_esp_timer_advance(11LL * 1000 * 1000); /* t=56 > t=55 */
+    CHECK(!michi_session_active(), "closed after the RENEWED deadline");
+    CHECK(michi_session_lease_expirations() == before + 1,
+          "lease_expirations incremented");
+
+    cleanup_session();
+}
+
+static void test_lease_remaining_real(void)
+{
+    printf("michi_session: GET reflects the REAL lease_remaining_ms\n");
+    michi_session_start_params_t p = make_params();
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
+          "start ok (t=0)");
+    michi_session_info_t info;
+    CHECK(michi_session_get_info(&info) == ESP_OK, "get_info ok");
+    CHECK(info.lease_remaining_ms == 30000, "full 30000 ms right after start");
+
+    test_esp_timer_advance(10LL * 1000 * 1000); /* t=10 s */
+    CHECK(michi_session_get_info(&info) == ESP_OK, "get_info ok at t=10");
+    CHECK(info.lease_remaining_ms == 20000,
+          "20000 ms remaining (monotonic, floor)");
+
+    /* Renewal resets the window. */
+    CHECK(michi_session_heartbeat(g_token, info.session_id, 1) ==
+              MICHI_SESSION_HEARTBEAT_OK, "heartbeat renews");
+    CHECK(michi_session_get_info(&info) == ESP_OK, "get_info ok");
+    CHECK(info.lease_remaining_ms == 30000, "30000 ms after renewal");
+
+    /* Past the deadline the session is gone (GET would answer 404). */
+    test_esp_timer_advance(31LL * 1000 * 1000);
+    CHECK(michi_session_get_info(&info) == ESP_ERR_INVALID_STATE,
+          "get_info: no session after expiry (HTTP 404)");
+
+    cleanup_session();
+}
+
+static void test_watchdog_same_close_as_delete(void)
+{
+    printf("michi_session: watchdog close == DELETE (RTP does not renew)\n");
+    michi_session_start_params_t p = make_params();
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
+          "start ok");
+    michi_session_info_t info;
+    CHECK(michi_session_get_info(&info) == ESP_OK, "get_info ok");
+    memcpy(g_session_id, info.session_id, sizeof(g_session_id));
+
+    /* RTP keeps arriving (metrics advance) - it must NOT renew. */
+    michi_audio_metrics_t *m = test_michi_audio_metrics();
+    m->received = 9999;
+
+    const int engine_stops = test_michi_audio_state()->stop_calls;
+    const int display_clears = test_display_clear_count();
+    const uint32_t expirations = michi_session_lease_expirations();
+    test_esp_timer_advance(31LL * 1000 * 1000);
+
+    CHECK(!michi_session_active(), "watchdog closed the session at +31 s");
+    CHECK(michi_session_lease_expirations() == expirations + 1,
+          "lease_expirations incremented by the watchdog");
+    CHECK(test_michi_audio_state()->stop_calls == engine_stops + 1,
+          "engine stopped (same teardown as DELETE)");
+    CHECK(test_display_clear_count() == display_clears + 1,
+          "now-playing cleared (same teardown as DELETE)");
+    CHECK(test_state_post_count(MICHI_EVENT_SESSION_CLOSED) == 1,
+          "SESSION_CLOSED posted");
+    CHECK(michi_state_get() == MICHI_STATE_IDLE,
+          "FSM back to idle");
+    /* The layer is idle: a new session starts right away. */
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
+          "new session works after a lease close");
+    cleanup_session();
+}
+
+static void test_expired_session_answers_like_reference(void)
+{
+    printf("michi_session: expired session -> 404 / new start proceeds\n");
+    michi_session_start_params_t p = make_params();
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
+          "start ok");
+    char first_token[MICHI_SESSION_TOKEN_LEN];
+    memcpy(first_token, g_token, sizeof(first_token));
+
+    uint32_t before = michi_session_lease_expirations();
+    test_esp_timer_advance(31LL * 1000 * 1000);
+    CHECK(!michi_session_active(), "session closed after +31 s");
+
+    /* DELETE on the expired session answers "no session" (HTTP 404). */
+    CHECK(michi_session_stop(first_token) == ESP_ERR_INVALID_STATE,
+          "stop after expiry: no session (HTTP 404)");
+    /* PATCH on the expired session answers "no session" (HTTP 404). */
+    CHECK(michi_session_patch(first_token, true, 50, false, false) ==
+              ESP_ERR_INVALID_STATE,
+          "patch after expiry: no session (HTTP 404)");
+    CHECK(michi_session_lease_expirations() == before + 1,
+          "exactly one lease expiration counted");
+    /* A new start proceeds (no 409 on a dead lease). */
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
+          "new start proceeds after the lease close");
+    cleanup_session();
+}
+
 int main(void)
 {
     reset_all();
@@ -457,6 +647,16 @@ int main(void)
     test_dead_engine_reconciliation();
     reset_all();
     test_ota_gate_and_abort();
+    reset_all();
+    test_heartbeat();
+    reset_all();
+    test_heartbeat_renewal_extends();
+    reset_all();
+    test_lease_remaining_real();
+    reset_all();
+    test_watchdog_same_close_as_delete();
+    reset_all();
+    test_expired_session_answers_like_reference();
 
     if (failures != 0) {
         printf("michi_session: %d FAILURE(S)\n", failures);

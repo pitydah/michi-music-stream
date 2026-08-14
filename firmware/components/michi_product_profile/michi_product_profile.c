@@ -90,8 +90,10 @@ esp_err_t michi_product_profile_refresh(void)
     copy_str(p.dac_board_profile, sizeof(p.dac_board_profile), caps->board_profile);
     p.dac_board_verified = caps->board_verified;
 
-    /* max_sample_rate is the silicon capability (from caps); only
-     * {48000} is claimed as validated on this system. */
+    /* max_sample_rate/max_bit_depth are the SILICON capabilities (from
+     * caps); only {48000}/16 is claimed as validated on this system.
+     * A 24-bit or >48 kHz silicon capability is NOT implemented and NOT
+     * announced (the S24 branch was retired in MS-08). */
     p.max_sample_rate = caps->max_sample_rate;
     p.validated_sample_rate = MICHI_PROFILE_VALIDATED_SAMPLE_RATE;
     p.max_bit_depth = caps->max_bit_depth;
@@ -103,13 +105,12 @@ esp_err_t michi_product_profile_refresh(void)
     copy_str(p.supported_codecs[p.supported_codecs_count],
              sizeof(p.supported_codecs[0]), "pcm_s16le");
     p.supported_codecs_count++;
-    /* pcm_s24le is a capability claim: the DAC silicon accepts 24-bit samples
-     * (audio_available already excludes the diagnostic tier). */
-    if (caps->max_bit_depth >= 24) {
-        copy_str(p.supported_codecs[p.supported_codecs_count],
-                 sizeof(p.supported_codecs[0]), "pcm_s24le");
-        p.supported_codecs_count++;
-    }
+    /* pcm_s24le RETIRED (MS-08, contract sections 1 and 4): the DAC
+     * silicon accepts 24-bit samples (exposed below as the internal
+     * max_bit_depth silicon capability), but NO S24 audio path is
+     * implemented or announced - only the certified baseline PCM S16LE
+     * 48/16/2, 10 ms, PT 97 is claimed. This comment is the only
+     * mention; the profile never advertises a retired codec. */
 
     p.supported_sample_rates_count = 0;
     p.supported_sample_rates[p.supported_sample_rates_count] =
