@@ -51,11 +51,13 @@ extern "C" {
  *    Source: the OBSERVED EVENTS - the FSM's last-error slot is not
  *    consulted.
  *
- * 3. ENDPOINT: GET /api/v1/receiver/logs (Bearer STATUS) serves the tail
- *    as JSON lines and the journal as offset-paginated pages
- *    (michi_http). The tail payload is the raw ESP_LOG payload (tag +
- *    key=value), already checked by the project's zero-secret rule: no
- *    token/challenge/nonce value is ever part of a log format string.
+ * 3. HTTP EXPOSURE: REMOVED (MS-10). The legacy logs endpoint was
+ *    removed with the legacy dialect - no logs route exists on the
+ *    canonical v1-lite surface; re-exposing the tail/journal over HTTP
+ *    is future work (see firmware/README.md, Log registry). The tail
+ *    payload is the raw ESP_LOG payload (tag + key=value), already
+ *    checked by the project's zero-secret rule: no token/challenge/
+ *    nonce value is ever part of a log format string.
  *
  * Degradation contract: the tail and the journal are independent. A
  * failed SPIFFS mount disables only the journal (clear log, boot

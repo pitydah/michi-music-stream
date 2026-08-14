@@ -78,7 +78,11 @@ class RunningSimulator:
         self._lock = threading.Lock()
         self._reader = threading.Thread(target=self._collect, daemon=True)
         self._reader.start()
-        self._wait_ready()
+        try:
+            self._wait_ready()
+        except Exception:
+            self.stop()
+            raise
 
     def _collect(self):
         for line in self.proc.stdout:
@@ -149,8 +153,9 @@ def load_pair_start_vector():
 def test_manual_pairing_flow_with_dynamic_pin():
     """The documented manual flow works end to end with REAL runtime data."""
     vector = load_pair_start_vector()
-    sim = RunningSimulator(show_local_pin=True)
+    sim = None
     try:
+        sim = RunningSimulator(show_local_pin=True)
         status, started = sim.post("/api/v1/pair/start", vector)
         assert status == 201, started
         response_session = started["session_id"]
@@ -181,15 +186,17 @@ def test_manual_pairing_flow_with_dynamic_pin():
         assert status == 409, status_body
         assert status_body["error"]["code"] == "PAIRING_ALREADY_CONSUMED"
     finally:
-        sim.stop()
+        if sim is not None:
+            sim.stop()
     print("PASS manual pairing smoke: dynamic PIN from local display -> real token")
 
 
 def test_pin_hidden_without_dev_flag():
     """Without --show-local-pairing-pin the PIN never appears in logs."""
     vector = load_pair_start_vector()
-    sim = RunningSimulator(show_local_pin=False)
+    sim = None
     try:
+        sim = RunningSimulator(show_local_pin=False)
         status, started = sim.post("/api/v1/pair/start", vector)
         assert status == 201, started
         time.sleep(1.0)

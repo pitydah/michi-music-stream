@@ -31,7 +31,11 @@ FIRMWARE = ../../firmware/components
 
 HAS_CJSON := $(shell pkg-config --exists libcjson && echo yes || echo no)
 CJSON_CFLAGS := $(shell pkg-config --cflags libcjson 2>/dev/null)
-CJSON_LIBS   := $(shell pkg-config --libs libcjson 2>/dev/null)
+CJSON_LIBDIR := $(shell pkg-config --variable=libdir libcjson 2>/dev/null)
+# rpath: devs with cJSON in a non-system prefix (PKG_CONFIG_PATH) get a
+# binary that finds libcjson.so at runtime without LD_LIBRARY_PATH.
+CJSON_LIBS   := $(shell pkg-config --libs libcjson 2>/dev/null) \
+                $(if $(CJSON_LIBDIR),-Wl,-rpath,$(CJSON_LIBDIR))
 
 # Every shim header is a dependency: a shim change must rebuild all tests.
 SHIMS := $(wildcard shim/*.h) $(wildcard shim/*/*.h)
