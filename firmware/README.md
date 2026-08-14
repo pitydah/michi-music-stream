@@ -352,7 +352,7 @@ collected at boot.
 | `tier` | `caps.tier` as degraded by `michi_dac` (HiFi/Standard drop to `diagnostic` unless detected AND initialized) — never reimplemented here |
 | `product_name` | `Michi Music Stream HiFi` when tier is `hifi`, else `Michi Music Stream` |
 | `audio_available` | tier is `hifi`/`standard` AND `caps.initialized` (diagnostic → always false) |
-| `codecs` | always `pcm_s16le`; `pcm_s24le` added only on the HiFi tier |
+| `codecs` | always `pcm_s16le`. `pcm_s24le` was **retired (MS-08)**: the DAC silicon accepts 24-bit samples (exposed only as the internal `max_bit_depth` capability), but no S24 path is implemented or announced |
 | `sample_rates` | `{48000}` (system validation baseline); `max_sample_rate` is the silicon capability, exposed separately and **not** claimed as supported yet |
 | `output_connector` | `differential_stereo` when `caps.differential_output`, else `single_ended_stereo`; the **physical** connector on the unit is pending hardware validation |
 | `volume` | `volume_hardware` from caps; `volume_min=0`, `volume_max=100` |

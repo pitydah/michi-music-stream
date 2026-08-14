@@ -188,12 +188,12 @@ static void test_info_profile_standard(void)
     const cJSON *features = cJSON_GetObjectItem(root, "features");
     CHECK(features != NULL && cJSON_GetArraySize(features) == 6,
           "features has exactly 6 keys");
-    CHECK(cJSON_IsFalse(cJSON_GetObjectItem(features, "session")),
-          "features.session false (501)");
-    CHECK(cJSON_IsFalse(cJSON_GetObjectItem(features, "heartbeat")),
-          "features.heartbeat false (501)");
-    CHECK(cJSON_IsFalse(cJSON_GetObjectItem(features, "volume")),
-          "features.volume false (501)");
+    CHECK(cJSON_IsTrue(cJSON_GetObjectItem(features, "session")),
+          "features.session true (MS-07, implemented)");
+    CHECK(cJSON_IsTrue(cJSON_GetObjectItem(features, "heartbeat")),
+          "features.heartbeat true (MS-08, implemented)");
+    CHECK(cJSON_IsTrue(cJSON_GetObjectItem(features, "volume")),
+          "features.volume true (session PATCH, implemented)");
     CHECK(cJSON_IsFalse(cJSON_GetObjectItem(features, "now_playing")),
           "features.now_playing false (501)");
     CHECK(cJSON_IsTrue(cJSON_GetObjectItem(features, "diagnostics")),
