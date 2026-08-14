@@ -35,6 +35,7 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_random.h"
+#include "nvs.h"
 
 #include "blake3.h"
 #include "monocypher.h"
