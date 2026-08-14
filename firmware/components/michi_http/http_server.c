@@ -833,6 +833,9 @@ static esp_err_t session_start_handler(httpd_req_t *req)
 
     cJSON *resp = cJSON_CreateObject();
     if (resp == NULL) {
+        /* The one-shot token was never delivered; tear the session down
+         * instead of leaving an unreachable ghost session. */
+        (void)michi_session_stop(token);
         return michi_http_send_error(req, 500,
                                      "out of memory while building "
                                      "response", NULL);
@@ -872,6 +875,9 @@ static esp_err_t session_start_handler(httpd_req_t *req)
     }
     cJSON_Delete(resp);
     if (err != ESP_OK) {
+        /* Response build/send failed after a successful start: the token
+         * was never delivered, so stop the session (no ghost session). */
+        (void)michi_session_stop(token);
         return michi_http_send_error(req, 500,
                                      "failed to build session response",
                                      NULL);
