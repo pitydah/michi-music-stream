@@ -9,7 +9,7 @@
 | MCU | ESP32-S3 (Xtensa LX7) |
 | Salida | Jack 3.5 mm estéreo |
 | Audio máx. | PCM 16-bit / 48 kHz / 2 canales |
-| Codecs | `pcm_s16le`, `opus` |
+| Codecs | `pcm_s16le` (certificado hoy; Opus es futuro, no implementado) |
 
 ## Componentes sugeridos
 

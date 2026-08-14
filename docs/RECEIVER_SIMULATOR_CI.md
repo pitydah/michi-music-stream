@@ -2,7 +2,7 @@
 
 ## Resumen
 
-El simulator de Michi Music Stream es la herramienta oficial de validación externa para receptores v1-lite. Micro Server lo usa como blanco E2E antes de integrar hardware ESP32 real.
+El simulator de Michi Music Stream es la herramienta oficial de validación externa para receptores v1-lite. Micro Server lo usa como blanco E2E antes de integrar hardware ESP32 real. Implementa exclusivamente el contrato canónico del bundle `contracts/michi-link/`.
 
 ## Comandos de lanzamiento rápido
 
@@ -13,7 +13,7 @@ scripts/run_receiver_sim_standard.sh
 # Hi-Fi con pairing abierto (puerto 53319)
 scripts/run_receiver_sim_hifi.sh
 
-# Standard con pairing CERRADO (Micro Server debe llamar pair/start)
+# Standard con pairing CERRADO (pair/start responde 403)
 scripts/run_receiver_sim_pairing_closed.sh
 ```
 
@@ -23,92 +23,99 @@ El puerto `53319` es el default recomendado para integración con Micro Server.
 
 | Escenario | Comando |
 |-----------|---------|
-| Standard listo para emparejar | `--standard --pairing-open --port 53319` |
-| Hi-Fi listo para emparejar | `--hifi --pairing-open --port 53319` |
-| Standard esperando pair/start | `--standard --pairing-closed --port 53319` |
-| Sesión ya activa (test continuidad) | `--standard --active-session --port 53319` |
-| Heartbeat fallido (test timeout) | `--standard --fail-heartbeat --port 53319` |
+| Standard listo para emparejar | `--type standard --pairing-open --port 53319` |
+| Hi-Fi listo para emparejar | `--type hifi --pairing-open --port 53319` |
+| Standard con ventana cerrada | `--type standard --pairing-closed --port 53319` |
+| Sesión ya activa (test continuidad) | `--type standard --active-session --port 53319` |
+| Lease ya expirado (test timeout) | `--type standard --fail-heartbeat --port 53319` |
 
 ## Ejemplos de pruebas con curl
 
-### Pairing abierto → confirm exitoso
+El contrato completo (cuerpos, estados y esquemas) está en
+`contracts/michi-link/`. A continuación, el flujo canónico:
+
+### 1. Info (sin auth)
 
 ```bash
-# Terminal 1: simulator
-scripts/run_receiver_sim_standard.sh
-
-# Terminal 2: curl
-curl -s http://localhost:53319/api/v1/receiver/pair/start \
-  -H "Content-Type: application/json" \
-  -d '{"initiator":"michi_micro_server","initiator_id":"micro_001"}' | jq .
-
-NONCE=$(curl -s http://localhost:53319/api/v1/receiver/pair/start \
-  -H "Content-Type: application/json" \
-  -d '{"initiator":"michi_micro_server","initiator_id":"micro_001"}' | jq -r .nonce)
-
-curl -s http://localhost:53319/api/v1/receiver/pair/confirm \
-  -H "Content-Type: application/json" \
-  -d "{\"nonce\":\"$NONCE\",\"initiator_id\":\"micro_001\",\"token\":\"tok_micro_e2e\"}" | jq .
+curl -s http://localhost:53319/api/v1/server/info | jq .
+# → 200, service=michi-stream-standard, roles=["audio_receiver"]
 ```
 
-### Pairing cerrado → 409 esperado
+### 2. Pairing completo (ventana abierta con --pairing-open)
+
+```bash
+# Terminal 1: simulator con ventana abierta
+scripts/run_receiver_sim_standard.sh
+
+# Terminal 2: pair/start firmado (vector del bundle) — crea la sesión de pairing
+curl -s http://localhost:53319/api/v1/pair/start \
+  -H "Content-Type: application/json" \
+  -d "$(cat contracts/michi-link/vectors/pairing/pair-start-valid.json)" | jq .
+# → 201 + session_id (el PIN de 6 dígitos se muestra en el log local)
+
+# pair/status
+curl -s "http://localhost:53319/api/v1/pair/status?session_id=<session_id>" | jq .
+# → 200 + status=pending
+
+# pair/confirm con el PIN del log local (PIN del vector: 042731)
+curl -s http://localhost:53319/api/v1/pair/confirm \
+  -H "Content-Type: application/json" \
+  -d "$(cat contracts/michi-link/vectors/pairing/pair-confirm-valid.json)" | jq .
+# → 200 + token (emitido por el receptor; expires_in=0)
+```
+
+### 3. Pairing sin ventana → 403 esperado
 
 ```bash
 scripts/run_receiver_sim_pairing_closed.sh
 # En otra terminal:
-curl -s http://localhost:53319/api/v1/receiver/pair/confirm \
+curl -s http://localhost:53319/api/v1/pair/start \
   -H "Content-Type: application/json" \
-  -d '{"nonce":"x","initiator_id":"micro_001","token":"tok_test"}' | jq .
-# → 409 pairing_window_closed
+  -d "$(cat contracts/michi-link/vectors/pairing/pair-start-valid.json)" | jq .
+# → 403 FORBIDDEN
 ```
 
-### Session/start válido
+### 4. Sesión de audio válida
 
 ```bash
-# Hacer pairing primero, luego:
-curl -s http://localhost:53319/api/v1/receiver/session/start \
+# Con el token del pairing:
+curl -s http://localhost:53319/api/v1/receiver-lite/session \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer tok_micro_e2e" \
-  -d '{"session_id":"sess_e2e","codec":"pcm_s16le","sample_rate":48000,"bit_depth":16,"channels":2,"transport":"udp","stream_port":55300,"buffer_ms":250,"volume":70}' | jq .
+  -H "Authorization: Bearer <pairing_token>" \
+  -d "$(cat contracts/michi-link/examples/positive/receiver-session-create.json)" | jq .
+# → 201 + session_id, session_token, lease_seconds=30, effective.stream_port
 ```
 
-### Codec inválido → 400 unsupported_codec
+### 5. Cuerpo inválido → 400 INVALID_REQUEST
 
 ```bash
-curl -s http://localhost:53319/api/v1/receiver/session/start \
+curl -s http://localhost:53319/api/v1/receiver-lite/session \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer tok_micro_e2e" \
-  -d '{"session_id":"sess_bad","codec":"flac","sample_rate":48000,"bit_depth":16,"channels":2,"transport":"udp","stream_port":55300,"buffer_ms":250,"volume":70}' | jq .
-# → error.code = "unsupported_codec", details.requested_codec = "flac"
+  -H "Authorization: Bearer <pairing_token>" \
+  -d '{"buffer_ms": 49, "codec": "pcm_s16le", "sample_rate": 48000,
+       "bit_depth": 16, "channels": 2, "packet_ms": 10, "payload_type": 97,
+       "ssrc": 1, "volume": 70, "transport": "rtp_udp"}' | jq .
+# → 400, error.code=INVALID_REQUEST, details.field=buffer_ms
 ```
 
-### Volumen fuera de rango
+### 6. Heartbeat y lease
 
 ```bash
-curl -s http://localhost:53319/api/v1/receiver/volume \
+curl -s http://localhost:53319/api/v1/receiver-lite/heartbeat \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer tok_micro_e2e" \
-  -d '{"volume":150}' | jq .
-# → volume_set: 100 (clamp automático)
+  -H "Authorization: Bearer <pairing_token>" \
+  -H "X-Michi-Session: <session_token>" \
+  -d '{"session_id": "<session_id>", "sequence": 1, "sent_at_ms": 0}' | jq .
+# → 200 + lease_seconds=30; replay → 409 CONFLICT
 ```
 
-### Sesión duplicada → 409
+### 7. Fin de sesión
 
 ```bash
-# Iniciar primera sesión, luego la misma de nuevo:
-curl -s http://localhost:53319/api/v1/receiver/session/start \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer tok_micro_e2e" \
-  -d '{"session_id":"sess_e2e","codec":"pcm_s16le","sample_rate":48000,"bit_depth":16,"channels":2,"transport":"udp","stream_port":55300,"buffer_ms":250,"volume":70}' | jq .
-# Segunda vez → 409 session_active
-```
-
-### Heartbeat fallido (timeout)
-
-```bash
-scripts/run_receiver_sim_standard.sh --fail-heartbeat --port 53319
-# El token es "tok_preinit". El heartbeat responderá pero el
-# estado interno marca last_heartbeat=0 → timeout simulado.
+curl -s -X DELETE http://localhost:53319/api/v1/receiver-lite/session \
+  -H "Authorization: Bearer <pairing_token>" \
+  -H "X-Michi-Session: <session_token>"
+# → 204 (sin cuerpo)
 ```
 
 ## Tests automáticos
@@ -117,14 +124,18 @@ scripts/run_receiver_sim_standard.sh --fail-heartbeat --port 53319
 scripts/run_tests.sh
 ```
 
-Ejecuta:
-1. `simulator/tests/test_simulator.py` (20 tests)
-2. `tests/contract/test_contract.py` (15 tests)
-
-Total: 35 tests, todos deben pasar para considerar el simulator válido.
+Ejecuta, en orden: sync del bundle vendorizado, `simulator/tests/test_simulator.py`
+(29 tests), `simulator/tests/test_integration_http.py` (18 tests),
+`tests/contract/test_contract.py` (13 casos) y
+`tests/e2e/test_e2e_micro_stream.py` (7 casos). La suite completa de pytest
+(`python3 -m pytest -q`) recoge 86 tests. Todos deben pasar para considerar
+el simulator válido.
 
 ## Integración con Micro Server
 
 Micro Server debe conectar contra `http://<sim-ip>:53319/api/v1/`.
 
-Para descubrimiento, configurar manualmente la IP del simulator en Micro Server (no hay mDNS simulado). Todos los endpoints auth usan `Authorization: Bearer <token>`.
+Para descubrimiento, configurar manualmente la IP del simulator en Micro
+Server (no hay mDNS ni multicast simulado). Todos los endpoints protegidos
+usan `Authorization: Bearer <token>`; las mutaciones de sesión exigen además
+`X-Michi-Session: <session_token>`.
