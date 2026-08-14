@@ -119,9 +119,13 @@ static void announce_now_locked(void)
                               ? "michi-stream-hifi"
                               : "michi-stream-standard";
 
-    /* Truthful capability flags: session/heartbeat/volume are NOT
-     * implemented yet (their handlers answer 501 - MS-07/MS-08); a
-     * feature is announced true only once it has a positive test. */
+    /* Capability flags from the single canonical source
+     * (michi_product_profile_capabilities): session/heartbeat/volume
+     * are implemented (MS-07/MS-08) and advertised true. The announce
+     * carries ONLY this canonical group - the extended flags
+     * (now_playing/diagnostics/ota) belong to /server/info. */
+    const michi_product_capabilities_t *caps =
+        michi_product_profile_capabilities();
     const michi_discovery_announce_t announce = {
         .device_id = s_server_id,
         .name = p->product_name,
@@ -129,9 +133,9 @@ static void announce_now_locked(void)
         .api_version = MICHI_DISCOVERY_API_VERSION,
         .host = s_ip,
         .port = MICHI_DISCOVERY_HTTP_PORT,
-        .feature_session = false,
-        .feature_heartbeat = false,
-        .feature_volume = false,
+        .feature_session = caps->session,
+        .feature_heartbeat = caps->heartbeat,
+        .feature_volume = caps->volume,
         .michi_id = michi_id,
         .public_key = pk_b64,
         .timestamp_ms = (int64_t)time(NULL) * 1000,
