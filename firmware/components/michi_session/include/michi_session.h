@@ -11,109 +11,147 @@ extern "C" {
 #endif
 
 /**
- * @brief Session lifecycle (phase 12): the SINGLE active audio session
- *        the receiver can hold.
+ * @brief Session lifecycle (MS-07): the SINGLE canonical audio session
+ *        the receiver can hold (contract section 2.5).
  *
- * The session layer sits between the HTTP API (michi_http, phase 12) and
- * the RTP engine (michi_audio, phase 11). It owns the session contract:
+ * The session layer sits between the HTTP API (michi_http) and the RTP
+ * engine (michi_audio). It owns the session contract:
  *
  * - One session at a time. michi_session_start() fails with
- *   ESP_ERR_INVALID_STATE while one is active; a new session must stop
- *   the old one first.
- * - Format validation against the product profile / engine meta 1
- *   (pcm_s16le / 48000 / 16 / 2). Anything else is REJECTED with
- *   ESP_ERR_NOT_SUPPORTED (explicit log naming what was requested) -
- *   never silently remapped.
- * - The session credential: michi_session_start() issues a random 64-hex
- *   session token (esp_fill_random, 32 bytes) that must be presented
- *   (constant-time, single-slot) by stop()/patch(). It is returned to
- *   the controller ONCE by the API layer at creation; the session layer
- *   never logs it. session_id ("sess_" + 16 hex) identifies the session
+ *   ESP_ERR_INVALID_STATE while one is active.
+ * - STRICT validation, no clamping: every negotiated field must be
+ *   exactly canonical (transport rtp_udp / codec pcm_s16le / 48000 / 16
+ *   / 2 / packet_ms 10 / buffer_ms 50..500 / payload_type 97 / ssrc
+ *   1..4294967295 / volume 0..100). Invalid values are REJECTED - never
+ *   rounded, remapped or clamped (the HTTP layer answers 400
+ *   INVALID_REQUEST with details.field BEFORE this layer is reached;
+ *   the checks here are defensive).
+ * - The session credential: michi_session_start() issues a 32-byte
+ *   CSPRNG session token, encoded base64url WITHOUT padding (43 chars),
+ *   that must be presented (constant-time) by stop()/patch(). It is
+ *   returned to the controller ONCE by the API layer at creation,
+ *   exists ONLY in RAM, is never logged and never persisted; a stop
+ *   wipes it from RAM. session_id is a UUID v4 identifying the session
  *   in heartbeats/diagnostics and is NOT a credential.
+ * - The receiver picks the UDP stream port: michi_audio binds a free
+ *   port in 49152..65535 (never taken from the request). The RTP source
+ *   IP is the HTTP request peer, captured by the API layer and passed
+ *   here - it can never arrive in JSON.
+ * - All-or-nothing start: idle -> starting -> engine start (socket +
+ *   buffers + task, synchronous bind) -> playing. On ANY engine failure
+ *   (bind/buffer/pipeline/task) the engine has already released
+ *   everything it reserved and the session layer rolls back to idle: a
+ *   phantom session cannot exist.
+ * - Pause is a session state, not a teardown: the engine keeps its
+ *   socket/task alive (valid packets keep being counted and are
+ *   discarded - silence). Delete/stop does the full teardown: engine
+ *   stop, silence, buffers/socket freed, token wiped from RAM.
  * - The FSM lifecycle is driven by MICHI_EVENT_SESSION_STARTED/CLOSED/
- *   PAUSED/RESUMED (mappings in michi_state.c, phase 12): start posts
- *   SESSION_STARTED once per chain step (IDLE -> SESSION_PENDING ->
- *   BUFFERING -> PLAYING - BUFFERING is modeled retrospectively, the
- *   engine's real prefill is internal to michi_audio), pause posts
- *   SESSION_PAUSED (PLAYING -> PAUSED) and also stops the ENGINE
- *   (michi_audio_session_stop: silence keeps the DAC clocks running,
- *   state retained); resume restarts the engine and posts
- *   SESSION_RESUMED (PAUSED -> PLAYING); stop posts SESSION_CLOSED from
- *   any session state back to IDLE. Event posts are best-effort (warn on
- *   failure): the session layer is the source of truth for the API, the
- *   FSM follows as far as the bus allows.
- * - Pause/resume note: the ENGINE does not hold stream state across
- *   pause - the jitter buffer is torn down AND the source registration
- *   (SSRC/peer) dies with it. Resume refreshes the SSRC live via
- *   michi_audio_session_get_ssrc() and passes it as the filter when a
- *   live registration exists; with the engine stopped at pause there is
- *   usually none, so the resumed session falls back to first-seen
- *   acceptance (filter 0) - the stored SSRC is informational only.
- * - Dead-engine reconciliation: the engine task can self-terminate
- *   (socket/bind failure or a pipeline write rejection). get_info() and
- *   start() detect an active session whose engine died
- *   (michi_audio_session_active() false, outside the post-start grace
- *   window and not paused) and clean it up: state cleared,
- *   MICHI_EVENT_SESSION_CLOSED posted, "cleaned dead engine session"
- *   logged. start() then proceeds with the new session; get_info()
- *   returns ESP_ERR_INVALID_STATE (the API answers "no active session").
- * - OTA gate (phase 13): start() rejects with ESP_ERR_INVALID_STATE while
- *   the FSM is in MICHI_STATE_UPDATING (the HTTP layer answers 409
- *   ota_in_progress BEFORE the session layer is reached - the gate here
- *   is defensive). The update path force-closes the session with
- *   michi_session_abort() (privileged, no credential - see below).
- * - FSM reconciliation: the FSM follows the session layer best-effort.
- *   get_info() re-posts the missing SESSION_STARTED chain steps from
- *   the current state when an active session left the FSM short of
- *   PLAYING/PAUSED (from-keyed posts: idempotent, self-healing).
+ *   PAUSED/RESUMED (best-effort posts; the session layer is the source
+ *   of truth for the API).
+ * - Dead-engine reconciliation: if the engine self-terminates (pipeline
+ *   write rejection) while a session is active, get_info()/start() clean
+ *   the zombie state and report "no session".
+ * - OTA gate: start() rejects with ESP_ERR_INVALID_STATE while the FSM
+ *   is in MICHI_STATE_UPDATING (the HTTP layer answers 409 BEFORE this
+ *   layer is reached - the gate here is defensive). The update path
+ *   force-closes the session with michi_session_abort() (privileged, no
+ *   credential).
  * - No persistence: sessions live in RAM only (NVS untouched). A reboot
  *   ends the session; the controller re-pairs/restarts it.
+ * - The lease: POST returns lease_seconds 30 and GET reports
+ *   lease_remaining_ms. MS-07 reports the full 30000 ms window (the
+ *   heartbeat renewal and the monotonic watchdog are MS-08 - until then
+ *   the lease never expires locally).
  *
  * Threading: all calls are task-context (the httpd task); a mutex
- * serializes access. stop() - and pause() inside patch(), which stops
- * the engine the same way - may block up to the engine's cooperative
+ * serializes access. stop() may block up to the engine's cooperative
  * join window (~2 s, MICHI_AUDIO_JOIN_TIMEOUT_MS) while the session
- * task winds down; they run on the httpd task by design (single
- * session, single server task).
+ * task winds down; it runs on the httpd task by design (single session,
+ * single server task).
  */
 
-/*!< session_id: "sess_" + 8 random bytes hex + NUL (24 keeps slack) */
-#define MICHI_SESSION_ID_LEN 24
-#define MICHI_SESSION_ID_PREFIX "sess_"
-/*!< session token: 32 random bytes = 64 hex chars + NUL (never logged,
- * never persisted; returned once at creation). The spec sketch said 64
- * for the hex string; the buffer MUST hold the NUL too. */
-#define MICHI_SESSION_TOKEN_HEX_LEN 64
-#define MICHI_SESSION_TOKEN_LEN (MICHI_SESSION_TOKEN_HEX_LEN + 1)
+/*!< session_id: UUID v4 (8-4-4-4-12 lowercase hex) + NUL */
+#define MICHI_SESSION_ID_LEN 37
+/*!< session token: 32 random bytes = 43 base64url-nopad chars + NUL
+ * (never logged, never persisted, RAM only; returned once at creation) */
+#define MICHI_SESSION_TOKEN_B64_LEN 43
+#define MICHI_SESSION_TOKEN_LEN (MICHI_SESSION_TOKEN_B64_LEN + 1)
 /*!< owner controller id (same charset rule as the pairing registry) */
 #define MICHI_SESSION_OWNER_MAX 31
 /*!< source address buffer (longest IPv4 dotted string fits in 16) */
-#define MICHI_SESSION_SOURCE_ADDR_LEN 48
-/*!< codec string ("pcm_s16le" in meta 1) */
+#define MICHI_SESSION_SOURCE_ADDR_LEN 16
+/*!< codec string ("pcm_s16le") */
 #define MICHI_SESSION_CODEC_LEN 16
+/*!< initial lease (contract section 2.5/2.6; renewal is MS-08) */
+#define MICHI_SESSION_LEASE_SECONDS 30
+#define MICHI_SESSION_LEASE_MS (MICHI_SESSION_LEASE_SECONDS * 1000)
+
+/**
+ * @brief Internal session lifecycle state (contract state machine:
+ *        idle -> starting -> playing -> paused -> stopping -> idle).
+ */
+typedef enum {
+    MICHI_SESSION_STATE_STARTING = 0, /*!< Resources being reserved */
+    MICHI_SESSION_STATE_PLAYING,      /*!< Engine running */
+    MICHI_SESSION_STATE_PAUSED,       /*!< Engine alive, audio suspended */
+    MICHI_SESSION_STATE_STOPPING,     /*!< Teardown in progress */
+} michi_session_state_t;
 
 /**
  * @brief Snapshot of the active session (michi_session_get_info).
  *
- * `volume` is the APPLIED value (michi_volume_get after set - P0-12);
- * `buffer_ms` is the value actually in effect (clamped to the engine's
- * jitter capacity); `ssrc`/`source_addr` reflect the source registered
- * by the engine (0 / empty until the first accepted packet).
+ * `volume` is the APPLIED value (michi_volume_get after set - the
+ * reported value is always the value actually applied); `ssrc` is the
+ * NEGOTIATED SSRC (never first-seen); `source_addr` is the HTTP request
+ * peer; the packet counters are the engine metrics (packets_rejected =
+ * the sum of the per-class datagram rejects).
  */
 typedef struct {
-    char session_id[MICHI_SESSION_ID_LEN];        /* "sess_" + 16 hex */
-    char owner_controller_id[32];                 /* pairing controller id */
-    uint32_t ssrc;                                /* source SSRC (0 = not yet registered) */
-    char source_addr[MICHI_SESSION_SOURCE_ADDR_LEN]; /* dotted IPv4 ("" = not yet registered) */
-    char codec[MICHI_SESSION_CODEC_LEN];          /* "pcm_s16le" (meta 1) */
-    uint32_t sample_rate;                         /* 48000 (validated baseline) */
-    uint8_t bit_depth;                            /* 16 */
-    uint8_t channels;                             /* 2 */
-    uint16_t stream_port;                         /* UDP port bound by the engine */
-    uint16_t buffer_ms;                           /* jitter budget in effect (clamped) */
-    uint8_t volume;                               /* APPLIED volume 0-100 */
-    bool paused;                                  /* true while the engine is stopped on purpose */
+    char session_id[MICHI_SESSION_ID_LEN]; /* UUID v4 */
+    char owner_controller_id[32];          /* pairing controller id */
+    michi_session_state_t state;           /* starting/playing/paused/stopping */
+    char codec[MICHI_SESSION_CODEC_LEN];   /* "pcm_s16le" */
+    uint32_t sample_rate;                  /* 48000 */
+    uint8_t bit_depth;                     /* 16 */
+    uint8_t channels;                      /* 2 */
+    uint8_t packet_ms;                     /* 10 */
+    uint8_t payload_type;                  /* 97 */
+    uint32_t ssrc;                         /* negotiated (1..4294967295) */
+    char source_addr[MICHI_SESSION_SOURCE_ADDR_LEN]; /* dotted IPv4 peer */
+    uint16_t stream_port;                  /* UDP port bound by the engine */
+    uint16_t buffer_ms;                    /* jitter budget in effect (50..500) */
+    uint8_t volume;                        /* APPLIED volume 0-100 */
+    bool paused;                           /* true while playback is suspended */
+    uint32_t lease_remaining_ms;           /* 30000 (watchdog = MS-08) */
+    uint32_t packets_received;             /* accepted past the guard */
+    uint32_t packets_rejected;             /* source/PT/SSRC/size rejects */
+    uint32_t packets_lost;                 /* detected seq gaps */
+    uint32_t underruns;                    /* jitter-buffer-empty events */
 } michi_session_info_t;
+
+/**
+ * @brief Negotiated session parameters (POST /receiver-lite/session,
+ *        already validated by the HTTP body gate - the fields here are
+ *        re-validated defensively, never clamped).
+ */
+typedef struct {
+    const char *owner_controller_id; /*!< Authenticated controller id (the
+                                          Bearer token owner, never a body
+                                          claim). */
+    const char *codec;               /*!< "pcm_s16le" */
+    uint32_t sample_rate;            /*!< 48000 */
+    uint8_t bit_depth;               /*!< 16 */
+    uint8_t channels;                /*!< 2 */
+    uint8_t packet_ms;               /*!< 10 */
+    uint16_t buffer_ms;              /*!< 50..500 */
+    uint8_t payload_type;            /*!< 97 */
+    uint32_t ssrc;                   /*!< 1..4294967295 */
+    uint8_t volume;                  /*!< 0..100 */
+    const char *source_ip;           /*!< Dotted IPv4 of the HTTP request
+                                          peer (the only accepted RTP
+                                          source). Never from JSON. */
+} michi_session_start_params_t;
 
 /**
  * @brief Initialize the session layer.
@@ -128,82 +166,65 @@ typedef struct {
 esp_err_t michi_session_init(void);
 
 /**
- * @brief Start the single active session.
+ * @brief Whether a string is a well-formed session token (exactly 43
+ *        base64url chars without padding). Used by the HTTP layer for
+ *        the 401 fast path and internally by stop()/patch().
  *
- * Validation order: initialized (INVALID_STATE) -> no session active
- * (INVALID_STATE) -> owner id format 1..31 chars alphanumeric + '-'
- * (INVALID_ARG) -> codec in the product profile supported_codecs and
- * exactly "pcm_s16le" (NOT_SUPPORTED, explicit log; "pcm_s24le" is
- * rejected as a declared meta) -> format via the engine output ops
- * prepare(): 48000/16/2 only (NOT_SUPPORTED) -> stream_port in
- * [1024, 65535] (INVALID_ARG, the API has no ephemeral-port mode).
- * buffer_ms is CLAMPED to [50, CONFIG_MICHI_AUDIO_JITTER_MAX_MS] (the
- * engine's jitter capacity) and the clamped value is stored + logged;
- * volume is clamped to 0-100 via michi_volume_set() and the APPLIED
- * value is stored.
- *
- * Then: michi_audio_session_start(stream_port, ssrc_filter=0) -> the
- * engine task binds the port (an INVALID_STATE return means the audio
- * pipeline is not running - no DAC); the session id + token are
- * generated with esp_fill_random; the engine SSRC is registered
- * (best-effort: usually unknown until the first accepted packet, so the
- * info field stays 0 until then); MICHI_EVENT_SESSION_STARTED is posted
- * three times, driving IDLE -> SESSION_PENDING -> BUFFERING -> PLAYING
- * (best-effort, warn on failure).
- *
- * A session whose ENGINE self-terminated (dead-engine reconciliation,
- * see the top note) is cleaned BEFORE the active check: the zombie state
- * is cleared (SESSION_CLOSED posted, "session: cleaned dead engine
- * session" logged) and the new start proceeds - a live session still
- * answers ESP_ERR_INVALID_STATE.
- *
- * The session token is returned in `out_token` (64 hex chars) - the
- * ONLY time the caller receives it.
- *
- * @param owner_controller_id The authenticated controller id (1..31
- *                            chars; the API layer passes the Bearer
- *                            token owner, never a body claim).
- * @param codec               "pcm_s16le" (meta 1).
- * @param sample_rate         48000.
- * @param bit_depth           16.
- * @param channels            2.
- * @param stream_port         UDP port 1024..65535.
- * @param buffer_ms           Requested jitter budget; clamped to the
- *                            engine capacity (>= 50).
- * @param volume              Requested volume; clamped to 0-100.
- * @param out_token           Buffer for the session token
- *                            (>= MICHI_SESSION_TOKEN_LEN).
- * @param out_token_len       Size of out_token.
- * @return ESP_OK; ESP_ERR_INVALID_STATE (before init, session already
- *         active, or the audio pipeline is not running);
- *         ESP_ERR_INVALID_ARG (bad owner id, port out of range,
- *         too-small token buffer); ESP_ERR_NOT_SUPPORTED (codec or
- *         format outside meta 1 - rejected explicitly);
- *         ESP_ERR_NO_MEM (engine buffers/task); engine errors
- *         propagate unchanged.
+ * @param token Token to check (NULL = false).
+ * @return true when the token has the canonical shape.
  */
-esp_err_t michi_session_start(const char *owner_controller_id,
-                              const char *codec,
-                              uint32_t sample_rate, uint8_t bit_depth,
-                              uint8_t channels, uint16_t stream_port,
-                              uint16_t buffer_ms, uint8_t volume,
+bool michi_session_token_valid(const char *token);
+
+/**
+ * @brief Start the single canonical session (idle -> starting -> playing).
+ *
+ * Validation order: initialized (INVALID_STATE) -> output buffers
+ * (INVALID_ARG) -> strict negotiation (INVALID_ARG/INVALID_STATE, no
+ * clamping) -> no session active (INVALID_STATE) -> engine start
+ * (socket + buffers + task, synchronous bind; any failure releases
+ * everything and returns the error - the session layer stays idle).
+ * On success the receiver-picked stream port is read back from the
+ * engine, the volume is applied (the APPLIED value is stored), the
+ * UUID v4 session id and the 32-byte base64url-nopad session token are
+ * generated with esp_fill_random and MICHI_EVENT_SESSION_STARTED is
+ * posted three times, driving IDLE -> SESSION_PENDING -> BUFFERING ->
+ * PLAYING (best-effort).
+ *
+ * A session whose ENGINE self-terminated (dead-engine reconciliation)
+ * is cleaned BEFORE the active check: the zombie state is cleared
+ * (SESSION_CLOSED posted, "cleaned dead engine session" logged) and the
+ * new start proceeds - a live session still answers ESP_ERR_INVALID_STATE.
+ *
+ * The session token is returned in `out_token` (43 base64url chars) -
+ * the ONLY time the caller receives it.
+ *
+ * @param params        Negotiated parameters (all fields required).
+ * @param out_token     Buffer for the session token
+ *                      (>= MICHI_SESSION_TOKEN_LEN).
+ * @param out_token_len Size of out_token.
+ * @return ESP_OK; ESP_ERR_INVALID_STATE (before init, session already
+ *         active, FSM UPDATING, or the audio pipeline is not running);
+ *         ESP_ERR_INVALID_ARG (bad owner id, non-canonical format,
+ *         buffer_ms/ssrc/volume out of range, bad source IP, too-small
+ *         token buffer); ESP_ERR_NOT_SUPPORTED (codec outside the
+ *         canonical profile - rejected explicitly); ESP_ERR_NO_MEM /
+ *         ESP_FAIL (engine bind/buffer/task failure - everything was
+ *         released, no session exists).
+ */
+esp_err_t michi_session_start(const michi_session_start_params_t *params,
                               char *out_token, size_t out_token_len);
 
 /**
- * @brief Stop the active session (engine stop + MICHI_EVENT_SESSION_CLOSED).
+ * @brief Stop the active session (engine teardown + MICHI_EVENT_SESSION_CLOSED).
  *
  * The session token is validated in CONSTANT TIME against the active
- * session (fixed 64-char comparison; malformed tokens are rejected as
- * INVALID_ARG without comparison - no timing side channel, the token is
- * a credential). Engine stop is cooperative: this call may block up to
- * the join window. Idempotent for an already-stopped engine (pause)
- * since michi_audio_session_stop() is; the session state is cleared in
- * every case. If the engine task fails to join, ESP_ERR_TIMEOUT is
- * returned and NOTHING is cleared - retry stop(). On success the
- * now-playing display metadata is cleared (F9 follow-up) so the IDLE
- * screen never shows stale track info.
+ * session (fixed 43-char comparison; malformed tokens are rejected as
+ * INVALID_ARG without comparison - no timing side channel). Engine stop
+ * is cooperative: this call may block up to the join window. On success
+ * the engine socket/buffers are freed, the session state is cleared and
+ * the token is WIPED FROM RAM (memset) - GET then answers 404.
  *
- * @param session_token The 64-hex session token issued at start.
+ * @param session_token The 43-char base64url session token issued at start.
  * @return ESP_OK; ESP_ERR_INVALID_STATE (before init, or no session
  *         active); ESP_ERR_INVALID_ARG (malformed token); ESP_ERR_NOT_FOUND
  *         (token does not match the active session);
@@ -215,15 +236,15 @@ esp_err_t michi_session_stop(const char *session_token);
  * @brief Force-stop the active session WITHOUT the credential
  *        (privileged internal path, phase 13 OTA).
  *
- * The session token is a credential that is never persisted, so the OTA
- * component cannot present it when it must tear the session down before
- * flashing. This API is for trusted firmware components only (michi_ota);
- * it must never be reachable from the network layer (the HTTP handlers
- * use stop()/patch() exclusively).
+ * The session token is a RAM-only credential, so the OTA component
+ * cannot present it when it must tear the session down before flashing.
+ * This API is for trusted firmware components only (michi_ota); it must
+ * never be reachable from the network layer (the HTTP handlers use
+ * stop()/patch() exclusively).
  *
  * Same semantics as stop() minus the credential check: engine stop
  * (cooperative, may block up to the join window), session state cleared,
- * MICHI_EVENT_SESSION_CLOSED posted, now-playing metadata cleared.
+ * token wiped, MICHI_EVENT_SESSION_CLOSED posted.
  *
  * @param reason Log reason (e.g. "ota update"); may be NULL.
  * @return Same as stop() (INVALID_STATE when no session is active;
@@ -234,31 +255,23 @@ esp_err_t michi_session_abort(const char *reason);
 /**
  * @brief Patch the active session: volume and/or pause state.
  *
- * volume == -1: no change. Any other value is clamped to 0-100 and
- * applied via michi_volume_set() (the info volume is refreshed with the
- * APPLIED value). paused == NULL: no change. paused == true while
- * playing: engine stop (state retained) + MICHI_EVENT_SESSION_PAUSED
- * (PLAYING -> PAUSED) - the engine stop BLOCKS up to the ~2 s join
- * window (same as stop(), see the threading note); paused == false
- * while paused: engine restart on the session port (ssrc_filter = a
- * LIVE engine SSRC if one is registered, else 0 - the registration dies
- * with the engine at pause, see the top note) +
- * MICHI_EVENT_SESSION_RESUMED (PAUSED -> PLAYING). Pausing while the FSM
- * is outside PLAYING (PENDING/BUFFERING) still stops the engine; the
- * PAUSED event is broadcast-only there (no mapping) - documented FSM
- * divergence, the session info is authoritative.
+ * volume_set: apply 0..100 via michi_volume_set() (the info volume is
+ * refreshed with the APPLIED value). paused_set: transition the session
+ * between playing and paused (the engine keeps its socket/task alive -
+ * valid packets are counted and discarded while paused) +
+ * MICHI_EVENT_SESSION_PAUSED/RESUMED.
  *
- * @param session_token The 64-hex session token.
- * @param volume        -1 = no change; else clamped 0-100 and applied.
- * @param paused        NULL = no change; else the target pause state.
+ * @param session_token The 43-char base64url session token.
+ * @param volume_set    true to apply `volume`.
+ * @param volume        New volume 0..100 (ignored when !volume_set).
+ * @param paused_set    true to apply `paused`.
+ * @param paused        Target pause state (ignored when !paused_set).
  * @return ESP_OK; ESP_ERR_INVALID_STATE (before init, no session
- *         active); ESP_ERR_INVALID_ARG (malformed token);
- *         ESP_ERR_NOT_FOUND (token mismatch); engine start/stop errors
- *         propagate unchanged (e.g. INVALID_STATE when the pipeline is
- *         down on resume - nothing was patched beyond what succeeded).
+ *         active); ESP_ERR_INVALID_ARG (malformed token, volume > 100);
+ *         ESP_ERR_NOT_FOUND (token mismatch).
  */
-esp_err_t michi_session_patch(const char *session_token, int volume,
-                              bool *paused);
+esp_err_t michi_session_patch(const char *session_token, bool volume_set,
+                              uint8_t volume, bool paused_set, bool paused);
 
 /**
  * @brief Copy the active session snapshot (token never included).
@@ -266,12 +279,11 @@ esp_err_t michi_session_patch(const char *session_token, int volume,
  * Reconciles reality first: a session whose engine self-terminated is
  * cleaned here (SESSION_CLOSED posted, "cleaned dead engine session"
  * logged) and ESP_ERR_INVALID_STATE is returned (the API answers "no
- * active session"); a stuck FSM (active session outside PLAYING/PAUSED)
- * is re-driven by re-posting the missing SESSION_STARTED steps from the
- * current state (from-keyed, idempotent - see the top note). Then:
- * `ssrc`/`source_addr` are refreshed LIVE from the engine (best-effort:
- * they stay 0/"" until the first accepted packet) - the session layer
- * stored copy registers the start-time value.
+ * active session"); a stuck FSM is re-driven by re-posting the missing
+ * SESSION_STARTED steps (from-keyed, idempotent). Then the packet
+ * counters are refreshed LIVE from the engine metrics and
+ * lease_remaining_ms reports the lease window (MS-07: the full 30000 ms;
+ * the watchdog is MS-08).
  *
  * @param out Output struct (must not be NULL).
  * @return ESP_OK; ESP_ERR_INVALID_STATE (before init, no session

@@ -1,23 +1,33 @@
 /*
- * RTP/UDP audio engine (phase 11, meta 1: PCM S16LE 48 kHz stereo).
+ * RTP/UDP audio engine (MS-07: canonical receiver-lite session).
  *
  * Design (see include/michi_audio.h for the full contract):
- *  - The session task owns the UDP socket and the jitter buffer; it is
- *    created by michi_audio_session_start() and self-deletes after
- *    cooperative shutdown (no external vTaskDelete).
+ *  - The session task owns the UDP socket and the jitter buffer; the
+ *    socket is created and BOUND SYNCHRONOUSLY by
+ *    michi_audio_session_start() (port 0 = the receiver picks a free
+ *    port in 49152..65535) so a bind/socket failure is returned to the
+ *    caller BEFORE any session state exists - the caller rolls back to
+ *    idle and a phantom session is impossible. The task self-deletes
+ *    after cooperative shutdown (no external vTaskDelete).
+ *  - Every datagram is validated by the SHARED guard (rtp_guard.c):
+ *    RTP v2 without CSRC/extension/padding, PT 97, the EXACT negotiated
+ *    SSRC (first-packet-wins is retired), the EXACT HTTP request peer
+ *    IPv4 and a 1920-byte payload. Rejects are counted per class
+ *    (packets_rejected = their sum) and never close the session.
  *  - Packet-level jitter buffer: ordered by 16-bit seq with wrap-aware
- *    int16 diff math; policies: duplicate, reordered, late, loss, overrun
- *    (drop-oldest), discontinuity (flush + resync).
- *  - Playback drains one packet per loop iteration; real-time pacing comes
- *    from the michi_audio_output ring (blocking write = ring flow control).
- *    Gaps and underruns write EXPLICIT zero samples: continuous BCLK/LRCK
- *    keeps the PCM5122 PLL locked (the ring's DMA auto-clear alone would
- *    also be silence, but explicit silence keeps the ring level stable).
- *  - Metrics are updated by the session task under a short portMUX critical
- *    section (single writer, arbitrary readers).
+ *    int16 diff math; policies: duplicate, reordered, late, loss,
+ *    overrun (drop-oldest), discontinuity (flush + resync). Sequence
+ *    wrap, loss and reordering never close the session.
+ *  - Pause keeps the task ALIVE: valid packets are counted (received +
+ *    loss) and discarded; resume flushes the buffer and resyncs to the
+ *    next expected sequence.
+ *  - Playback drains one packet per loop iteration; real-time pacing
+ *    comes from the michi_audio_output ring (blocking write = ring flow
+ *    control). Gaps and underruns write EXPLICIT zero samples.
+ *  - Metrics are updated by the session task under a short portMUX
+ *    critical section (single writer, arbitrary readers).
  *  - No 4 MB global buffer: bounded per-session PSRAM pool + lwip UDP
- *    receive mailbox (CONFIG_LWIP_UDP_RECVMBOX_SIZE raised in
- *    sdkconfig.defaults so bursts reach the jitter buffer).
+ *    receive mailbox.
  */
 
 #include <inttypes.h>
@@ -33,6 +43,7 @@
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include "esp_timer.h"
 
 #include "michi_audio.h"
@@ -42,18 +53,27 @@
 #include "michi_product_profile.h"
 #include "michi_state.h"
 #include "michi_volume.h"
+#include "rtp_guard.h"
 
 #define TAG "michi_audio"
 
-/* Phase-11 validated profile (meta 1); the product profile keeps it as the
- * validation baseline. prepare() rejects anything else. */
+/* Canonical profile (contract section 2.5) - the validated baseline. */
 #define MICHI_AUDIO_SAMPLE_RATE 48000
 #define MICHI_AUDIO_BIT_DEPTH   16
 #define MICHI_AUDIO_CHANNELS    2
 #define MICHI_AUDIO_BYTES_PER_SAMPLE (MICHI_AUDIO_BIT_DEPTH / 8)
 
-#define MICHI_AUDIO_RTP_VERSION 2
-#define MICHI_AUDIO_PACKET_MS_ASSUMED 10 /* capacity unit: 10 ms packets (spec) */
+/* Canonical RTP constants (shared with rtp_guard.c - see rtp_guard.h). */
+#define MICHI_AUDIO_RTP_PT_S16LE MICHI_RTP_GUARD_PT_S16LE
+#define MICHI_AUDIO_RTP_PAYLOAD_BYTES MICHI_RTP_GUARD_PAYLOAD_BYTES
+#define MICHI_AUDIO_PACKET_MS_ASSUMED 10 /* capacity unit: 10 ms packets */
+/* 10 ms at 48 kHz = 480 frames = 960 samples per packet. */
+#define MICHI_AUDIO_SAMPLES_PER_PACKET \
+    (MICHI_AUDIO_SAMPLE_RATE / 1000 * MICHI_AUDIO_PACKET_MS_ASSUMED)
+
+/* The receiver picks the UDP port in 49152..65535 (contract 2.5). */
+#define MICHI_AUDIO_STREAM_PORT_MIN 49152
+#define MICHI_AUDIO_STREAM_PORT_MAX 65535
 
 #define MICHI_AUDIO_SESSION_SOCKET_TIMEOUT_MS 100 /* wake cadence for stop() */
 #define MICHI_AUDIO_PREFILL_DEADLINE_MS 1000      /* start-with-what-we-have */
@@ -72,7 +92,7 @@
 typedef struct {
     uint16_t seq;      /* RTP sequence */
     uint32_t timestamp; /* RTP timestamp */
-    uint16_t len;      /* payload bytes (16-bit stereo: len % 4 == 0) */
+    uint16_t len;      /* payload bytes (canonical: 1920) */
     bool     used;
 } jb_entry_t;
 
@@ -85,44 +105,42 @@ typedef struct {
 /* Per-session state, owned by the session task (allocated in
  * michi_audio_session_start, freed by the task on exit). */
 typedef struct {
-    int      sock;
+    int      sock;      /* bound synchronously at start */
     uint16_t port;
-    uint32_t ssrc_filter;
+    uint32_t ssrc;      /* EXACT negotiated SSRC (no first-packet-wins) */
+    michi_rtp_guard_session_t guard; /* negotiated validation constants */
 
     /* Stream state */
-    bool     ssrc_valid;
-    uint32_t ssrc;
-    uint16_t playhead;        /* next seq to play */
-    uint16_t last_seq;        /* received high-water mark */
-    uint32_t last_played_ts;  /* RTP ts of the last played packet; 0 = none */
-    uint32_t samples_per_packet; /* from the first accepted payload */
-    uint32_t base_ts;         /* first packet ts (jitter reference) */
-    int64_t  base_time_us;    /* first packet arrival (jitter reference) */
-    uint32_t jitter_us;       /* EWMA estimate */
-    bool     in_underrun;     /* one underrun counted per contiguous stall */
-    uint32_t drop_log_count;  /* rogue-source log throttle */
+    bool     stream_seeded;  /* first accepted packet seeded the playhead */
+    uint16_t playhead;       /* next seq to play */
+    uint16_t last_seq;       /* received high-water mark */
+    uint32_t last_played_ts; /* RTP ts of the last played packet; 0 = none */
+    uint32_t samples_per_packet; /* canonical: 480 */
+    uint32_t base_ts;        /* first packet ts (jitter reference) */
+    int64_t  base_time_us;   /* first packet arrival (jitter reference) */
+    uint32_t jitter_us;      /* EWMA estimate */
+    bool     in_underrun;    /* one underrun counted per contiguous stall */
+    uint32_t drop_log_count; /* rogue-source log throttle */
 
     jitter_buffer_t jb;
-    uint8_t *recv_buf;        /* datagram buffer (heap) */
-    uint8_t *zeros;           /* one packet of silence (heap) */
+    uint8_t *recv_buf;       /* datagram buffer (heap) */
+    uint8_t *zeros;          /* one packet of silence (heap) */
 } session_t;
 
 static volatile bool s_initialized = false;
 static volatile bool s_session_run = false;    /* cooperative: read by the task */
 static volatile bool s_session_done = false;   /* set by the task before self-delete */
-static volatile bool s_session_active = false; /* task bound the socket */
+static volatile bool s_session_active = false; /* session bound and running */
 static volatile TaskHandle_t s_session_task = NULL;
+static volatile bool s_paused = false;         /* pause flag read by the task */
 
-/* Stream source registration (phase 12): the first packet accepted into
- * the stream seeds the source. Written by the session task under s_lock
- * (single writer), read by michi_audio_session_get_ssrc/get_peer from the
- * API task. Kept OUT of session_t on purpose: session_t is owned and
- * freed by the session task, these snapshots must survive it. Cleared at
- * session_start; stale values are guarded by s_session_active. */
-static volatile bool s_session_ssrc_valid = false;
-static volatile uint32_t s_session_ssrc;
-static volatile bool s_session_peer_valid = false;
-static struct in_addr s_session_peer; /* guarded by s_session_peer_valid */
+/* Negotiated session constants (set at session start, read by the API
+ * layer / diagnostics while the session is active). Kept OUT of
+ * session_t on purpose: session_t is owned and freed by the session
+ * task, these snapshots must survive it. */
+static uint32_t s_session_ssrc;      /* guarded by s_lock */
+static struct in_addr s_session_peer; /* guarded by s_lock */
+static uint16_t s_session_port;      /* guarded by s_lock */
 
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static michi_audio_metrics_t s_metrics;
@@ -166,65 +184,6 @@ static void metrics_live(const session_t *s)
             ESP_LOGW(TAG, __VA_ARGS__);                      \
         }                                                    \
     } while (0)
-
-/* ------------------------------------------------------------------
- * RTP parsing (RFC 3550 header: v/P/X/CC/M/PT/seq/timestamp/ssrc)
- * ------------------------------------------------------------------ */
-
-typedef struct {
-    uint8_t          pt;
-    uint16_t         seq;
-    uint32_t         timestamp;
-    uint32_t         ssrc;
-    const uint8_t   *payload;
-    uint16_t         payload_len;
-} rtp_packet_t;
-
-static bool rtp_parse(const uint8_t *buf, size_t len, rtp_packet_t *out)
-{
-    if (len < 12) {
-        return false;
-    }
-    if (((buf[0] >> 6) & 0x3) != MICHI_AUDIO_RTP_VERSION) {
-        return false;
-    }
-    const bool padding = ((buf[0] >> 5) & 0x1) != 0;
-    const bool extension = ((buf[0] >> 4) & 0x1) != 0;
-    const uint8_t cc = buf[0] & 0x0F;
-
-    size_t off = 12 + (size_t)cc * 4;
-    if (extension) {
-        if (off + 4 > len) {
-            return false;
-        }
-        const uint16_t ext_len = ((uint16_t)buf[off + 2] << 8) | buf[off + 3];
-        off += 4 + (size_t)ext_len * 4;
-    }
-    if (off > len) {
-        return false;
-    }
-    uint16_t plen = (uint16_t)(len - off);
-    if (padding) {
-        if (plen == 0) {
-            return false;
-        }
-        const uint16_t pad = buf[len - 1];
-        if (pad > plen) {
-            return false;
-        }
-        plen -= pad;
-    }
-
-    out->pt = buf[1] & 0x7F;
-    out->seq = ((uint16_t)buf[2] << 8) | buf[3];
-    out->timestamp = ((uint32_t)buf[4] << 24) | ((uint32_t)buf[5] << 16) |
-                     ((uint32_t)buf[6] << 8) | buf[7];
-    out->ssrc = ((uint32_t)buf[8] << 24) | ((uint32_t)buf[9] << 16) |
-                ((uint32_t)buf[10] << 8) | buf[11];
-    out->payload = buf + off;
-    out->payload_len = plen;
-    return true;
-}
 
 /* ------------------------------------------------------------------
  * Jitter buffer (packet level, ordered by 16-bit seq)
@@ -284,7 +243,7 @@ static void jb_flush(jitter_buffer_t *jb)
  * buffer is full. Both rejections (drop-oldest and NO_MEM) count as
  * overruns and are logged (DROP_LOG throttles a rogue sender's spam). */
 static esp_err_t jb_insert(session_t *s, uint16_t playhead,
-                           const rtp_packet_t *pkt)
+                           const michi_rtp_guard_packet_t *pkt)
 {
     jitter_buffer_t *jb = &s->jb;
     if (jb_find_seq(jb, pkt->seq) != NULL) {
@@ -324,51 +283,45 @@ static esp_err_t jb_insert(session_t *s, uint16_t playhead,
  * Stream policy (see header for the full taxonomy)
  * ------------------------------------------------------------------ */
 
-static bool stream_policy(session_t *s, const rtp_packet_t *pkt)
+static bool stream_policy(session_t *s, const michi_rtp_guard_packet_t *pkt)
 {
     const int16_t max_pkts = (int16_t)MICHI_AUDIO_MAX_PACKETS;
 
-    if (!s->ssrc_valid) {
-        /* First accepted packet: seed the stream (playhead, jitter ref,
-         * packet geometry). Reject payloads that cannot be 16-bit stereo
-         * BEFORE seeding. */
-        if (pkt->payload_len == 0 || (pkt->payload_len % (MICHI_AUDIO_CHANNELS *
-                                                          MICHI_AUDIO_BYTES_PER_SAMPLE)) != 0) {
-            DROP_LOG(s, "first packet payload %u bytes: not 16-bit stereo aligned",
-                     (unsigned)pkt->payload_len);
-            m_add(&s_metrics.drops_payload_geometry, 1);
-            return false; /* not accepted into the stream */
+    if (s_paused) {
+        /* Paused: valid packets are counted (received + loss
+         * accounting) but never queued - silence, not a buffer leak. */
+        const int16_t diff_l = (int16_t)(pkt->seq - s->last_seq);
+        const uint32_t lost = michi_rtp_guard_lost_delta(s->last_seq,
+                                                         pkt->seq);
+        if (lost != 0) {
+            m_add(&s_metrics.lost, lost);
         }
-        s->ssrc = pkt->ssrc;
-        s->ssrc_valid = true;
+        if (diff_l > 0) {
+            s->last_seq = pkt->seq;
+        }
+        return true; /* consumed (counted and discarded) */
+    }
+
+    if (!s->stream_seeded) {
+        /* First accepted packet: seed the playhead and the jitter
+         * reference. PT/SSRC/source/size were already validated by the
+         * guard against the NEGOTIATED constants - the payload geometry
+         * is canonical (1920 bytes = 480 samples). */
+        s->stream_seeded = true;
         s->playhead = pkt->seq;
         s->last_seq = pkt->seq;
         s->base_ts = pkt->timestamp;
         s->base_time_us = esp_timer_get_time();
-        s->samples_per_packet = pkt->payload_len /
-                                (MICHI_AUDIO_CHANNELS * MICHI_AUDIO_BYTES_PER_SAMPLE);
         (void)jb_insert(s, s->playhead, pkt);
         return true;
-    }
-
-    /* Payload geometry is validated on EVERY packet, not just the first:
-     * a zero/unaligned payload would reach write(0) -> INVALID_ARG and a
-     * single datagram would kill the session. Drop it (counted per class,
-     * logged, throttled) and keep the session alive. */
-    if (pkt->payload_len == 0 || (pkt->payload_len % (MICHI_AUDIO_CHANNELS *
-                                                      MICHI_AUDIO_BYTES_PER_SAMPLE)) != 0) {
-        DROP_LOG(s, "payload %u bytes: not 16-bit stereo aligned - dropped, "
-                    "session kept alive", (unsigned)pkt->payload_len);
-        m_add(&s_metrics.drops_payload_geometry, 1);
-        return false;
     }
 
     const int16_t diff_p = (int16_t)(pkt->seq - s->playhead);
 
     if (diff_p > max_pkts) {
         /* Ahead of the playhead by more than the window: stream
-         * discontinuity (sender restart without SSRC change, or a reset
-         * sender). Flush + resync; the buffered packets are obsolete. */
+         * discontinuity (sender restart). Flush + resync; the buffered
+         * packets are obsolete. */
         ESP_LOGW(TAG, "seq %u ahead of playhead %u by more than the window: "
                       "buffer flush + resync",
                  (unsigned)pkt->seq, (unsigned)s->playhead);
@@ -384,21 +337,20 @@ static bool stream_policy(session_t *s, const rtp_packet_t *pkt)
         return false;
     }
     if (diff_p < 0) {
-        /* Behind the playhead within the window: already reproduced/passed.
-         * diff_p == 0 (seq == playhead) is the NEXT EXPECTED packet - never
-         * dropped here: it is usually not queued (it is the gap the buffer
-         * is waiting for), so jb_insert must decide. jb_find_seq detects the
-         * real duplicate (INVALID_STATE -> duplicate below). Dropping it as
-         * duplicate before would replace the expected packet with silence
-         * (spurious start underrun / glitch on every post-underrun
-         * recovery). */
+        /* Behind the playhead within the window: already
+         * reproduced/passed. diff_p == 0 (seq == playhead) is the NEXT
+         * EXPECTED packet - never dropped here: it is usually not queued
+         * (it is the gap the buffer is waiting for), so jb_insert must
+         * decide. jb_find_seq detects the real duplicate (INVALID_STATE
+         * -> duplicate below). */
         m_add(&s_metrics.duplicate, 1); /* already reproduced/passed */
         return false;
     }
 
     const int16_t diff_l = (int16_t)(pkt->seq - s->last_seq);
-    if (diff_l > 1) {
-        m_add(&s_metrics.lost, (uint32_t)(diff_l - 1));
+    const uint32_t lost = michi_rtp_guard_lost_delta(s->last_seq, pkt->seq);
+    if (lost != 0) {
+        m_add(&s_metrics.lost, lost);
     }
     const bool reordered = (diff_l <= 0); /* out of order, still playable */
 
@@ -407,9 +359,9 @@ static bool stream_policy(session_t *s, const rtp_packet_t *pkt)
         if (reordered) {
             m_add(&s_metrics.reordered, 1);
         }
-        /* The received high-water mark only advances on in-order arrivals;
-         * a reordered packet (diff_l <= 0) must never lower it, or the
-         * next in-order packet would report fake loss. */
+        /* The received high-water mark only advances on in-order
+         * arrivals; a reordered packet (diff_l <= 0) must never lower
+         * it, or the next in-order packet would report fake loss. */
         if (diff_l > 0) {
             s->last_seq = pkt->seq;
         }
@@ -434,56 +386,51 @@ static void session_recv(session_t *s)
         return; /* timeout (SO_RCVTIMEO) or error: keep the session alive */
     }
 
-    rtp_packet_t pkt;
-    if (!rtp_parse(s->recv_buf, (size_t)n, &pkt)) {
+    michi_rtp_guard_packet_t pkt;
+    if (!michi_rtp_guard_parse(s->recv_buf, (size_t)n, &pkt)) {
         DROP_LOG(s, "malformed RTP datagram (%d bytes)", n);
         m_add(&s_metrics.drops_malformed, 1);
         return;
     }
-    /* PT mapping note: the default PT 10 reuses the RFC 3551 L16 slot, but
-     * this engine writes LITTLE-endian samples - a compliant RFC 3551 L16
-     * sender would be byte-swapped, so PT 10 here is the project's LE
-     * convention, NOT interoperable RFC 3551 L16. A dynamic PT (96-127)
-     * avoids the association. */
-    if (pkt.pt == CONFIG_MICHI_AUDIO_RTP_PT_S24LE) {
-        /* Declared meta, NOT supported in phase 11: reject. */
-        DROP_LOG(s, "RTP PT %u (S24LE) rejected: declared, not supported in phase 11",
-                 (unsigned)pkt.pt);
-        m_add(&s_metrics.drops_pt_s24le, 1);
-        return;
-    }
-    if (pkt.pt != CONFIG_MICHI_AUDIO_RTP_PT_S16LE) {
-        DROP_LOG(s, "RTP PT %u rejected (only %d = S16LE is accepted)",
-                 (unsigned)pkt.pt, CONFIG_MICHI_AUDIO_RTP_PT_S16LE);
+    const michi_rtp_guard_verdict_t verdict = michi_rtp_guard_classify(
+        &pkt, &s->guard, from.sin_addr.s_addr);
+    switch (verdict) {
+    case MICHI_RTP_GUARD_OK:
+        break;
+    case MICHI_RTP_GUARD_PT_MISMATCH:
+        DROP_LOG(s, "RTP PT %u rejected (canonical PT is %u)",
+                 (unsigned)pkt.pt, (unsigned)MICHI_AUDIO_RTP_PT_S16LE);
         m_add(&s_metrics.drops_pt_other, 1);
         return;
-    }
-    if (s->ssrc_filter != 0 && pkt.ssrc != s->ssrc_filter) {
-        DROP_LOG(s, "RTP SSRC 0x%08" PRIx32 " filtered (session accepts 0x%08" PRIx32 ")",
-                 pkt.ssrc, s->ssrc_filter);
+    case MICHI_RTP_GUARD_SSRC_MISMATCH:
+        DROP_LOG(s, "RTP SSRC 0x%08" PRIx32 " rejected (session accepts "
+                    "0x%08" PRIx32 ")",
+                 pkt.ssrc, s->ssrc);
         m_add(&s_metrics.drops_ssrc_filtered, 1);
+        return;
+    case MICHI_RTP_GUARD_SOURCE_MISMATCH:
+        DROP_LOG(s, "RTP datagram rejected: source IP is not the HTTP "
+                    "request peer");
+        m_add(&s_metrics.drops_source_ip, 1);
+        return;
+    case MICHI_RTP_GUARD_SIZE_MISMATCH:
+        DROP_LOG(s, "payload %u bytes rejected (canonical payload is %u "
+                    "bytes)",
+                 (unsigned)pkt.payload_len,
+                 (unsigned)MICHI_AUDIO_RTP_PAYLOAD_BYTES);
+        m_add(&s_metrics.drops_payload_geometry, 1);
+        return;
+    case MICHI_RTP_GUARD_MALFORMED:
+    default:
+        /* Unreachable: the parse above succeeded. */
+        m_add(&s_metrics.drops_malformed, 1);
         return;
     }
 
     m_add(&s_metrics.received, 1);
 
-    /* Source registration (phase 12): the first packet ACCEPTED into the
-     * stream seeds the peer + SSRC snapshots for the session layer. A
-     * packet rejected by stream_policy (e.g. payload geometry) never
-     * registers; the next accepted one overwrites. */
-    const bool was_unseeded = !s->ssrc_valid;
     if (!stream_policy(s, &pkt)) {
         return; /* dropped by the policy (metrics already updated) */
-    }
-    if (was_unseeded) {
-        portENTER_CRITICAL(&s_lock);
-        s_session_peer = from.sin_addr;
-        s_session_ssrc = pkt.ssrc;
-        s_session_ssrc_valid = true;
-        s_session_peer_valid = true;
-        portEXIT_CRITICAL(&s_lock);
-        ESP_LOGI(TAG, "session: source registered ssrc=0x%08" PRIx32,
-                 pkt.ssrc);
     }
 
     m_set(&s_metrics.last_seq, pkt.seq);
@@ -491,9 +438,9 @@ static void session_recv(session_t *s)
     metrics_live(s);
 
     /* Jitter EWMA (no RTCP in this phase): expected arrival = first
-     * arrival + (ts - base_ts) / sample_rate. uint64 accumulation (no wrap
-     * of jitter_us*15 at ~4.8 min) and sample clamp (a sender stall is not
-     * jitter; a pathological sample must not pin the estimate). */
+     * arrival + (ts - base_ts) / sample_rate. uint64 accumulation (no
+     * wrap of jitter_us*15 at ~4.8 min) and sample clamp (a sender
+     * stall is not jitter). */
     const uint32_t ts_delta = pkt.timestamp - s->base_ts;
     const int64_t expected_us = s->base_time_us +
                                 (int64_t)ts_delta * 1000000 / MICHI_AUDIO_SAMPLE_RATE;
@@ -519,7 +466,7 @@ static uint32_t prefill_target(const session_t *s)
         prefill_ms = CONFIG_MICHI_AUDIO_JITTER_MAX_MS;
     }
     if (s->samples_per_packet == 0) {
-        return 1; /* packet geometry unknown: any first packet seeds it */
+        return 1; /* defensive: canonical geometry is fixed at 480 */
     }
     uint32_t packet_ms = (uint32_t)((uint64_t)s->samples_per_packet * 1000 /
                                     MICHI_AUDIO_SAMPLE_RATE);
@@ -531,12 +478,12 @@ static uint32_t prefill_target(const session_t *s)
 }
 
 /* Receive + insert until the buffer holds prefill_target(s) packets, the
- * deadline passes or the session is stopped. */
+ * deadline passes, the session is paused or the session is stopped. */
 static void session_fill(session_t *s, uint32_t deadline_ms)
 {
     const uint32_t start_ms = (uint32_t)(esp_timer_get_time() / 1000);
     for (;;) {
-        if (!s_session_run || s->jb.count >= prefill_target(s)) {
+        if (!s_session_run || s_paused || s->jb.count >= prefill_target(s)) {
             return;
         }
         const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
@@ -623,10 +570,10 @@ static bool session_drain(session_t *s)
  * Session task (owns the socket and the jitter buffer; self-deletes)
  * ------------------------------------------------------------------ */
 
-/* F15: session self-end failures go through michi_state_report_error -
- * the cause is captured directly (guaranteed under the state mux) and
- * the bus broadcast is best-effort. Called ONLY from the session
- * self-end paths (never on stop() teardown). */
+/* Session self-end failures go through michi_state_report_error - the
+ * cause is captured directly (guaranteed under the state mux) and the
+ * bus broadcast is best-effort. Called ONLY from the session self-end
+ * paths (never on stop() teardown). */
 static void session_post_error(esp_err_t data)
 {
     (void)michi_state_report_error(MICHI_EVENT_ERROR, (uint32_t)data);
@@ -635,39 +582,13 @@ static void session_post_error(esp_err_t data)
 static void session_task(void *arg)
 {
     session_t *s = (session_t *)arg;
-    bool self_end = false; /* the task ended by itself, not via stop() */
+    bool self_end = false;  /* the task ended by itself, not via stop() */
+    bool was_paused = false;
 
     if (!s_session_run) {
-        /* stop() raced with task creation: never open the port. */
+        /* stop() raced with task creation: never touch the pipeline. */
         goto out;
     }
-
-    s->sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (s->sock < 0) {
-        ESP_LOGE(TAG, "session: socket() failed (errno %d)", errno);
-        session_post_error(ESP_FAIL);
-        self_end = true;
-        goto out;
-    }
-    struct timeval tv = {
-        .tv_sec = 0,
-        .tv_usec = MICHI_AUDIO_SESSION_SOCKET_TIMEOUT_MS * 1000,
-    };
-    setsockopt(s->sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-    struct sockaddr_in addr = {0};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(s->port);
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    if (bind(s->sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        ESP_LOGE(TAG, "session: bind :%u failed (errno %d)", (unsigned)s->port, errno);
-        session_post_error(ESP_FAIL);
-        self_end = true;
-        goto out;
-    }
-    s_session_active = true;
-    ESP_LOGI(TAG, "session: udp :%u ssrc=%s", (unsigned)s->port,
-             s->ssrc_filter != 0 ? "filtered" : "first-seen");
 
     /* Prefill before the first write (deadline-bounded: on expiry the
      * session starts with whatever arrived - logged). */
@@ -682,7 +603,22 @@ static void session_task(void *arg)
     }
 
     while (s_session_run) {
+        const bool paused = s_paused;
         session_recv(s);
+        if (paused) {
+            /* Paused: receive + count, discard. The playhead resync
+             * happens on the first unpaused iteration below. */
+            was_paused = true;
+            continue;
+        }
+        if (was_paused) {
+            was_paused = false;
+            jb_flush(&s->jb);
+            s->playhead = (uint16_t)(s->last_seq + 1);
+            s->last_played_ts = 0;
+            s->in_underrun = false;
+            metrics_live(s);
+        }
         if (!session_drain(s)) {
             ESP_LOGE(TAG, "session: pipeline rejected a write - ending session");
             session_post_error(ESP_ERR_INVALID_STATE);
@@ -691,8 +627,9 @@ static void session_task(void *arg)
             break;
         }
         if (s->jb.count == 0) {
-            /* Underrun: explicit silence keeps the clocks running, then a
-             * brief re-prefill resyncs the playhead to the next packet. */
+            /* Underrun: explicit silence keeps the clocks running, then
+             * a brief re-prefill resyncs the playhead to the next
+             * packet. */
             if (!s->in_underrun) {
                 s->in_underrun = true;
                 ESP_LOGW(TAG, "underrun: jitter buffer empty - explicit "
@@ -718,12 +655,12 @@ static void session_task(void *arg)
 
 out:
     if (self_end) {
-        /* The session ended BY ITSELF (pipeline write failure, socket/bind
-         * failure): clear the active flag so session_start() can open a new
-         * session. When stop() initiated the teardown it clears the flag
-         * after the join; this local flag guarantees we never stomp a NEW
-         * session's active bit (the clear happens strictly before the done
-         * flag, which is what a new session_start() waits on). */
+        /* The session ended BY ITSELF (pipeline write failure): clear
+         * the active flag so session_start() can open a new session.
+         * When stop() initiated the teardown it clears the flag after
+         * the join; this local flag guarantees we never stomp a NEW
+         * session's active bit (the clear happens strictly before the
+         * done flag, which is what a new session_start() waits on). */
         portENTER_CRITICAL(&s_lock);
         s_session_active = false;
         portEXIT_CRITICAL(&s_lock);
@@ -754,8 +691,8 @@ static esp_err_t output_ops_prepare(uint32_t sample_rate, uint8_t bit_depth,
         channels == MICHI_AUDIO_CHANNELS) {
         return ESP_OK;
     }
-    ESP_LOGW(TAG, "prepare: %" PRIu32 "/%u/%u not supported (phase 11 supports "
-                  "%d/%d/%d; other profiles are declared future metas)",
+    ESP_LOGW(TAG, "prepare: %" PRIu32 "/%u/%u not supported (canonical "
+                  "profile is %d/%d/%d)",
              sample_rate, bit_depth, channels, MICHI_AUDIO_SAMPLE_RATE,
              MICHI_AUDIO_BIT_DEPTH, MICHI_AUDIO_CHANNELS);
     return ESP_ERR_NOT_SUPPORTED;
@@ -814,15 +751,19 @@ esp_err_t michi_audio_init(void)
     if (s_initialized) {
         return ESP_OK; /* idempotent */
     }
+    /* The Kconfig range pins MICHI_AUDIO_RTP_PT_S16LE to 97 at BUILD
+     * time (a stale sdkconfig carrying another PT fails configuration,
+     * never silently ships a non-canonical device). */
+    if (MICHI_AUDIO_RX_BUF_BYTES < (int)MICHI_AUDIO_RTP_PAYLOAD_BYTES + 12) {
+        ESP_LOGE(TAG, "init: RX buffer %d is smaller than the canonical "
+                      "12-byte header + %u-byte payload",
+                 MICHI_AUDIO_RX_BUF_BYTES,
+                 (unsigned)MICHI_AUDIO_RTP_PAYLOAD_BYTES);
+        return ESP_ERR_INVALID_ARG;
+    }
     if (CONFIG_MICHI_AUDIO_JITTER_MAX_MS < MICHI_AUDIO_PACKET_MS_ASSUMED) {
         ESP_LOGE(TAG, "init: MICHI_AUDIO_JITTER_MAX_MS=%d is below one packet",
                  CONFIG_MICHI_AUDIO_JITTER_MAX_MS);
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (CONFIG_MICHI_AUDIO_RTP_PT_S16LE == CONFIG_MICHI_AUDIO_RTP_PT_S24LE) {
-        ESP_LOGE(TAG, "init: RTP payload types collide: PT %d cannot serve "
-                      "both S16LE and S24LE",
-                 CONFIG_MICHI_AUDIO_RTP_PT_S16LE);
         return ESP_ERR_INVALID_ARG;
     }
     if (CONFIG_MICHI_AUDIO_PREFILL_MS > CONFIG_MICHI_AUDIO_JITTER_MAX_MS) {
@@ -830,9 +771,10 @@ esp_err_t michi_audio_init(void)
                       "clamped at runtime",
                  CONFIG_MICHI_AUDIO_PREFILL_MS, CONFIG_MICHI_AUDIO_JITTER_MAX_MS);
     }
-    ESP_LOGI(TAG, "init: pt_s16le=%d pt_s24le=%d jitter=%d ms (%d packets) "
+    ESP_LOGI(TAG, "init: pt=%d payload=%u bytes jitter=%d ms (%d packets) "
                   "prefill=%d ms rx_buf=%d stack=%d",
-             CONFIG_MICHI_AUDIO_RTP_PT_S16LE, CONFIG_MICHI_AUDIO_RTP_PT_S24LE,
+             CONFIG_MICHI_AUDIO_RTP_PT_S16LE,
+             (unsigned)MICHI_AUDIO_RTP_PAYLOAD_BYTES,
              CONFIG_MICHI_AUDIO_JITTER_MAX_MS, MICHI_AUDIO_MAX_PACKETS,
              CONFIG_MICHI_AUDIO_PREFILL_MS, MICHI_AUDIO_RX_BUF_BYTES,
              CONFIG_MICHI_AUDIO_TASK_STACK_BYTES);
@@ -840,19 +782,94 @@ esp_err_t michi_audio_init(void)
     return ESP_OK;
 }
 
-esp_err_t michi_audio_session_start(uint16_t port, uint32_t ssrc_filter)
+/* Create the UDP socket and bind it: port 0 = the receiver picks a free
+ * port in 49152..65535 (random start, full sweep). Returns the socket fd
+ * (>= 0) with *out_port set, or -1 with the socket already closed. */
+static int session_bind_socket(uint16_t port, uint16_t *out_port)
+{
+    const int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock < 0) {
+        ESP_LOGE(TAG, "session: socket() failed (errno %d)", errno);
+        return -1;
+    }
+    struct timeval tv = {
+        .tv_sec = 0,
+        .tv_usec = MICHI_AUDIO_SESSION_SOCKET_TIMEOUT_MS * 1000,
+    };
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    if (port != 0) {
+        struct sockaddr_in addr = {0};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(port);
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+            *out_port = port;
+            return sock;
+        }
+        ESP_LOGE(TAG, "session: bind :%u failed (errno %d)",
+                 (unsigned)port, errno);
+        close(sock);
+        return -1;
+    }
+
+    const uint32_t span = MICHI_AUDIO_STREAM_PORT_MAX -
+                          MICHI_AUDIO_STREAM_PORT_MIN + 1;
+    const uint32_t start = MICHI_AUDIO_STREAM_PORT_MIN + (esp_random() % span);
+    for (uint32_t i = 0; i < span; i++) {
+        const uint16_t cand = (uint16_t)(MICHI_AUDIO_STREAM_PORT_MIN +
+            ((start - MICHI_AUDIO_STREAM_PORT_MIN + i) % span));
+        struct sockaddr_in addr = {0};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(cand);
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+            *out_port = cand;
+            return sock;
+        }
+    }
+    ESP_LOGE(TAG, "session: no free UDP port in %d..%d",
+             MICHI_AUDIO_STREAM_PORT_MIN, MICHI_AUDIO_STREAM_PORT_MAX);
+    close(sock);
+    return -1;
+}
+
+esp_err_t michi_audio_session_start(uint16_t port, uint32_t ssrc,
+                                    const char *source_ip)
 {
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
+    }
+    if (ssrc == 0) {
+        ESP_LOGW(TAG, "session start: SSRC 0 is not negotiable");
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (source_ip == NULL || source_ip[0] == '\0') {
+        ESP_LOGW(TAG, "session start: missing source IP");
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (port != 0 &&
+        (port < MICHI_AUDIO_STREAM_PORT_MIN ||
+         port > MICHI_AUDIO_STREAM_PORT_MAX)) {
+        ESP_LOGW(TAG, "session start: port %u outside %d..%d",
+                 (unsigned)port, MICHI_AUDIO_STREAM_PORT_MIN,
+                 MICHI_AUDIO_STREAM_PORT_MAX);
+        return ESP_ERR_INVALID_ARG;
+    }
+    struct in_addr peer;
+    if (ip4addr_aton(source_ip, &peer) == 0) {
+        ESP_LOGW(TAG, "session start: source IP '%s' is not a dotted IPv4",
+                 source_ip);
+        return ESP_ERR_INVALID_ARG;
     }
     if (s_session_task != NULL) {
         if (!s_session_done) {
             ESP_LOGE(TAG, "session start: a session task already exists");
             return ESP_ERR_INVALID_STATE;
         }
-        /* Stale handle: the previous task self-deleted (e.g. a bind
-         * failure) before session_start assigned the handle. Clear it -
-         * the task is gone (done flag observed). */
+        /* Stale handle: the previous task self-deleted before
+         * session_start assigned the handle. Clear it - the task is gone
+         * (done flag observed). */
         s_session_task = NULL;
         s_session_done = false;
     }
@@ -883,8 +900,9 @@ esp_err_t michi_audio_session_start(uint16_t port, uint32_t ssrc_filter)
 
     portENTER_CRITICAL(&s_lock);
     memset(&s_metrics, 0, sizeof(s_metrics)); /* fresh counters per session */
-    s_session_ssrc_valid = false;             /* source registered by the first accepted packet */
-    s_session_peer_valid = false;
+    s_session_ssrc = ssrc;  /* the NEGOTIATED source (no first-seen) */
+    s_session_peer = peer;
+    s_paused = false;
     portEXIT_CRITICAL(&s_lock);
 
     session_t *s = heap_caps_calloc(1, sizeof(*s), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -893,8 +911,12 @@ esp_err_t michi_audio_session_start(uint16_t port, uint32_t ssrc_filter)
         return ESP_ERR_NO_MEM;
     }
     s->port = port;
-    s->ssrc_filter = ssrc_filter;
+    s->ssrc = ssrc;
     s->sock = -1;
+    s->samples_per_packet = MICHI_AUDIO_SAMPLES_PER_PACKET;
+    s->guard.pt = (uint8_t)MICHI_AUDIO_RTP_PT_S16LE;
+    s->guard.ssrc = ssrc;
+    s->guard.source_be32 = peer.s_addr;
     s->jb.entries = heap_caps_calloc(MICHI_AUDIO_MAX_PACKETS, sizeof(jb_entry_t),
                                      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     s->jb.pool = heap_caps_calloc((size_t)MICHI_AUDIO_MAX_PACKETS * MICHI_AUDIO_RX_BUF_BYTES,
@@ -916,12 +938,38 @@ esp_err_t michi_audio_session_start(uint16_t port, uint32_t ssrc_filter)
         return ESP_ERR_NO_MEM;
     }
 
+    /* Bind BEFORE any task exists: a bind/socket failure is reported to
+     * the caller and NOTHING of the session survives - the caller rolls
+     * back to idle (all-or-nothing, no phantom session). */
+    uint16_t bound = 0;
+    s->sock = session_bind_socket(port, &bound);
+    if (s->sock < 0) {
+        free(s->jb.entries);
+        free(s->jb.pool);
+        free(s->recv_buf);
+        free(s->zeros);
+        free(s);
+        return ESP_FAIL;
+    }
+
+    portENTER_CRITICAL(&s_lock);
+    s_session_port = bound;
+    /* Active BEFORE the task exists: the invariant "active flag set =>
+     * a live bound session" holds in both directions - a task that
+     * self-ends clears the flag (strictly before its done flag), and a
+     * failed task creation clears it here. */
+    s_session_active = true;
+    portEXIT_CRITICAL(&s_lock);
     s_session_run = true;
     TaskHandle_t task = NULL;
     if (xTaskCreate(session_task, "michi_session", CONFIG_MICHI_AUDIO_TASK_STACK_BYTES,
                     s, MICHI_AUDIO_SESSION_TASK_PRIO, &task) != pdPASS) {
         ESP_LOGE(TAG, "session start: task creation failed");
         s_session_run = false;
+        portENTER_CRITICAL(&s_lock);
+        s_session_active = false;
+        portEXIT_CRITICAL(&s_lock);
+        close(s->sock);
         free(s->jb.entries);
         free(s->jb.pool);
         free(s->recv_buf);
@@ -930,8 +978,8 @@ esp_err_t michi_audio_session_start(uint16_t port, uint32_t ssrc_filter)
         return ESP_ERR_NO_MEM;
     }
     s_session_task = task;
-    ESP_LOGI(TAG, "session: task created (port %u, ssrc filter %s)",
-             (unsigned)port, ssrc_filter != 0 ? "on" : "off");
+    ESP_LOGI(TAG, "session: udp :%u ssrc=0x%08" PRIx32 " peer=%s",
+             (unsigned)bound, ssrc, source_ip);
     return ESP_OK;
 }
 
@@ -960,6 +1008,9 @@ esp_err_t michi_audio_session_stop(void)
     s_session_task = NULL;
     s_session_done = false;
     s_session_active = false; /* the task is gone: the session is over */
+    portENTER_CRITICAL(&s_lock);
+    s_paused = false;
+    portEXIT_CRITICAL(&s_lock);
     ESP_LOGI(TAG, "session: stopped");
     return ESP_OK;
 }
@@ -967,6 +1018,30 @@ esp_err_t michi_audio_session_stop(void)
 bool michi_audio_session_active(void)
 {
     return s_session_active;
+}
+
+void michi_audio_session_set_paused(bool paused)
+{
+    portENTER_CRITICAL(&s_lock);
+    s_paused = paused;
+    portEXIT_CRITICAL(&s_lock);
+}
+
+esp_err_t michi_audio_session_get_port(uint16_t *out_port)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (out_port == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_session_active) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    portENTER_CRITICAL(&s_lock);
+    *out_port = s_session_port;
+    portEXIT_CRITICAL(&s_lock);
+    return ESP_OK;
 }
 
 esp_err_t michi_audio_session_get_ssrc(uint32_t *out_ssrc)
@@ -977,13 +1052,11 @@ esp_err_t michi_audio_session_get_ssrc(uint32_t *out_ssrc)
     if (out_ssrc == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (!s_session_active || !s_session_ssrc_valid) {
-        /* Honest: no session, or no packet accepted yet (ssrc_filter=0
-         * registers on the FIRST accepted packet). */
+    if (!s_session_active) {
         return ESP_ERR_NOT_FOUND;
     }
     portENTER_CRITICAL(&s_lock);
-    *out_ssrc = s_session_ssrc;
+    *out_ssrc = s_session_ssrc; /* the negotiated value, set at start */
     portEXIT_CRITICAL(&s_lock);
     return ESP_OK;
 }
@@ -996,7 +1069,7 @@ esp_err_t michi_audio_session_get_peer(char *out, size_t out_len)
     if (out == NULL || out_len == 0) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (!s_session_active || !s_session_peer_valid) {
+    if (!s_session_active) {
         return ESP_ERR_NOT_FOUND;
     }
     struct in_addr peer;
@@ -1073,8 +1146,8 @@ esp_err_t michi_audio_boot_dac(void)
         ESP_LOGI(TAG, "boot_dac: pipeline already running (retry path)");
     }
 
-    /* With BCLK/LRCK continuous the PCM5122 PLL can lock: re-run the phase-2
-     * start for the validated profile. Honest on failure: the error is
+    /* With BCLK/LRCK continuous the PCM5122 PLL can lock: re-run the
+     * start for the canonical profile. Honest on failure: the error is
      * propagated and the profile stays diagnostic; the clocks are left
      * running so a later retry works. */
     const esp_err_t err = michi_dac_start(MICHI_AUDIO_SAMPLE_RATE,
