@@ -3,4 +3,5 @@ idf_component_register(
     INCLUDE_DIRS "include"
     REQUIRES nvs_flash esp_timer esp_hw_support freertos
              mdns michi_identity michi_product_profile json lwip
+             michi_time
 )

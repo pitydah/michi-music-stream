@@ -1,0 +1,44 @@
+menu "Michi Music Stream Time"
+
+    comment "SNTP wall clock for signed discovery (P0-02): the signed announce carries a timestamp that Michi Link rejects outside +-90 s. Requires CONFIG_LWIP_SNTP=y (set in sdkconfig.defaults)."
+
+    config MICHI_TIME_SNTP_SERVER
+        string "SNTP server hostname"
+        default "pool.ntp.org"
+        help
+          NTP server used by the esp_netif SNTP client (one server,
+          the standard public pool). Nothing sensitive - the firmware
+          only queries it.
+
+    config MICHI_TIME_SYNC_TIMEOUT_MS
+        int "SNTP sync wait timeout per attempt (ms)"
+        default 10000
+        range 1000 60000
+        help
+          Bound of ONE esp_netif_sntp_sync_wait round in the dedicated
+          sync task. The wait never runs on the esp_event task: GOT_IP
+          handlers stay non-blocking (P0-11). On timeout the task
+          restarts the SNTP client and retries (see
+          MICHI_TIME_SYNC_RETRIES).
+
+    config MICHI_TIME_SYNC_RETRIES
+        int "SNTP sync attempts per network up"
+        default 2
+        range 1 10
+        help
+          How many bounded sync_wait rounds the sync task runs after
+          each network-up before giving up for that round. Exhaustion
+          conserves the last synchronized state (documented policy in
+          michi_time.h) - it never flips a previously synchronized
+          device back to unsynchronized.
+
+    config MICHI_TIME_TASK_STACK_BYTES
+        int "Time sync task stack (bytes)"
+        default 3072
+        range 2048 8192
+        help
+          Stack of the "michi_time_sync" task (priority 2). It blocks
+          on semaphores almost forever and only runs the bounded
+          sync_wait rounds plus a few flag stores per sync event.
+
+endmenu

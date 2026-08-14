@@ -6,6 +6,6 @@
 idf_component_register(
     SRCS "michi_wifi.c"
     INCLUDE_DIRS "include"
-    REQUIRES michi_state michi_discovery esp_wifi esp_netif esp_event
+    REQUIRES michi_state michi_discovery michi_time esp_wifi esp_netif esp_event
              nvs_flash wifi_provisioning bt freertos esp_timer json
 )

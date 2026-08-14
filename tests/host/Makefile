@@ -54,7 +54,7 @@ IDENTITY_INC = -I$(IDENTITY_DIR)/include -I$(IDENTITY_DIR)/monocypher \
 
 TESTS := test_semver test_pairing_validators test_michi_identity \
          test_michi_pairing test_michi_session test_rtp_guard \
-         $(if $(filter yes,$(HAS_CJSON)),test_json_helpers test_http_canonical test_michi_discovery test_capability_parity test_pairing_http test_session_http)
+         $(if $(filter yes,$(HAS_CJSON)),test_json_helpers test_http_canonical test_michi_discovery test_michi_time test_capability_parity test_pairing_http test_session_http)
 
 .PHONY: all test clean
 
@@ -67,6 +67,7 @@ test: all
 	    ./test_json_helpers; \
 	    ./test_http_canonical; \
 	    ./test_michi_discovery; \
+	    ./test_michi_time; \
 	    ./test_capability_parity; \
 	    ./test_pairing_http; \
 	    ./test_session_http; \
@@ -74,6 +75,7 @@ test: all
 	    echo "SKIP test_json_helpers (libcjson-dev not installed - CI installs it)"; \
 	    echo "SKIP test_http_canonical (libcjson-dev not installed - CI installs it)"; \
 	    echo "SKIP test_michi_discovery (libcjson-dev not installed - CI installs it)"; \
+	    echo "SKIP test_michi_time (libcjson-dev not installed - CI installs it)"; \
 	    echo "SKIP test_capability_parity (libcjson-dev not installed - CI installs it)"; \
 	    echo "SKIP test_pairing_http (libcjson-dev not installed - CI installs it)"; \
 	    echo "SKIP test_session_http (libcjson-dev not installed - CI installs it)"; \
@@ -193,6 +195,34 @@ test_michi_discovery: test_michi_discovery.c $(DISCOVERY_SRC) \
 	    $(DISCOVERY_SRC) $(FIRMWARE)/michi_product_profile/capabilities.c \
 	    $(IDENTITY_SRC) $(CJSON_LIBS)
 
+# michi_time + the michi_discovery RUNTIME (P0-02 clock gate): compiles
+# the REAL michi_time.c (esp_netif_sntp shim + time() override +
+# pthread-backed FreeRTOS task shim - the real sync task runs) and the
+# REAL michi_discovery.c against socket/mdns/esp_mac shims with
+# datagram capture, proving the gate end to end: no signed announce
+# without a synchronized clock, immediate resume via the sync callback,
+# reconnect conservation/revalidation and SNTP error degradation.
+TIME_DIR = $(FIRMWARE)/michi_time
+TIME_SRC = $(TIME_DIR)/michi_time.c shim/esp_netif_sntp.c shim/time_shim.c \
+           shim/lwip_sockets.c shim/mdns_shim.c shim/esp_mac_shim.c \
+           shim/freertos/task.c shim/esp_timer.c \
+           shim/michi_product_profile_fake.c
+TIME_INC = -I$(TIME_DIR)/include -I$(TIME_DIR)
+
+test_michi_time: test_michi_time.c $(TIME_SRC) $(DISCOVERY_SRC) \
+                 $(DISCOVERY_DIR)/michi_discovery.c \
+                 $(DISCOVERY_DIR)/include/michi_discovery.h \
+                 $(DISCOVERY_DIR)/discovery_nvs.h \
+                 $(TIME_DIR)/include/michi_time.h \
+                 $(FIRMWARE)/michi_product_profile/capabilities.c \
+                 $(IDENTITY_SRC) $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(DISCOVERY_INC) $(IDENTITY_INC) \
+	    $(TIME_INC) $(IDENTITY_DEFS) $(CJSON_CFLAGS) -pthread -o $@ \
+	    test_michi_time.c $(TIME_SRC) $(DISCOVERY_SRC) \
+	    $(DISCOVERY_DIR)/michi_discovery.c \
+	    $(FIRMWARE)/michi_product_profile/capabilities.c \
+	    $(IDENTITY_SRC) $(CJSON_LIBS)
+
 # P0-01 capability parity: compiles the SAME sources the firmware runs -
 # the canonical capability table, the discovery announce builder and the
 # HTTP /server/info builder - and asserts the shared feature subset
@@ -213,5 +243,6 @@ test_capability_parity: test_capability_parity.c \
 clean:
 	rm -f test_semver test_pairing_validators test_json_helpers \
 	      test_http_canonical test_michi_identity test_michi_discovery \
-	      test_michi_pairing test_pairing_http test_michi_session \
-	      test_rtp_guard test_session_http test_capability_parity
+	      test_michi_time test_michi_pairing test_pairing_http \
+	      test_michi_session test_rtp_guard test_session_http \
+	      test_capability_parity

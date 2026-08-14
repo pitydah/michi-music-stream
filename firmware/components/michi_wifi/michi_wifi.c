@@ -83,6 +83,7 @@
 
 #include "michi_discovery.h"
 #include "michi_state.h"
+#include "michi_time.h"
 #include "michi_wifi.h"
 
 #define TAG "michi_wifi"
@@ -420,6 +421,15 @@ static void handle_got_ip(const ip_event_got_ip_t *event)
                  esp_err_to_name(d_err));
     }
 
+    /* Wall clock (P0-02): start/restart SNTP only once the STA has an
+     * IP; the signed announce stays gated until a fresh sync lands
+     * (michi_time sync callback resumes it immediately). */
+    const esp_err_t t_err = michi_time_start();
+    if (t_err != ESP_OK) {
+        ESP_LOGW(TAG, "time: sync start failed: %s (signed announces "
+                 "stay gated)", esp_err_to_name(t_err));
+    }
+
     /* F5: replay only the events whose mapping applies to the CURRENT
      * state (no warn noise, e.g. on IP renewal while IDLE). When the FSM
      * is still BOOTING/SELF_TEST nothing is posted here - the
@@ -440,6 +450,11 @@ static void handle_disconnected(void)
     /* Signed discovery: close the UDP socket, stop the announce timer
      * and retire the mDNS service on link loss (contract 2.2). */
     (void)michi_discovery_stop();
+
+    /* Wall clock (P0-02): conserve the last sync state on link loss
+     * (documented policy in michi_time.h); the next GOT_IP revalidates
+     * with a fresh SNTP sync. */
+    (void)michi_time_stop();
 
     portENTER_CRITICAL(&s_mux);
     const bool prov_active = s_prov_active;
@@ -1112,6 +1127,16 @@ esp_err_t michi_wifi_init(void)
         return err;
     }
 
+    /* Wall clock (P0-02): SNTP config + sync task. Initialized BEFORE
+     * michi_discovery so the discovery sync-callback registration has
+     * a live time subsystem. A failure is logged and the signed
+     * announce stays gated - the rest of the firmware runs unaffected. */
+    err = michi_time_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "init: michi_time_init failed: %s (signed "
+                 "announces stay gated)", esp_err_to_name(err));
+    }
+
     /* Signed discovery (MS-05): owned by michi_discovery - mDNS stack,
      * announce timer and UDP socket. Runs here (not in app_main) so the
      * network bring-up and the announce lifecycle share one place; the
@@ -1395,6 +1420,11 @@ esp_err_t michi_wifi_shutdown(void)
     }
     esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, event_handler);
     esp_event_handler_unregister(IP_EVENT, ESP_EVENT_ANY_ID, event_handler);
+
+    /* Wall clock (P0-02): join the sync task FIRST - after it exits no
+     * michi_time sync callback (discovery announce resume) can race the
+     * discovery teardown below - then deinit SNTP. */
+    (void)michi_time_shutdown();
 
     /* Signed discovery: retire mDNS, close the UDP socket, stop the
      * timer and free the mDNS stack. */
