@@ -10,8 +10,8 @@
 | DAC | Propuesto: PCM5122 (TI, SNR 112 dB, 384 kHz máx) |
 | Buffer salida | Propuesto: NE5532 (opamp doble) |
 | Salida | RCA estéreo (2 × hembra dorada) |
-| Audio máx. | PCM 24-bit / 96 kHz / 2 canales |
-| Codecs | `pcm_s16le`, `pcm_s24le`, `opus` |
+| Audio máx. | PCM 16-bit / 48 kHz / 2 canales (certificado hoy) |
+| Codecs | `pcm_s16le` (certificado hoy) |
 | OTA | Sí |
 
 ## Componentes propuestos
@@ -35,6 +35,11 @@
 >   específicos (10 µF tantalio o 22 µF cerámico).
 >
 > No considerar esta BOM como definitiva sin pruebas en PCB real.
+>
+> **Capacidades futuras:** el silicio admite PCM 24-bit / 96 kHz, pero hoy el
+> firmware solo implementa y anuncia `pcm_s16le` 48 kHz / 16 bit / 2 canales.
+> S24LE y Opus son trabajo futuro (ver `docs/ROADMAP.md`); no hay camino
+> implementado ni anunciado.
 
 ## Diagrama
 

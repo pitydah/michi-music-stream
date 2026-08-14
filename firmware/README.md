@@ -49,7 +49,8 @@ firmware/
     │   ├── CMakeLists.txt
     │   ├── include/
     │   │   └── michi_http.h       # Handler contract + checked JSON helpers
-    │   └── http_server.c          # /api/v1/receiver/info + /firmware
+    │   └── http_server.c          # Canonical v1-lite routes: /api/v1/server/info,
+    │                              # /api/v1/pair/*, /api/v1/receiver-lite/*
     ├── michi_state/               # Global state machine + event bus (phase 5)
     │   ├── CMakeLists.txt
     │   ├── Kconfig                # Queue len, FSM task stack, observer count
@@ -139,10 +140,13 @@ Build and flash configuration lives in `sdkconfig.defaults` (target, 16 MB flash
 custom partition table, bootloader app rollback, BT enabled with the
 NimBLE host for the phase-9 BLE provisioning transport).
 
-External peripheral pins (DAC I2C/I2S, LED, pairing button) and the
-`device_id` announced by the API (`MICHI_DEVICE_ID`) are configurable
-through `menuconfig` under **Michi Music Stream Hardware**
-(`main/Kconfig.projbuild`). The defaults target free GPIOs that do not
+External peripheral pins (DAC I2C/I2S, LED, pairing button) are
+configurable through `menuconfig` under **Michi Music Stream Hardware**
+(`main/Kconfig.projbuild`). The device identity announced by
+`GET /api/v1/server/info` (`server_id`, UUID v4 persisted in NVS) comes
+from `michi_identity`, NOT from Kconfig (the legacy `MICHI_DEVICE_ID`
+option still exists in `Kconfig.projbuild` but is not consumed by any
+code). The defaults target free GPIOs that do not
 collide with the board pinout; see
 [Hardware validation pending](#hardware-validation-pending) before trusting
 them.
@@ -378,10 +382,12 @@ phase-2 hardcoded `mode=diagnostic` is gone). The boot screen title renders
 
 ## Phase 4 - P0 corrections
 
-The legacy prototype audit (`firmware/common`) found 12 P0 risks. Phase 4
-fixes them BY CONSTRUCTION in the new components that own them; the legacy
-code is NOT touched (it is deleted during the migration). Fixes that were
-already covered by earlier phases are documented as such.
+An audit of the legacy receiver prototype (the `firmware/common` +
+`standard`/`hifi` trees, removed in the convergence cleanup) found 12 P0
+risks. Phase 4 fixes them BY CONSTRUCTION in the new components that own
+them; the legacy code was NOT touched (it was deleted during the
+migration). Fixes that were already covered by earlier phases are
+documented as such.
 
 ### P0 table
 
@@ -402,20 +408,39 @@ already covered by earlier phases are documented as such.
 
 ### HTTP API: `components/michi_http`
 
-Phase 4 serves the migrated read-only endpoints on port 80, no auth (same
-surface as the legacy prototype): `GET /api/v1/receiver/info` and
-`GET /api/v1/receiver/firmware`. `/info` is built entirely from
-`michi_product_profile_get()` (`service=michi-link`, `name`, `device_id`
-from `MICHI_DEVICE_ID`, `api_version=v1-lite` for compatibility - phase 12
-aligns it, `firmware{version,build_date}`, `type`=tier, `output{...}`,
-`supported_codecs`, `features`); the profile gained a `build_date` field
-from the single version source `michi_version.h`. `michi_http_init()`
-propagates errors (boot continues, logged). Phase 12 adds the full
-receiver API on the same server (Bearer auth + permissions, sessions,
-pairing, diagnostics — see the Receiver API section below). Every
-handler follows the contract in `michi_http.h`: parse → copy ALL values
-to local buffers → delete → process → respond; cJSON pointers never
-survive `cJSON_Delete` and no macro yields a cJSON pointer.
+`michi_http` serves the **canonical receiver v1-lite surface** (the
+contract vendored in `contracts/michi-link/`) on port 80. The registered
+routes are exactly:
+
+- `GET /api/v1/server/info` — canonical profile (`service` =
+  `michi-stream-standard` | `michi-stream-hifi`, `server_id`, `version`,
+  `api_version=v1-lite`, `roles: ["audio_receiver"]`,
+  `identity_scheme: ed25519-blake3-v1`, `michi_id`, `public_key`, `auth`,
+  truthful `features`, `audio`) built from `michi_product_profile_get()`
+  and `michi_identity`.
+- `POST /api/v1/pair/start`, `GET /api/v1/pair/status`,
+  `POST /api/v1/pair/confirm` — RECEIVER_BUTTON pairing (physical window,
+  signed challenge, local PIN, receiver-issued token).
+- `POST|GET|PATCH|DELETE /api/v1/receiver-lite/session` — the single RTP
+  session lifecycle.
+- `POST /api/v1/receiver-lite/heartbeat` — lease renewal.
+- `PUT /api/v1/receiver-lite/now-playing`,
+  `GET /api/v1/receiver-lite/diagnostics`,
+  `GET|POST /api/v1/receiver-lite/firmware` — optional extensions; the
+  now-playing and firmware handlers are registered but answer
+  `501 NOT_IMPLEMENTED`, so their feature flags are `false` (a feature is
+  only `true` when its handler is implemented with a positive test).
+
+No legacy route is kept: every `/api/v1/receiver/*` and non-canonical
+`/api/v1/receiver-lite/*` path returns the canonical 404 error envelope.
+Every handler follows the contract in `michi_http.h`: parse → copy ALL
+values to local buffers → delete → process → respond; cJSON pointers never
+survive `cJSON_Delete` and no macro yields a cJSON pointer. Errors use the
+single canonical `{error:{code,message,request_id,details}}` envelope with
+UPPERCASE codes (`INVALID_REQUEST`, `UNAUTHORIZED`, `FORBIDDEN`,
+`NOT_FOUND`, `CONFLICT`, `RATE_LIMITED`, `NOT_IMPLEMENTED`,
+`INTERNAL_ERROR`). `michi_http_init()` propagates errors (boot continues,
+logged). See the Receiver API section below for the full endpoint contract.
 
 ### Audio output: `components/michi_audio_output`
 
@@ -551,7 +576,8 @@ from-keyed lookup advances the chain IDLE → SESSION_PENDING → BUFFERING →
 PLAYING — the same pattern as `MICHI_EVENT_PAIRING_STARTED`.
 
 Phase 14: the FSM captures the LAST error cause into a single slot
-(`michi_state_get_last_error()`, exposed by `GET /diagnostics` →
+(`michi_state_get_last_error()`, exposed by
+`GET /api/v1/receiver-lite/diagnostics` →
 `last_error`). Producers of `MICHI_EVENT_ERROR` (data = `esp_err_t`):
 michi_wifi when the retry chain exhausts
 (`ESP_ERR_WIFI_NOT_CONNECT`, before requesting `RECOVERABLE_ERROR`) and
@@ -860,8 +886,8 @@ announcements. It is the implementation of the P0-11 contract (non-blocking
   `MICHI_PROV_POP` (see below). The password is **never logged, not
   partially**: every log carries only the SSID. Verified by grepping the
   build tree for `CONFIG_MICHI_WIFI_SSID`/`CONFIG_MICHI_WIFI_PASSWORD` —
-  zero hits (the legacy `firmware/common`, `standard/`, `hifi/` builds
-  still carry them and are untouched, out of scope).
+  zero hits (the legacy `firmware/common`, `standard/`, `hifi/` trees
+  that still carried them were removed in the convergence cleanup).
 - **Non-blocking event handlers (P0-11)**: `esp_event` handlers only post
   FSM events and set flags. The reconnect with exponential backoff runs
   on a one-shot `esp_timer`; the blocking BLE bring-up
@@ -967,14 +993,17 @@ pending attempt.
 ### mDNS
 
 Advertised on `STA_GOT_IP`, retired on `STA_DISCONNECTED`:
-`_michi-receiver._tcp` on port 80 with TXT keys `name`, `tier`,
-`api_version`, `fw_version`, `board` — every value read FROM
-`michi_product_profile_get()` (no duplicated product strings; the profile
-gained the `api_version` field mirroring the HTTP contract "v1-lite").
-Hostname: `michi-` + last 4 MAC hex digits. mdns is a **managed
+`_michi-link._tcp` on the REAL HTTP port with TXT keys exactly
+`device_id`, `service`, `api_version`, `roles` (the plain role string
+`audio_receiver`, never JSON) and `michi_id` — `device_id` is the
+persistent `server_id` UUID and `michi_id` comes from
+`michi_identity_michi_id()` (contract section 2.2; no duplicated product
+strings). Hostname: `michi-` + last 4 MAC hex digits. mdns is a **managed
 component** (`espressif/mdns ^1.0.3` in `idf_component.yml`): the v5.3 IDF
 tree no longer ships an in-tree mdns, and the registry version uses
-`mdns_free()` instead of the old `mdns_stop()`.
+`mdns_free()` instead of the old `mdns_stop()`. The legacy
+`_michi-receiver._tcp` service type was removed with the convergence
+cleanup.
 
 ### Logs
 
@@ -990,58 +1019,56 @@ failure or retry chain exhausted), `off` (shutdown) — always with
 
 ## Pairing & security: `components/michi_pairing`
 
-Phase 10 adds the controller registry and the pairing window: the
-protocol that lets a controller (app/remote) authenticate with the
-device. It is a **from-scratch implementation** — the legacy
-`firmware/common/pairing.c` pattern (predictable `rand()` nonces, tokens
-stored in plaintext, window openable over HTTP) is deliberately NOT
-copied.
+The canonical RECEIVER_BUTTON pairing flow (contract section 2.3). The
+physical button is the ONLY authority that opens the pairing window; the
+protocol itself is a **from-scratch implementation** — the legacy
+prototype pattern (predictable `rand()` nonces, plaintext tokens, a
+window openable over HTTP) was removed with the legacy trees and is
+deliberately NOT reproduced.
 
 ### Hard rules
 
 1. **The physical button is the ONLY authority that opens the window.**
    `michi_pairing_open_window()` is called exclusively from the button
    path (`michi_button`, task context, in `handle_short_press`). There is
-   NO network-visible API that opens it; the phase-12 HTTP handlers can
-   only request/confirm challenges INSIDE a window already opened by the
-   button. (The legacy window-open-over-HTTP hole cannot recur.)
-2. **Cryptographic challenges**: 16 bytes from `esp_fill_random()` encoded
-   as 32 hex chars, bound to the current window AND to the initiator id
-   that requested it (single-slot: one active challenge per window; a new
-   `get_challenge` overwrites the previous challenge+owner pair, and
-   `confirm` only accepts the id that issued it). The challenge dies with
-   the window.
-3. **Tokens are stored as SHA-256 digests only** (`mbedtls_sha256`,
-   mbedTLS 3.6 of IDF 5.3): the receiver never sees a recoverable
-   credential. Validation = digest of the presented token compared in
-   constant time against the stored digest.
-4. **Constant-time comparisons** via `mbedtls_ct_memcmp`
-   (`mbedtls/constant_time.h`, available and unguarded in IDF 5.3 —
-   verified) for both the challenge and the token digests.
-5. **Per-controller permission bitmask** (see table below); new pairings
-   get `STATUS|PLAYBACK|VOLUME|SETTINGS`. The elevated bits are
-   documented as NOT granted by default — a grant-management flow is a
-   future phase.
-6. **Rate limiting per window**: max `MICHI_PAIRING_MAX_CHALLENGES_PER_WINDOW`
-   (3) challenge issues and max `MICHI_PAIRING_MAX_CONFIRM_ATTEMPTS` (5)
-   failed confirmations; exceeding the confirm limit CLOSES the window
-   (log + `MICHI_EVENT_PAIRING_WINDOW_CLOSED`, FSM PAIRING → IDLE) —
-   anti brute force. Attempts contract: every failed confirmation
-   consumes one attempt EXCEPT a malformed initiator id and
-   no-proof-issued (no challenge issued for the window), which are
-   rejected without consuming — they are not authentication attempts.
-7. **Zero secrets in logs**: challenge, token and digest VALUES are never
-   logged — only controller ids (not secret) and counters. Enforced by
-   design: no log format string in the component contains
-   `token`/`challenge`/`nonce`/`hash` (the verification grep passes; the
-   spec-proposed `challenge_count`/`confirm_failures` fields were renamed
-   `issued`/`failed` for exactly this reason).
-8. **Individual revocation**: `michi_pairing_revoke(controller_id)`.
-9. **Expiration**: `MICHI_PAIRING_WINDOW_SECONDS` (default 120) enforced
-   by a one-shot `esp_timer`; expiry, success, exhaustion and explicit
-   close all post `MICHI_EVENT_PAIRING_WINDOW_CLOSED` (PAIRING → IDLE).
+   NO network-visible API that opens it. Outside the window
+   `POST /pair/start` answers `403 FORBIDDEN`.
+2. **Window semantics**: 120 s on the MONOTONIC clock
+   (`CONFIG_MICHI_PAIRING_WINDOW_SECONDS`). Rebooting closes the window;
+   opening it again REPLACES the previous window and drops pending
+   pairing sessions.
+3. **Signed challenge**: `POST /pair/start` accepts a
+   `pair-start.schema.json` body (`device_name`, `device_type: server`,
+   `roles: ["music_server"]`, `auth_strategy`, `michi_id`, `public_key`,
+   `challenge_nonce`, `challenge_signature`). The signature must verify
+   the decoded `challenge_nonce` bytes against the declared Ed25519
+   `public_key`, and `michi_id` must correspond to that key (blake3 of
+   the key, base64url). Any failure → `400 INVALID_REQUEST`, no session.
+4. **Local PIN**: success (`201`) draws a 6-digit PIN UNIFORMLY from
+   `esp_fill_random` (rejection-sampled below a uniform bound — no modulo
+   bias). The PIN is shown ONLY through the local PIN-display callback
+   (screen); it is NEVER returned over HTTP and never logged.
+5. **Five attempts, then lock**: a wrong PIN answers `401 UNAUTHORIZED`
+   and consumes one attempt; the attempt that exceeds
+   `MICHI_PAIRING_PIN_ATTEMPTS` (5) answers `429 RATE_LIMITED` and the
+   session is consumed (locked). Identity/key mismatch on confirm → `400`.
+6. **Receiver-issued token**: a correct PIN issues a 32-byte CSPRNG
+   token, base64url WITHOUT padding, returned ONCE with `expires_in: 0`
+   (valid until revocation or factory reset). Only the SHA-256 digest is
+   persisted (NVS); the token is never re-transmitted, never logged and
+   never stored in plaintext.
+7. **Session consumption**: a confirmed session cannot be reused — a
+   second confirm answers `409 CONFLICT`. The pairing registry records
+   `device_id` (a UUID v4 issued at pairing), `michi_id`, `public_key`,
+   token digest, permissions, creation time and last activity.
+8. **Constant-time comparisons**: PINs and token digests are compared
+   with a constant-time XOR loop with no data-dependent early exit
+   (`michi_pairing_ct_equal`); digest validation scans every slot.
+9. **Zero secrets in logs**: no log format string in the component
+   contains `token`/`pin`/`nonce`/`hash` values — only outcomes and
+   counters.
 
-### Flow: button → window → challenge → confirm
+### Flow: button → window → pair/start → PIN → confirm
 
 ```mermaid
 sequenceDiagram
@@ -1049,21 +1076,23 @@ sequenceDiagram
     participant P as michi_pairing
     participant F as FSM
     participant N as NVS
-    participant C as Controller (phase 12 HTTP)
+    participant C as Controller (michi_http)
 
     B->>P: michi_pairing_open_window()
-    P-->>N: (timer armed, 120 s)
+    P-->>N: (timer armed, 120 s monotonic)
     B->>F: post PAIRING_STARTED (only if the window opened)
     F->>F: IDLE/UNPROVISIONED → PAIRING
-    C->>P: get_challenge(initiator_id) (window open?)
-    P-->>C: 32-hex challenge bound to initiator_id (esp_fill_random, max 3/window)
-    C->>P: confirm(challenge, initiator_id, token)
-    P->>P: ct-compare challenge; id == challenge owner; digest token (SHA-256)
-    P-->>N: nvs_set_blob + commit (digest, perms, created)
-    P-->>C: controller_id + MICHI_PERM_DEFAULT
-    P->>F: post WINDOW_CLOSED (window closed)
+    C->>P: pair/start (signed challenge) (window open?)
+    P-->>P: verify signature + michi_id vs public_key
+    P-->>C: 201 {session_id, expires_at, attempts_remaining, server keys}
+    P-->>P: PIN drawn locally, shown on the display ONLY
+    C->>P: pair/confirm (session_id, pin, michi_id, public_key)
+    P-->>P: ct-compare PIN; identity must match pair/start
+    P-->>N: nvs commit (device_id, michi_id, pubkey, digest, perms)
+    P-->>C: 200 {token (once), expires_in: 0, device_id, server_id}
+    P->>F: post WINDOW_CLOSED (paired)
     F->>F: PAIRING → IDLE
-    Note over C,P: later: validate_token(token) → constant-time<br/>digest scan → controller + permissions
+    Note over C,P: later: Bearer token → SHA-256 digest scan (constant time)
 ```
 
 ### Permissions
@@ -1079,8 +1108,9 @@ sequenceDiagram
 | 0x40 | `MICHI_PERM_FACTORY_RESET` | Trigger factory reset | **no** |
 
 `MICHI_PERM_DEFAULT` (STATUS|PLAYBACK|VOLUME|SETTINGS) is granted at
-pairing time; re-pairing an existing controller id rotates its credential
-and re-grants the default set.
+pairing time; the OTA bit is never granted by default (the canonical
+`POST /receiver-lite/firmware` additionally answers `501 NOT_IMPLEMENTED`
+today).
 
 ### Registry and persistence
 
@@ -1105,62 +1135,60 @@ partition with the `wifi` and `dac` namespaces.
 
 ### Constant-time validation
 
-`michi_pairing_validate_token()` digests the presented token and compares
-it with `mbedtls_ct_memcmp` against **every slot** with **no early
-return** — including empty slots (compared against a fixed zero digest) —
-so the timing neither reveals which controller matched nor how many are
-stored. Trade-off: O(MAX_CONTROLLERS) comparisons per validation
-(8 × 32-byte comparisons: negligible).
+`michi_pairing_validate_token()` digests the presented Bearer token
+(SHA-256) and compares it with `michi_pairing_ct_equal` against **every
+slot** with **no early return** — including empty slots (compared against
+a fixed zero digest) — so the timing neither reveals which controller
+matched nor how many are stored. Trade-off: O(MAX_CONTROLLERS)
+comparisons per validation (8 × 32-byte comparisons: negligible).
 
 ### Rate limiting and expiry
 
-- Per window: 3 challenge issues max (`issued_limit_reached` warn);
-  5 failed confirmations max. Every failed confirmation — wrong
-  challenge (constant-time mismatch), id vs. challenge-owner mismatch,
-  malformed credentials — consumes one attempt EXCEPT a malformed
-  initiator id and no-proof-issued, which are rejected without consuming
-  (they are not authentication attempts); the attempt that EXCEEDS the
-  limit closes the window (`window=closed reason=attempts_exhausted`,
-  `ESP_ERR_TIMEOUT`).
-- `michi_pairing_is_window_open()` also reports false once the deadline
-  passed but the one-shot timer has not fired yet; the timer owns the
-  close + FSM event, so there is exactly one close path per window. The
-  expiry callback re-validates the deadline under the mutex before
-  closing, so a stale callback (timer fired, window re-opened before the
-  callback ran — `esp_timer_stop` on a fired one-shot is a no-op) never
-  closes the fresh window.
+- The window is a single one-shot `esp_timer` on the monotonic clock;
+  `michi_pairing_is_window_open()` also reports false once the deadline
+  passed but the one-shot timer has not fired yet. The expiry callback
+  re-validates the deadline under the mutex before closing, so a stale
+  callback never closes a fresh window.
+- Per pairing session: max 5 failed PIN confirmations
+  (`MICHI_PAIRING_PIN_ATTEMPTS`); exceeding the limit locks the session
+  (`429 RATE_LIMITED`) and the session is consumed. A malformed body or
+  identity mismatch is rejected with `400 INVALID_REQUEST` without
+  creating a session.
+- `pair/status?session_id=<uuid>` reports `pending` | `confirmed` |
+  `expired` | `locked`; an unknown session answers `404 NOT_FOUND`.
 
 ### Logs
 
 key=value, secret-free (verification: no log format string in the
-component contains `token`/`challenge`/`nonce`/`hash`):
+component contains `token`/`pin`/`nonce`/`signature`/`hash` VALUES):
 
 ```
 subsystem=pairing state=ok phase=10
 pairing: init mutex_failed err=%s
 pairing: init timer_failed err=%s
 pairing: loaded controllers=%u
+pairing: store_read_failed err=%s (starting empty)
 pairing: store_corrupt controllers=0 (starting empty)
 pairing: store_corrupt_entry slot=%u (dropped)
 pairing: window=open seconds=%u
-pairing: window=active issued=%u owner=%s
-pairing: window=closed reason=%s issued=%u failed=%u   (reason: paired|expired|requested|reopened|shutdown|attempts_exhausted)
-pairing: confirm_failed reason=%s failed=%u            (reason: no_proof_issued|id_mismatch|malformed_request|proof_mismatch|digest_failed)
-pairing: paired controller=%s permissions=%u
-pairing: revoked controller=%s remaining=%u
+pairing: start_rejected reason=%s            (reason: signature|michi_id)
+pairing: session=created session_id=%s
+pairing: confirm_rejected reason=%s ...      (reason: pin|locked|already_confirmed|identity_mismatch)
+pairing: session=locked session_id=%s
+pairing: confirmed session_id=%s device_id=%s michi_id=%s
+pairing: revoked device_id=%s remaining=%u
+pairing: window=closed reason=%s starts=%u
 subsystem=pairing state=off phase=10
 ```
 
-### Phase 12 status
+### HTTP handlers
 
-The pairing HTTP endpoints (challenge/confirm/validate/revoke) are
-implemented in phase 12 (see Receiver API below). They operate STRICTLY
-inside a button-opened window for challenge/confirm; token validation and
-permission checks apply at every protected endpoint via the constant-time
-registry scan. The elevated permissions (controller admin, OTA) stay
-un-granted by default; the grant-management flow is out of scope — but
-the endpoints are ready and only become usable when a controller holds
-the bit.
+The pairing HTTP endpoints (`pair/start`, `pair/status`, `pair/confirm`)
+live in `components/michi_http` and operate STRICTLY inside the
+button-opened window for start/confirm; token validation runs at every
+protected endpoint via the constant-time registry scan. Controllers
+list/revoke were part of the legacy surface and are NOT part of the
+canonical v1-lite contract (they were removed with the legacy dialect).
 
 ## Audio engine: `components/michi_audio`
 
@@ -1189,26 +1217,22 @@ the engine metrics).
 ### RTP receiver
 
 Datagram → RTP header (v=2; CC/CSRC skipped; X extension skipped via its
-16-bit length; P padding trimmed). PT 10 → PCM S16LE (the RFC 3551 L16 slot,
-but with the project's little-endian convention — **not** interoperable
-RFC 3551 L16, a compliant sender would be byte-swapped; a dynamic PT avoids
-the association); PT 96 (S24LE, dynamic) is **declared and rejected with a
-log**; any other PT is rejected. SSRC: first-seen registration, or
-`ssrc_filter` (0 = any). An SSRC change mid-stream drops the packet — this
-is **filtering only**, source *authentication* is a declared future meta.
+16-bit length; P padding trimmed). **Canonical guard (MS-07)**: payload
+type must be exactly the negotiated `97` (PCM S16LE, little-endian, 10 ms
+= 480 frames = 1920 bytes per packet); the SSRC must be exactly the one
+negotiated at session start — the legacy "first packet wins" behavior is
+gone (`ssrc: 0` is rejected at session creation); the IPv4 source must be
+exactly the HTTP request peer; any mismatch (PT, SSRC, source, size) is
+rejected and counted per class (`drops_pt_other`, `drops_ssrc_filtered`,
+`drops_source_ip`, `drops_payload_geometry`). The legacy PT 10 mapping
+and the declared PT 96 (S24LE) slot were retired with the convergence
+cleanup.
 
-> **Exposure note (phase 11)**: there is NO source authentication in this
-> meta — any host on the LAN can inject audio into the session port, force
-> overruns (drop-oldest) or corrupt the stream with malformed datagrams
-> (post-parse payload rejects are dropped, not fatal, but a hostile sender
-> can still starve the stream). Phase 12 registers the source (SSRC +
-> peer of the first accepted packet, exposed via
-> `michi_audio_session_get_ssrc/get_peer` and the API) and resume tries
-> to filter to a LIVE engine registration — but the registration dies
-> with the engine at pause, so a resumed session normally falls back to
-> first-seen (filter 0). This is registration, NOT authentication: a
-> source-IP allowlist and strict validation remain future work before the
-> engine is reachable from untrusted networks.
+> **Exposure note**: the RTP guard is source REGISTRATION, not
+> authentication: the negotiated source is fixed per session, but there
+> is no cryptographic proof of sender identity. TLS/PAKE transport
+> security is declared future work (MS-12) — the engine assumes a
+> trusted LAN.
 
 ### Jitter buffer policies (16-bit seq, wrap-aware int16 diff)
 
@@ -1244,14 +1268,14 @@ are declared future metas.
 ### Metrics
 
 Counters updated by the session task under a short portMUX critical
-section, copied by `michi_audio_get_metrics()` (phase-14 diagnostics):
+section, copied by `michi_audio_get_metrics()` (exposed by
+`GET /api/v1/receiver-lite/diagnostics`):
 `received`, `lost`, `late`, `duplicate`, `reordered`, `underruns` (one per
 contiguous stall; a slow-but-active sender may count one per recovered
-gap), `overruns`, `drops_malformed`, `drops_pt_s24le`, `drops_pt_other`,
-`drops_ssrc_filtered`, `drops_payload_geometry` (datagram-level rejects,
-counted per class), `jitter_us`, `buffer_ms`, `packets_in_buffer`,
-`last_seq`, `last_timestamp`. Prefill-timeout and mid-stream SSRC-change
-are logged but have NO counter slot.
+gap), `overruns`, `drops_malformed`, `drops_pt_other`,
+`drops_ssrc_filtered`, `drops_source_ip`, `drops_payload_geometry`
+(datagram-level rejects, counted per class), `jitter_us`, `buffer_ms`,
+`packets_in_buffer`, `last_seq`, `last_timestamp`.
 
 ### Cooperative shutdown
 
@@ -1277,87 +1301,93 @@ profile log reflect the real `audio_available` state.
 
 ### Declared future metas (NOT implemented)
 
-S24LE payloads (PT 96), 44.1–96 kHz per profile (declared via the output
-ops `prepare()`), RTCP reception quality, clock drift correction, source
-authentication and multiroom sync. All are declared in `michi_audio.h`
-with the rejection/limitation behavior of this phase; none are faked.
+The following are declared but NOT implemented and NOT announced (a
+capability is only announced when it has a schema, a vector, an engine
+path and evidence): S24LE payloads, 44.1–96 kHz sample rates, Opus, RTCP
+reception quality, clock drift correction, source authentication and
+multiroom sync. All are documented in `michi_audio.h` with the
+rejection/limitation behavior; none are faked. TLS/PAKE transport
+security belongs to the production hardening package (MS-12).
 
-### Phase 12 status
+### Canonical session integration (MS-07/MS-08)
 
-The session engine is idle at boot. Phase 12 (Michi Link Receiver API)
-starts/stops sessions through `components/michi_session`, which calls
-`michi_audio_session_start(port, ssrc_filter=0)` /
-`michi_audio_session_stop()`, reads metrics for diagnostics and posts the
+The session engine is idle at boot. `components/michi_session` starts and
+stops sessions through `michi_audio_session_start(port, ssrc, source_ip)`:
+the session layer picks a free UDP port in 49152..65535 (0 = pick a
+port), passes the negotiated SSRC (1..2^32-1; 0 is invalid) and the
+dotted IPv4 of the HTTP request peer (the ONLY accepted RTP source).
+`michi_audio_session_stop()` tears the engine down; metrics feed
+`GET /api/v1/receiver-lite/diagnostics`; the session layer posts the
 `MICHI_EVENT_SESSION_*` events (the engine itself does not post them).
-Phase 12 also adds the source registration getters
-`michi_audio_session_get_ssrc()` / `michi_audio_session_get_peer()`: the
-first packet accepted into the stream seeds the source, exposed by the
-session info and diagnostics endpoints.
+The engine reports the negotiated SSRC via `michi_audio_session_get_ssrc()`.
 
 ## Sessions: `components/michi_session`
 
-The session layer (phase 12) owns the SINGLE active session the receiver
-can hold. It sits between the HTTP API and the RTP engine:
+The session layer owns the SINGLE active session the receiver can hold
+(contract sections 2.5 and 2.6). It sits between the HTTP API and the RTP
+engine:
 
-- **One session at a time.** A `session_start` while one is active fails
-  with `session_active`; the controller must stop it first.
-- **Format validation against the profile / engine meta 1.**
-  `pcm_s16le`/48000/16/2 only; everything else is REJECTED explicitly
-  (`unsupported_format`, a log naming the requested values) — never
-  silently remapped. `pcm_s24le` is rejected as a declared-but-not-
-  implemented meta. The engine's own `prepare()` is the final authority.
-- **The session credential.** `session_start` issues a random 64-hex
-  session token (32 bytes of `esp_fill_random`). stop/patch require it,
-  validated in CONSTANT TIME (fixed-length XOR loop — single slot, so
-  there is nothing to hide about which slot matched). The token is
-  returned to the controller ONCE (in the start response) and is never
-  logged, never persisted, never re-exposed by `GET current`. The
-  `session_id` (`sess_` + 16 hex) is NOT a credential: it identifies the
-  session in heartbeats/diagnostics.
-- **Lifecycle → FSM events.** Start posts `SESSION_STARTED` three times,
-  driving IDLE → SESSION_PENDING → BUFFERING → PLAYING (BUFFERING is
-  modeled retrospectively: the engine's real prefill is internal, like
-  SELF_TEST at boot). Pause posts `SESSION_PAUSED` (PLAYING → PAUSED)
-  AND stops the engine (silence keeps the DAC clocks running, session
-  state retained); resume refreshes the engine SSRC live and passes it
-  as filter when a live registration exists — the registration dies
-  with the engine at pause, so a resumed session normally falls back to
-  first-seen (filter 0) — and posts `SESSION_RESUMED`. Stop
-  posts `SESSION_CLOSED` from any session state. Event posts are
-  best-effort (warn on failure): the session layer is the API's source of
-  truth, the FSM follows as far as the bus allows.
+- **One session at a time.** A `michi_session_start` while one is active
+  fails; the HTTP API answers `409 CONFLICT`. There is exactly one
+  `michi_session` state owner — HTTP never duplicates state and audio
+  never decides auth.
+- **Exact canonical validation.** `transport=rtp_udp`, `codec=pcm_s16le`,
+  `sample_rate=48000`, `bit_depth=16`, `channels=2`, `packet_ms=10`,
+  `payload_type=97`, `ssrc` in 1..4294967295, `buffer_ms` integer
+  50..500, `volume` integer 0..100 — every field required, no rounding,
+  no clamping, no "helpful" correction: an invalid value answers
+  `400 INVALID_REQUEST` with `details.field`. `pcm_s24le`, 96 kHz and
+  Opus are rejected as declared-but-not-implemented futures.
+- **All-or-nothing start.** The receiver picks a free UDP port in
+  49152..65535, reserves the socket, the buffer and the engine, and only
+  then transitions `idle → starting → playing`. On partial failure
+  EVERYTHING is released and the layer rolls back to idle — a phantom
+  session can never exist.
+- **The session credential.** `michi_session_start` issues a 32-byte
+  CSPRNG session token encoded base64url WITHOUT padding (43 chars),
+  distinct from the pairing token. It lives ONLY in RAM, is returned to
+  the controller ONCE (in the 201 response), is never logged, never
+  persisted and never re-exposed (GET returns no token). Mutations
+  (PATCH/DELETE/heartbeat/now-playing) require it via the
+  `X-Michi-Session` header, validated in CONSTANT TIME. The `session_id`
+  (UUID v4) is NOT a credential.
+- **Lifecycle → FSM events.** Start posts `SESSION_STARTED`, driving
+  IDLE → SESSION_PENDING → BUFFERING → PLAYING (BUFFERING is modeled
+  retrospectively: the engine's real prefill is internal). Pause posts
+  `SESSION_PAUSED` (PLAYING → PAUSED) AND stops the engine (silence keeps
+  the DAC clocks running, session state retained); resume restarts the
+  engine with the same negotiated SSRC and source IP and posts
+  `SESSION_RESUMED`. Stop posts `SESSION_CLOSED` from any session state.
+  Event posts are best-effort (warn on failure): the session layer is the
+  API's source of truth, the FSM follows as far as the bus allows.
+- **Lease (MS-08).** Every valid heartbeat (`sequence` strictly
+  increasing, monotonic clock) renews the lease to 30 s. A one-shot
+  watchdog on the MONOTONIC clock runs ONLY while a session is active;
+  at 30 s without a valid heartbeat it executes the same safe teardown as
+  DELETE, increments `lease_expirations` and returns the state to idle —
+  even if RTP keeps arriving. An invalid heartbeat (replay/older)
+  answers `409 CONFLICT` and does NOT renew.
 - **Dead-engine reconciliation.** The engine task can self-terminate
   (socket/bind failure, pipeline write rejection) with the session layer
   still believing the session is active. `get_info()` and `start()`
-  detect it (engine inactive, outside the 250 ms post-start grace
-  window, not paused), clean the session (SESSION_CLOSED posted,
-  `session: cleaned dead engine session` logged): `start()` proceeds
-  with the new session, `get_info()` reports "no session".
-- **FSM reconciliation.** `get_info()` re-posts the missing
-  SESSION_STARTED chain steps from the current state when an active
-  session left the FSM short of PLAYING/PAUSED (from-keyed posts:
-  idempotent, self-healing — a dropped post is re-driven on the next
-  poll).
-- **Honesty rules (P0-12).** `buffer_ms` is clamped to the engine's
-  jitter capacity (50..`MICHI_AUDIO_JITTER_MAX_MS`) and the CLAMPED value
-  is stored and reported; volume is clamped 0-100 and the APPLIED value
-  (`michi_volume_get`) is stored and reported — never the request value.
-- **No persistence.** Sessions live in RAM; a reboot ends them.
-- **Stop clears the display** (F9 follow-up): `stop()`/`abort()` clear
-  the now-playing metadata (source/title/artist → "--") so the IDLE
-  screen never shows stale track info.
-- **OTA gate + abort (phase 13).** `start()` rejects while the FSM is
-  `UPDATING` (the API answers 409 `ota_in_progress` before the session
-  layer is reached; the gate here is defensive). The update path
-  force-closes the active session with `michi_session_abort(reason)` —
-  a PRIVILEGED internal call that does NOT require the session token
-  (the credential is never persisted, so OTA cannot present it; the HTTP
-  handlers never use abort, they always go through `stop()` with the
-  token).
+  detect it, clean the session (SESSION_CLOSED posted) and recover:
+  `start()` proceeds with the new session, `get_info()` reports "no
+  session".
+- **Honesty rules.** The response reports the REAL applied values: the
+  assigned `stream_port`, the negotiated SSRC, the applied volume.
+- **No persistence.** Sessions, tokens and heartbeat sequences live in
+  RAM; a reboot ends them. Only `lease_expirations` accumulates
+  (reset by reboot).
+- **OTA gate.** `start()` rejects while the FSM is `UPDATING`; the
+  update path force-closes the active session with
+  `michi_session_abort(reason)` — a PRIVILEGED internal call that does
+  NOT require the session token (the credential is never persisted, so
+  OTA cannot present it; the HTTP handlers always go through `stop()`
+  with the token).
 - **Threading.** All calls run in task context (the httpd task); a mutex
-  serializes. `stop()` — and `pause()` inside PATCH, which stops the
-  engine the same way — may block up to the engine's cooperative join
-  window (~2 s) by design (single session, single server task).
+  serializes. `stop()` — and `pause()` inside PATCH — may block up to
+  the engine's cooperative join window (~2 s) by design (single session,
+  single server task).
 
 ```mermaid
 sequenceDiagram
@@ -1366,125 +1396,124 @@ sequenceDiagram
     participant S as michi_session
     participant A as michi_audio
     participant F as FSM
-    C->>API: POST /sessions (Bearer)
-    API->>S: michi_session_start(...)
-    S->>A: session_start(port, 0)
-    S->>F: SESSION_STARTED x3 (IDLE→PENDING→BUFFERING→PLAYING)
-    API-->>C: 200 {session_id, session_token}
-    C->>API: PATCH /sessions/current {paused:true, session_token}
-    API->>S: michi_session_patch(token, -1, &true)
+    C->>API: POST /api/v1/receiver-lite/session (Bearer)
+    API->>S: michi_session_start(...) (validate, pick port, bind, engine)
+    S->>A: session_start(port, ssrc, source_ip)
+    S->>F: SESSION_STARTED (IDLE→STARTING→PLAYING)
+    API-->>C: 201 {session_id, session_token, lease_seconds, effective}
+    C->>API: PATCH /api/v1/receiver-lite/session {paused:true} (+ X-Michi-Session)
+    API->>S: michi_session_patch(token, ...)
     S->>A: session_stop() (state retained)
     S->>F: SESSION_PAUSED (PLAYING→PAUSED)
-    C->>API: DELETE /sessions/current (X-Michi-Session)
+    C->>API: DELETE /api/v1/receiver-lite/session (X-Michi-Session)
     API->>S: michi_session_stop(token)
     S->>A: session_stop()
     S->>F: SESSION_CLOSED (→IDLE)
 ```
 
-## Receiver API (phase 12): `components/michi_http`
+## Receiver API: `components/michi_http`
 
-The full Michi Link Receiver API on port 80. Every protected endpoint
-runs the Bearer gate first (`michi_pairing_validate_token` — constant-
-time registry scan — plus the endpoint's permission bit) and answers
-`401 invalid_token` / `403 insufficient_permissions`; the token VALUE is
-never logged. All responses use the `{error:{code,message,details:{}}}`
-envelope for failures.
+The **canonical Michi Link receiver v1-lite surface** (contract section
+2; the vendored bundle in `contracts/michi-link/` is the authority). All
+routes live under `/api/v1`, all bodies are JSON `snake_case` UTF-8, and
+every failure — except `204` responses — uses the single canonical
+`{error:{code,message,request_id,details}}` envelope with UPPERCASE codes
+mapped exactly from the HTTP status (section 2.7): `INVALID_REQUEST`
+(400), `UNAUTHORIZED` (401), `FORBIDDEN` (403), `NOT_FOUND` (404),
+`CONFLICT` (409), `RATE_LIMITED` (429), `NOT_IMPLEMENTED` (501),
+`INTERNAL_ERROR` (500). Every protected endpoint runs the Bearer gate
+first (`michi_pairing_validate_token` — constant-time digest scan across
+ALL registry slots) and never logs the token VALUE.
 
 ### Endpoints
 
-| Endpoint | Method | Auth | Permission | Notes |
+| Endpoint | Method | Auth | Status | Notes |
 |---|---|---|---|---|
-| `/api/v1/receiver/info` | GET | — | — | Product profile (phase 4) |
-| `/api/v1/receiver/firmware` | GET | — | — | Version/build/OTA flag (phase 4) |
-| `/api/v1/receiver/status` | GET | — | — | FSM state + session_active + tier + uptime |
-| `/api/v1/receiver/pairing/challenge` | POST | — | — | `initiator_id` in body; 409 `pairing_window_closed` without a button-opened window |
-| `/api/v1/receiver/pairing/confirm` | POST | — | — | `challenge` (+ alias `nonce`), `initiator_id`, `token` |
-| `/api/v1/receiver/controllers` | GET | Bearer | STATUS | Controller id list (no secrets) |
-| `/api/v1/receiver/controllers/{id}` | DELETE | Bearer | CONTROLLER_ADMIN | Individual revocation |
-| `/api/v1/receiver/sessions` | POST | Bearer | PLAYBACK | Start; returns `session_token` (issued once) |
-| `/api/v1/receiver/sessions/current` | GET | Bearer | STATUS | Info WITHOUT the session token |
-| `/api/v1/receiver/sessions/current` | PATCH | Bearer | PLAYBACK | `volume` / `paused`; token in body or `X-Michi-Session` |
-| `/api/v1/receiver/sessions/current` | DELETE | Bearer | PLAYBACK | Stop; token in `X-Michi-Session` header |
-| `/api/v1/receiver/now-playing` | PUT | Bearer | PLAYBACK | `source`/`title`/`artist` → display |
-| `/api/v1/receiver/diagnostics` | GET | Bearer | STATUS | Uptime, reset reason, heap/PSRAM, wifi (ssid/rssi/reconnects), audio+RTP metrics, I2S errors, DAC, session, SD (mounted/sizes), OTA, last error, firmware (see Diagnostics) |
-| `/api/v1/receiver/logs` | GET | Bearer | STATUS | Hybrid log registry (phase 16): tail ring or event journal (see Log registry) |
-| `/api/v1/receiver/updates` | POST | Bearer | OTA | Body `{url}` → signed manifest URL; **202** `ota_started` (phase 13) |
+| `/api/v1/server/info` | GET | — | 200 | Canonical profile; identity from `michi_identity` |
+| `/api/v1/pair/start` | POST | physical window | 201 | Signed challenge; PIN drawn locally, never returned |
+| `/api/v1/pair/status` | GET | `session_id` query | 200 | `pending`/`confirmed`/`expired`/`locked`; unknown → 404 |
+| `/api/v1/pair/confirm` | POST | pairing session | 200 | PIN + exact identity; receiver issues the token (once) |
+| `/api/v1/receiver-lite/session` | POST | Bearer | 201 | Exact body (PT 97, 48/16/2, 10 ms); port 49152–65535 chosen by receiver; source IP = HTTP peer |
+| `/api/v1/receiver-lite/session` | GET | Bearer | 200 | State + metrics; NEVER the session token |
+| `/api/v1/receiver-lite/session` | PATCH | Bearer + `X-Michi-Session` | 200 | `volume` 0–100 and/or `paused` only |
+| `/api/v1/receiver-lite/session` | DELETE | Bearer + `X-Michi-Session` | 204 | Full teardown: stop RTP, silence, release socket/buffer/token |
+| `/api/v1/receiver-lite/heartbeat` | POST | Bearer + `X-Michi-Session` | 200 | `sequence` strictly increasing; renews lease to 30 s; replay/older → 409 |
+| `/api/v1/receiver-lite/now-playing` | PUT | Bearer + session | 501 | Registered but NOT implemented → feature `false` |
+| `/api/v1/receiver-lite/diagnostics` | GET | Bearer | 200 | Uptime, reset reason, heap/PSRAM, wifi, audio/RTP metrics, DAC, session, SD, OTA, last error, firmware |
+| `/api/v1/receiver-lite/firmware` | GET | Bearer | 501 | Deferred — NOT implemented → feature `false` |
+| `/api/v1/receiver-lite/firmware` | POST | Bearer + OTA permission | 501 | Deferred — NOT implemented → feature `false` |
+
+Feature flags in `server/info` are truthful: `session`, `heartbeat` and
+`volume` are `true` (implemented with positive tests); `now_playing` and
+`ota` are `false` (their handlers answer `501 NOT_IMPLEMENTED`);
+`diagnostics` is `true`.
+
+### Retired routes (historical)
+
+The legacy dialect was removed in the convergence cleanup. These routes
+are NOT registered anymore and answer `404 NOT_FOUND` with the canonical
+error envelope (verified by contract tests):
+
+- `GET /api/v1/receiver/info`, `GET /api/v1/receiver/firmware`
+- `GET /api/v1/receiver/status`
+- `POST /api/v1/receiver/pairing/challenge`, `POST /api/v1/receiver/pairing/confirm`
+- `GET /api/v1/receiver/controllers`, `DELETE /api/v1/receiver/controllers/{id}`
+- `POST /api/v1/receiver/sessions`, `GET|PATCH|DELETE /api/v1/receiver/sessions/current`
+- `POST /api/v1/receiver/heartbeat`, `POST /api/v1/receiver/volume`
+- `PUT /api/v1/receiver/now-playing`, `GET /api/v1/receiver/diagnostics`
+- `GET /api/v1/receiver/logs`, `POST /api/v1/receiver/updates`
+- `GET /api/v1/receiver-lite/info`, `POST /api/v1/receiver-lite/volume`,
+  `GET /api/v1/receiver-lite/config`
+
+The old `/api/v1/receiver/*` behavior (challenge alias `nonce`, client
+tokens echoed back, 90-second heartbeat timeout, client-supplied
+`session_id`, `stream_port` in the request, lowercase error codes) is
+gone with them — no aliases, no transition layer, no weaker path.
 
 ### Session contract
 
-- **Start** (`POST /sessions`): required `codec`, `sample_rate`,
-  `bit_depth`, `channels`, `stream_port` (1024-65535); optional
-  `buffer_ms` (default 250, range 50-`MICHI_AUDIO_JITTER_MAX_MS`),
-  `volume` (default: current, range 0-100). Out-of-range values are
-  rejected with 400 `invalid_request` naming the field (validated
-  BEFORE the narrowing casts — a wrapped port is never accepted), and
-  the session layer still clamps defensively. The v1-lite `transport`
-  must be `udp` when present; a client-provided `session_id` is ignored
-  (the receiver generates it). The OWNER is always the authenticated
-  controller id: a body owner claim would be spoofable and is
-  overridden. The response carries `session_token` — the ONLY
-  transmission of the credential. Errors: 409 `session_active` /
-  `audio_unavailable`, 400 `unsupported_format` (outside meta 1) /
-  `invalid_request`.
-- **Pause/resume** (`PATCH`): `volume` (clamped; the response reports
-  the APPLIED value) and/or `paused`. The session token comes from the
-  body (`session_token`) or the `X-Michi-Session` header. A wrong/missing
-  token → 401 `invalid_session_token`; no session → 404
-  `no_active_session`.
-- **Stop** (`DELETE`): the session token arrives in the
-  `X-Michi-Session` header (DELETE bodies are not part of the contract).
-  May take up to ~2 s (engine join window); a 500 `session_stop_failed`
-  means "retry".
-- **Pause is NOT engine-free**: pausing stops the RTP engine (the DAC
-  keeps playing silence, the session state is retained) and blocks up to
-  the ~2 s join window, like stop. A resumed session restarts on the
-  same port filtered to a LIVE engine SSRC if one is registered — the
-  registration dies with the engine at pause, so it normally falls back
-  to first-seen (filter 0). The stream state (jitter buffer) is NOT
-  retained across pause — declared behavior.
-
-### v1-lite compatibility (transition layer)
-
-The legacy paths stay operative, mapped onto the SAME handlers with the
-SAME security (they share the auth gates and the pairing/session
-components — there is no weaker path):
-
-| v1-lite path | Maps to | Behavior notes |
-|---|---|---|
-| `POST /pair/start` | pairing challenge | Body `initiator_id`; does NOT open the window — without the button it answers `pairing_window_closed` (security rule). Response is the phase-12 shape: `challenge` (was `nonce`) |
-| `POST /pair/confirm` | pairing confirm | Accepts `nonce` as alias of `challenge`. The token is NOT echoed back (legacy did — deviation, see below) |
-| `POST /session/start` | sessions start | Accepts `transport: udp`; the server-assigned `session_id` in the response is authoritative |
-| `POST /session/stop` | sessions stop | Body `session_id` (validated: 404 on mismatch) + session token in body or header |
-| `POST /heartbeat` | liveness | Bearer STATUS; responds `alive` with the ACTIVE server-side `session_id` (server truth) |
-| `POST /volume` | volume | Bearer VOLUME; clamps and reports the REAL applied value (P0-12) |
-
-Deliberate deviations from the v1-lite contract, documented: (1) the
-pairing response does NOT echo the token back (a secret must never be
-re-transmitted); (2) there is NO 90-second heartbeat timeout in phase 12
-— a session stays until explicitly stopped or the device reboots;
-(3) the receiver generates `session_id` (a client-provided id is
-ignored); (4) responses use the unified `{error:{...}}` envelope and the
-phase-12 field names.
+- **Start** (`POST /receiver-lite/session`): ALL fields required and
+  exact — `transport=rtp_udp`, `codec=pcm_s16le`, `sample_rate=48000`,
+  `bit_depth=16`, `channels=2`, `packet_ms=10`, `payload_type=97`,
+  `ssrc` 1..4294967295, `buffer_ms` 50..500, `volume` 0..100;
+  `additionalProperties: false`. Invalid values answer
+  `400 INVALID_REQUEST` with `details.field` — never rounded or
+  corrected. A second start while a session is active answers
+  `409 CONFLICT`. The receiver picks the free UDP port (49152..65535),
+  the RTP source IP is the HTTP request peer, and audio only starts
+  after socket + buffer + engine are reserved (all-or-nothing). Response
+  `201`: `session_id`, `session_token` (ONCE), `lease_seconds: 30`,
+  `effective{...}` with the assigned `stream_port`.
+- **GET** returns `session_id`, `state` (`starting`/`playing`/`paused`/
+  `stopping`), `lease_remaining_ms`, `volume`, `paused`, `stream_port`,
+  `ssrc`, `packets_received`, `packets_rejected`, `packets_lost`,
+  `underruns` — NEVER the session token. No session → `404 NOT_FOUND`.
+- **PATCH** accepts ONLY `volume` (0–100) and/or `paused` (boolean) and
+  answers the same body as GET after applying. Wrong/missing session
+  token → `401 UNAUTHORIZED`; no session → `404 NOT_FOUND`.
+- **DELETE** is idempotent per authenticated session (`204`), with the
+  session token in `X-Michi-Session`. Teardown: stop accepting RTP,
+  silence, stop the engine, release buffers/socket and wipe the RAM
+  token.
+- **Heartbeat** (`POST /receiver-lite/heartbeat`): body `{session_id,
+  sequence, sent_at_ms}`; `sequence` strictly increasing within the
+  session; valid → `200 {session_id, status: alive, lease_seconds: 30,
+  receiver_uptime_ms}`. Replay or older → `409 CONFLICT`, no renew.
+  The watchdog (monotonic clock, active only with a session) closes the
+  session at 30 s regardless of RTP traffic.
 
 ### Notes
 
-- **Pairing only via button**: no network call opens the pairing window.
-  Challenge/confirm work strictly inside a button-opened window; a
-  revoke/list runs on the registry directly (Bearer-gated).
-- **Updates → phase 13**: `POST /updates` starts the signed OTA flow; see
-  the OTA section below.
-- **Now-playing → display**: `PUT /now-playing` accepts metadata anytime
-  (no session required); the display renders it when the state screen
-  shows it. Oversize fields are rejected with 400 (never silently
-  truncated). `DELETE /sessions/current` clears the now-playing
-  metadata (F9 follow-up) so the IDLE screen never shows stale track
-  info.
-- **Heartbeat semantics**: the response always carries the ACTIVE
-  session id (server truth); a mismatched client id is not an error —
-  the response lets the client discover the real id.
+- **Pairing only via button**: no network call opens the pairing window;
+  `pair/start` outside the window → `403 FORBIDDEN`.
+- **Now-playing** is deferred: the handler answers `501 NOT_IMPLEMENTED`
+  and the feature flag is `false`.
+- **Firmware/OTA** is deferred: both firmware handlers answer
+  `501 NOT_IMPLEMENTED`; the `michi_ota` component still implements the
+  signed-manifest flow for LOCAL SD updates (see OTA section below).
 - **Diagnostics**: full field reference below.
 
-## Diagnostics: `GET /api/v1/receiver/diagnostics`
+## Diagnostics: `GET /api/v1/receiver-lite/diagnostics`
 
 Bearer STATUS. One-shot snapshot of the whole subsystem state for support
 engineers — diagnostic data only, NO secrets: the session token is never
@@ -1492,9 +1521,7 @@ included, OTA error text is a failure description, and `wifi.ssid`
 exposes the network NAME only (never the password) — intentional, the
 endpoint is Bearer-gated (STATUS).
 
-Field contract (extended in phase 14; pre-existing names are stable for
-phase 11/12 clients — the RTP metrics keep living under `audio`, not
-`rtp`):
+Field contract (the RTP metrics keep living under `audio`, not `rtp`):
 
 | Field | Source | Notes |
 |---|---|---|
@@ -1520,10 +1547,16 @@ phase 11/12 clients — the RTP metrics keep living under `audio`, not
 
 ## Log registry: `components/michi_log`
 
-Hybrid log registry (phase 16): a volatile tail that captures EVERY
-`ESP_LOG*` line plus a durable event journal, served by one Bearer-gated
-endpoint. The `storage` SPIFFS partition (~8.25 MB, reserved since
-phase 0) is mounted ONLY by this component.
+Hybrid log registry: a volatile tail that captures EVERY `ESP_LOG*` line
+plus a durable event journal. The `storage` SPIFFS partition (~8.25 MB,
+reserved since phase 0) is mounted ONLY by this component.
+
+> **No HTTP endpoint (canonical surface).** The legacy
+> `GET /api/v1/receiver/logs` endpoint was removed with the legacy
+> dialect; the canonical v1-lite contract does not expose logs over HTTP.
+> The tail remains available on the serial console and the journal on the
+> SPIFFS volume (crash dumps included). Re-exposing them is future work
+> and would require a contract extension.
 
 ### Three layers
 
@@ -1553,7 +1586,8 @@ phase 0) is mounted ONLY by this component.
    opens/appends/closes the file per event — intentional at this rate
    (tens of events per day; the SPIFFS write cost is irrelevant and the
    tail is unaffected).
-3. **Endpoint.** `GET /api/v1/receiver/logs` (Bearer STATUS, phase 16).
+3. **Exposure.** No HTTP endpoint in the canonical surface (see note
+   above); the tail is console-only and the journal lives on SPIFFS.
 
 ### Rotation and wear
 
@@ -1585,28 +1619,12 @@ before printing. Only `MICHI_LOG_CRASH_DUMP_KEEP` (default 4) dumps are
 retained; when a new one is written the oldest beyond the cap are
 deleted (the `boot_seq` in the file name orders them).
 
-### Endpoint contract
+### Registry formats (the HTTP endpoint was removed)
 
-`GET /api/v1/receiver/logs?source=tail|journal&count=N&offset=O`
-
-Query parameters are optional and strictly validated (400 on any
-violation): `source` (default `tail`), `count` (tail only, handler
-default 100, max `MICHI_LOG_TAIL_MAX_ENTRIES_RESPONSE` — Kconfig
-default 200, range 50-500: larger values spike internal-RAM cJSON
-usage, ~130 KB at 200 entries and ~1 MB at 2000), `offset`
-(journal only, `>= 0`, sanity-capped at 16 MB).
-
-```json
-{
-  "boot_seq": 3,
-  "tail_available": true,
-  "journal_available": true,
-  "tail": [
-    {"t_ms": 12345, "level": "I", "line": "michi_http: http server listening on port 80 (17 endpoints)"}
-  ],
-  "journal": {"offset": 0, "next_offset": 512, "lines": ["3 12345 STATE_CHANGED target=IDLE from=SELF_TEST"]}
-}
-```
+The legacy `GET /api/v1/receiver/logs` endpoint and its query contract
+(`source`, `count`, `offset`) were removed with the legacy dialect — they
+are NOT part of the canonical v1-lite surface. The on-device registry
+formats are unchanged for future re-exposure:
 
 - `tail`: the raw ESP_LOG payload (tag + key=value), level letter and
   uptime ms; entries are single-line by construction (the ring sanitizes
@@ -1616,23 +1634,11 @@ usage, ~130 KB at 200 entries and ~1 MB at 2000), `offset`
   vprintf hook). `t_ms` is uptime in ms as a u32:
   it wraps at 2^32 ms ≈ 49.7 days of uptime (documented; clients must
   not assume monotonicity across reboots).
-- `journal`: `offset`/`next_offset` pagination (repeat with
-  `next_offset` to page; a page is trimmed to the last complete line; a
-  single line longer than the 16 KB page is skipped — journal lines are
-  short by construction). Pagination order: `journal.1` is served
-  first — it is the NEWEST file; chronological clients (oldest first)
-  page across the chain in reverse (`journal.N` is the oldest). The
-  sentinel is `next_offset == offset`: that means the end of the
-  journal — stop paging.
-- When the tail or the journal is unavailable, its boolean is `false`
-  and the corresponding field is omitted.
-- Permissions: this endpoint is Bearer-gated at STATUS, so the tail
-  (which may include controller IDs and the SSID in log payloads) is
-  readable by any STATUS token. Those IDs are documented as
-  non-secret device identifiers; controller LIST (`GET
-  /api/v1/receiver/controllers`) requires STATUS like this one — only
-  `DELETE /api/v1/receiver/controllers/{id}` requires
-  CONTROLLER_ADMIN.
+- `journal`: one text line per event,
+  `<boot_seq> <t_ms> STATE_CHANGED target=<state> from=<state>` or
+  `<boot_seq> <t_ms> ERROR err=<esp_err_t name>`, rotated with
+  `journal.1` as the NEWEST file (chronological order is `journal.N`
+  first).
 
 ### Zero-secret guarantee
 
@@ -1641,8 +1647,7 @@ of a log format string in the firmware (the only token-bearing logs are
 outcomes, e.g. `token_mismatch rejected=1`; verified by grep at review
 time). The tail serves exactly what ESP_LOG produces, so it cannot leak
 a credential that was never logged; the journal stores event ids and
-`esp_err_t` codes only. The endpoint is additionally Bearer-gated
-(STATUS).
+`esp_err_t` codes only.
 
 ### Limitations
 
@@ -1656,14 +1661,21 @@ a credential that was never logged; the journal stores event ids and
 
 ## OTA updates: `components/michi_ota`
 
-Signed OTA with A/B partitions and boot-time rollback (phase 13). The
-trust model: the receiver NEVER downloads a binary directly — it
-downloads a **signed manifest** whose fields (version, board, binary URL,
-SHA-256) are RSA-2048/PKCS#1 v1.5/SHA-256 verified with an embedded
-public key; the binary digest lives INSIDE the signed manifest, so a
-tampered binary is rejected before it is ever staged or booted.
+Signed OTA with A/B partitions and boot-time rollback. The trust model:
+the receiver NEVER applies a binary directly — it verifies a **signed
+manifest** whose fields (version, board, binary URL, SHA-256) are
+RSA-2048/PKCS#1 v1.5/SHA-256 verified with an embedded public key; the
+binary digest lives INSIDE the signed manifest, so a tampered binary is
+rejected before it is ever staged or booted.
 
-### Flow
+> **HTTP surface (canonical)**: `GET|POST /api/v1/receiver-lite/firmware`
+> are registered but answer `501 NOT_IMPLEMENTED` and the `ota` feature
+> flag is `false` — the canonical HTTP OTA flow is deferred. The wired
+> path today is LOCAL OTA from the microSD (see below); the legacy
+> `POST /api/v1/receiver/updates` endpoint was removed with the legacy
+> dialect.
+
+### Flow (engine, reachable today via local SD)
 
 ```mermaid
 sequenceDiagram
@@ -1671,10 +1683,8 @@ sequenceDiagram
     participant API as HTTP API
     participant O as michi_ota
     participant H as HTTPS server
-    C->>API: POST /updates {url} (Bearer OTA)
-    API->>O: michi_ota_start(url) — URL validated sync
-    API-->>C: 202 {status:ota_started}
-    O->>O: force-close session (michi_session_abort) + request UPDATING
+    C->>O: michi_ota_start(url) / michi_ota_start_local (SD check task)
+    Note over O: force-close session (michi_session_abort) + request UPDATING
     O->>H: GET manifest (TLS, CA bundle)
     O->>O: validate fields + semver + signature (embedded key)
     O->>H: GET binary (streamed, 4 KB chunks)
@@ -1686,10 +1696,8 @@ sequenceDiagram
 
 1. **URL validation** (`michi_ota_start`, synchronous): `https://` only
    (http/ftp/arbitrary rejected), no userinfo (`user@host` rejected),
-   host non-empty, length ≤ `MICHI_OTA_URL_MAX` (256). Rejection →
-   `ESP_ERR_INVALID_ARG` → API 400. While an update runs a new start
-   answers 409 `ota_in_progress` (both in the handler and defensively in
-   the component).
+   host non-empty, length ≤ `MICHI_OTA_URL_MAX` (256). While an update
+   runs, a new start is rejected (`ota_in_progress`).
 2. **Signed manifest** (JSON, ≤ `MICHI_OTA_MANIFEST_MAX_BYTES` — the
    buffer reserves one byte for the NUL, so JSON content ≤ 2047 bytes
    with the default 2048 bound):
@@ -1702,7 +1710,8 @@ sequenceDiagram
    binary URL re-validated (`https://`, no userinfo) → `sha256` exactly
    64 hex → signature (base64-decoded, 256 bytes, `mbedtls_pk_verify`
    with `michi_ota_pubkey_der`). Any failure → `MICHI_OTA_FAILED` with
-   the error text in `GET /diagnostics` → FSM returns to IDLE.
+   the error text in `GET /api/v1/receiver-lite/diagnostics` → FSM
+   returns to IDLE.
 3. **Download**: `esp_http_client` with `esp_crt_bundle_attach` (CA
    bundle verified; `skip_cert_common_name_check` NEVER set) →
    `esp_ota_begin(esp_ota_get_next_update_partition(NULL),
@@ -1732,12 +1741,12 @@ sequenceDiagram
     image; recovery then requires a serial reflash.
 5. **Blocked sessions**: starting an update force-closes the active
    session via `michi_session_abort()` (privileged internal path — the
-   64-hex session credential is never persisted, so OTA cannot present
+   RAM-only session credential is never persisted, so OTA cannot present
    it; the HTTP handlers never use it) and requests
    `MICHI_STATE_UPDATING` (valid from IDLE/PLAYING/PAUSED; the
    SESSION_CLOSED event is queued first so the FSM lands IDLE → UPDATING
-   in order). `POST /sessions` during an update answers 409
-   `ota_in_progress` (checked in the handler before the body is read,
+   in order). A session start during an update is rejected
+   (`ota_in_progress`, checked in the handler before the body is read,
    plus a defensive gate in `michi_session_start`). The display shows
    "Updating firmware..." and the LED runs the UPDATING progress ramp.
 6. **Progress**: `michi_ota_get_state` reports state + percent — 5
@@ -1745,7 +1754,8 @@ sequenceDiagram
    verifying, 95 applying, 100 done. With a chunked transfer (no
    content-length) the percent stays at 10 from the download anchor until
    the verify step — there is no total to compute progress against.
-   `GET /api/v1/receiver/diagnostics` exposes `ota.state` / `ota.percent`
+   `GET /api/v1/receiver-lite/diagnostics` exposes `ota.state` /
+   `ota.percent`
    / `ota.error` (chosen over `/status`: diagnostics is the Bearer-gated
    machine-readable surface; `/status` stays human/product focused).
 7. **Logs**: key=value; URLs are logged as `host=... path_len=...`
@@ -1786,11 +1796,10 @@ python3 scripts/sign_manifest.py \
     --sha256 "$(sha256sum fw-0.3.0.bin | cut -d' ' -f1)" \
     --out manifest.json
 
-# serve manifest.json + the binary over https, then:
-curl -X POST -H "Authorization: Bearer <ota-token>" \
-     -H "Content-Type: application/json" \
-     -d '{"url":"https://dl.example.com/michi/manifest.json"}' \
-     http://<receiver>/api/v1/receiver/updates
+# The canonical HTTP trigger is DEFERRED today:
+#   POST /api/v1/receiver-lite/firmware  ->  501 NOT_IMPLEMENTED
+# The wired update path is LOCAL OTA from the microSD (see below);
+# the legacy POST /api/v1/receiver/updates endpoint was removed.
 ```
 
 `scripts/sign_manifest.py` takes the private key as an INPUT ONLY (never
@@ -1849,7 +1858,8 @@ back.
 Honest degradation: no card or failed mount → the mount task logs
 `sd: not mounted (ok - updates fall back to HTTPS OTA)` and the system
 continues — HTTPS OTA is always the fallback path.
-`GET /diagnostics` exposes `sd.mounted` (the real mount flag) /
+`GET /api/v1/receiver-lite/diagnostics` exposes `sd.mounted` (the real
+mount flag) /
 `sd.total_bytes` / `sd.free_bytes` (sizes via `esp_vfs_fat_info`; the
 IDF 5.3 VFS has no `statvfs` — verified against the installed sources).
 The sizes are cached for `MICHI_SD_INFO_TTL_MS` (review F4) so the
@@ -2033,11 +2043,15 @@ make -C tests/host test
 ### Python suites
 
 ```bash
-python3 tests/contract/test_contract.py   # v1-lite contract on examples/*.json
-python3 tests/contract/test_schema.py     # JSON Schema draft-07 (info + diagnostics)
-python3 simulator/tests/test_simulator.py # simulator unit tests
-python3 simulator/tests/test_scenarios.py # wifi/RTP/pairing/OTA behavior scenarios
-bash scripts/test_receiver_simulator.sh   # smoke: launch + GET info
+# Suite completa (sync + simulador + contrato + E2E) — 86 tests
+./scripts/run_tests.sh
+python3 -m pytest -q                       # 86 tests (simulator 57, contract 22, E2E 7)
+
+python3 tests/contract/test_contract.py    # 13 conformance cases vs the vendored bundle
+python3 tests/contract/test_schema.py      # 9 JSON Schema draft-07 checks
+python3 simulator/tests/test_simulator.py  # 29 simulator unit tests (canonical contract)
+python3 simulator/tests/test_scenarios.py  # 10 wifi/RTP/pairing/OTA behavior scenarios
+bash scripts/test_receiver_simulator.sh    # smoke: launch + GET /api/v1/server/info
 ```
 
 ### What lives where (firmware vs simulator)
@@ -2091,9 +2105,13 @@ with a multimeter in continuity mode (unit powered off):
 8. **PSRAM/Flash**: the self test logs detected sizes; a unit with different flash
    or PSRAM reports `FAIL` (expected 16 MiB / 8 MiB).
 
-## Legacy firmware
+## Legacy firmware (removed)
 
-`firmware/common/`, `firmware/standard/` and `firmware/hifi/` are **legacy prototypes, preserved
-temporarily and excluded from the build**. They will be removed once their tests are migrated to
-the universal firmware. The legacy `firmware/Kconfig` (Wi-Fi credentials, stream type) was
-removed in phase 1 — the universal firmware defines no Wi-Fi credentials or stream type.
+The legacy prototype trees `firmware/common/`, `firmware/standard/` and
+`firmware/hifi/` were **removed** in the convergence cleanup (MS-10). They
+had zero references in the build, tests or release paths: the firmware is
+built from `firmware/main` + `firmware/components` only, host tests
+compile `firmware/components` sources, and CI never referenced the legacy
+trees. The legacy `firmware/Kconfig` (Wi-Fi credentials, stream type) was
+removed earlier in phase 1 — the universal firmware defines no Wi-Fi
+credentials or stream type.

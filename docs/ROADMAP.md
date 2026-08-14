@@ -1,28 +1,35 @@
 # Michi Music Stream — Roadmap
 
-## Fase 0: Contrato
-Documentación, especificación v1-lite, ejemplos, tests.
+## Entregado (convergencia v1-lite)
 
-## Fase 1: Discovery + Pairing
-mDNS, botón físico, ventana 120 s, NVS tokens.
+- Contrato canónico de Michi Link vendorizado (`contracts/michi-link/`) con
+  check de sync en CI.
+- Simulador canónico (MS-02): rutas, estados y errores exactos; validación
+  contra el bundle.
+- Firmware conforme: HTTP/JSON/errores canónicos (MS-03), identidad
+  Ed25519 persistente (MS-04), discovery mDNS + multicast firmado (MS-05),
+  pairing RECEIVER_BUTTON (MS-06), ciclo de sesión RTP (MS-07), heartbeat +
+  lease y capacidades veraces (MS-08).
+- E2E cruzado reproducible (MS-09): `MOCK_PASS` con commits de ambos repos.
+- Limpieza del dialecto legacy (MS-10): árboles `firmware/common|standard|hifi`
+  y rutas `/api/v1/receiver/*` retirados.
 
-## Fase 2: Info + Heartbeat
-Endpoints `/info`, `/firmware`, `/heartbeat` con timeout.
+## Futuro — NO implementado
 
-## Fase 3: Sesión + Volumen
-`/session/start`, `/session/stop`, `/volume`.
-
-## Fase 4: Audio PCM real
-UDP rx, buffer circular, I2S DAC, pcm_s16le 48 kHz, Opus.
-
-## Fase 5: Hi-Fi DAC
-pcm_s24le, 96 kHz, MCLK, buffer 500 ms.
-
-## Fase 6: OTA
-Actualización de firmware Over-The-Air.
-
-## Fase 7: Multiroom / Sync
-Sincronización entre múltiples receptores.
+| Capacidad | Estado |
+|-----------|--------|
+| PCM 24-bit / 96 kHz | Futuro: requiere schema, vector, motor y evidencia física |
+| Opus | Futuro: no implementado ni anunciado |
+| Multiroom / sincronización | Futuro: fuera del alcance v1-lite |
+| RTCP / corrección de drift | Futuro: declarado en el motor de audio |
+| TLS / PAKE / Secure Boot / Flash Encryption | Futuro: seguridad de producción (MS-12) |
+| OTA vía HTTP canónico | Diferido: `POST /receiver-lite/firmware` responde 501; el componente michi_ota existe para OTA local por SD |
 
 ## No planeado
-Biblioteca musical, playlists, indexación, reproducción autónoma, Mobile como fuente directa.
+
+Biblioteca musical, playlists, indexación, reproducción autónoma, Mobile como fuente directa, Bluetooth/AirPlay/Spotify.
+
+## Próximos pasos
+
+- MS-11: validación en hardware (matriz física, `DEVICE_E2E_PASS`).
+- MS-12: seguridad de producción (requiere decisiones humanas).
