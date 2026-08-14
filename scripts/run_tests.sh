@@ -18,7 +18,8 @@
 #   6.  simulator HTTP tests      simulator/tests/test_integration_http.py
 #   7.  E2E canonical harness     pytest tests/e2e (the WHOLE folder)
 #   8.  E2E deterministic report  tests/e2e/run_e2e.py (+ drift guard)
-#   9.  host C tests              make -C tests/host test
+#   9.  host C tests              make -C tests/host clean + test (CI parity:
+#                                 clean first so stale binaries are never run)
 #   10. official examples         tests/contract/test_examples.py
 #   11. legacy reference scan     rg of the mission pattern vs allowlist
 #   12. DEVICE_E2E_PASS gate scan rg DEVICE_E2E_PASS (only "never claimed")
@@ -208,7 +209,7 @@ if [ "$MODE" = "full" ]; then
         exit 1
     fi
     run_suite "host C tests (make -C tests/host test)" \
-        make -C tests/host test
+        bash -c 'make -C "$1" clean && make -C "$1" test' _ tests/host
 fi
 
 # ── summary (only suites actually executed) ──────────────────────
