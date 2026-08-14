@@ -1,0 +1,102 @@
+{
+  "certification": "michi-link-alpha1",
+  "gate": {
+    "MOCK_PASS": true
+  },
+  "commits": {
+    "michi_link": {
+      "tag": "michi-link-v1.0.0-alpha.1",
+      "commit": "84b72029e00dcb66915acc0805df0c7f50b026bc"
+    },
+    "michi_music_stream": {
+      "commit": "c34b2a444868a180279535259679f5e199edd43b",
+      "note": "tip under test (firmware, simulator and contracts trees)"
+    }
+  },
+  "bundle": {
+    "version": "1.0.0-alpha.1",
+    "upstream_commit": "01b0aeec354b37a0e3f7f088649e57cf3857e410"
+  },
+  "environment": "canonical receiver simulator (simulator/receiver_sim.py, MS-02) over real TCP HTTP; real UDP RTP up to the bound socket",
+  "rtp_transport": {
+    "packets_sent": 100,
+    "note": "canonical RTP over real UDP (48k/16/2/10ms/PT97/1920B); the simulator does not ingest RTP by design (MS-02) - arrival evidenced at the bound socket"
+  },
+  "rtp_rejection_evidence": {
+    "source": "firmware/components/michi_audio/rtp_guard.c, host-tested by tests/host/test_rtp_guard.c (compiles the SAME source the firmware engine runs)",
+    "classes": [
+      "source_ip",
+      "payload_type",
+      "ssrc",
+      "payload_size"
+    ],
+    "result": "pass"
+  },
+  "cases": [
+    {
+      "id": "E2E-01",
+      "name": "signed discovery announce vector (schema + Ed25519 + michi_id; altered signature rejected)",
+      "result": "pass"
+    },
+    {
+      "id": "E2E-02",
+      "name": "server info canonical profile + identity derivation; legacy routes gone",
+      "result": "pass"
+    },
+    {
+      "id": "E2E-03",
+      "name": "pairing start: physical-window hook + challenge signature verified by the receiver",
+      "result": "pass"
+    },
+    {
+      "id": "E2E-04",
+      "name": "pairing confirm: receiver-issued token (expires_in 0), PIN via local display, token never stored in clear",
+      "result": "pass"
+    },
+    {
+      "id": "E2E-05",
+      "name": "pairing session consumed on replay (409)",
+      "result": "pass"
+    },
+    {
+      "id": "E2E-06",
+      "name": "session create: canonical negotiation, effective echo, UDP bind, source IP = HTTP peer",
+      "result": "pass"
+    },
+    {
+      "id": "E2E-07",
+      "name": "100 canonical RTP packets (48k/16/2/10ms/PT97/1920B) over real UDP to the bound socket",
+      "result": "pass"
+    },
+    {
+      "id": "E2E-08",
+      "name": "RTP rejection classes (source IP/PT/SSRC/size) via shared host-tested rtp_guard.c",
+      "result": "pass"
+    },
+    {
+      "id": "E2E-09",
+      "name": "heartbeat valid + replay 409 + lease renewal",
+      "result": "pass"
+    },
+    {
+      "id": "E2E-10",
+      "name": "PATCH volume/pause/resume + GET state without session_token",
+      "result": "pass"
+    },
+    {
+      "id": "E2E-11",
+      "name": "DELETE frees session, socket and port; RTP no longer accepted",
+      "result": "pass"
+    },
+    {
+      "id": "E2E-12",
+      "name": "new session after DELETE; lease expiry closes the session; slot freed",
+      "result": "pass"
+    },
+    {
+      "id": "E2E-13",
+      "name": "every HTTP response validates against the vendored michi-link schemas",
+      "result": "pass"
+    }
+  ]
+}
