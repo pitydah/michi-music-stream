@@ -82,6 +82,7 @@ test_json_helpers: test_json_helpers.c $(FIRMWARE)/michi_http/json_helpers.c \
                    $(FIRMWARE)/michi_pairing/validators.c \
                    $(FIRMWARE)/michi_pairing/validators.h $(SHIMS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CJSON_CFLAGS) -I../../firmware/components/michi_pairing/include \
+	    -I../../firmware/components/michi_identity/include \
 	    -o $@ test_json_helpers.c \
 	    $(FIRMWARE)/michi_http/json_helpers.c \
 	    $(FIRMWARE)/michi_pairing/validators.c $(CJSON_LIBS)
