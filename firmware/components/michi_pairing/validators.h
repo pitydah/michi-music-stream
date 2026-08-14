@@ -12,23 +12,13 @@ extern "C" {
  * host-side tests compile the SAME source - no reimplementation).
  * No ESP-IDF dependencies: unit-testable on the host. */
 
-/* Max controller id length (single source of truth: the pairing
- * component and the host tests share it). */
-#define MICHI_PAIRING_ID_MAX 31
+/* @return true when pin is exactly 6 ASCII digits (MICHI_PAIRING_PIN_LEN). */
+bool michi_pairing_pin_valid(const char *pin);
 
-/* @return true when id is alphanumeric + '-' (1..MICHI_PAIRING_ID_MAX). */
-bool michi_pairing_id_valid(const char *id);
-
-/* @return the nibble value of a hex char, 0xff for non-hex. */
-uint8_t michi_pairing_hex_val(char c);
-
-/* @return true when src is src_len hex chars and the decoded bytes fit dst
- *         (exact length contract: src_len == 2 * dst_len). */
-bool michi_pairing_hex_decode(const char *src, size_t src_len, uint8_t *dst,
-                              size_t dst_len);
-
-/* Lowercase-hex encode src into dst (writes 2*len chars + NUL). */
-void michi_pairing_hex_encode(const uint8_t *src, size_t len, char *dst);
+/* @return true when id is a UUID v4 string: 36 chars, the canonical
+ *         8-4-4-4-12 lowercase-hex grouping (e.g.
+ *         "550e8400-e29b-41d4-a716-446655440000"). */
+bool michi_pairing_uuid_valid(const char *id);
 
 /* Constant-time byte comparison: loops over ALL n bytes (no early return
  * on data, no branch on the contents) accumulating into a volatile

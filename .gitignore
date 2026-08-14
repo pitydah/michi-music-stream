@@ -14,3 +14,7 @@ __pycache__/
 /tests/host/test_pairing_validators
 /tests/host/test_json_helpers
 /tests/host/test_michi_identity
+/tests/host/test_michi_pairing
+/tests/host/test_pairing_http
+/tests/host/test_http_canonical
+/tests/host/test_michi_discovery

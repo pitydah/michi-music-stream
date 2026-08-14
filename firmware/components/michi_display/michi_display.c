@@ -74,6 +74,9 @@ static char s_source[MICHI_DISPLAY_SOURCE_MAX + 1];
 static char s_title[MICHI_DISPLAY_TITLE_MAX + 1];
 static char s_artist[MICHI_DISPLAY_ARTIST_MAX + 1];
 static uint32_t s_last_error;
+/* Pairing PIN (MS-06): 6 digits, shown ONLY on the local panel, never
+ * returned by HTTP. Empty when no active PIN. */
+static char s_pairing_pin[7];
 
 static void queue_render(void)
 {
@@ -249,10 +252,25 @@ static void render_frame(uint16_t *fb, uint16_t fb_w, uint16_t fb_h)
     case MICHI_STATE_WIFI_CONNECTING:
         draw_centered(fb, fb_w, fb_h, 148, "Connecting...", MICHI_COLOR_WHITE);
         break;
-    case MICHI_STATE_PAIRING:
-        draw_centered(fb, fb_w, fb_h, 140, "Pairing...", MICHI_COLOR_WHITE);
-        draw_centered(fb, fb_w, fb_h, 156, "Waiting for confirmation", MICHI_COLOR_WHITE);
+    case MICHI_STATE_PAIRING: {
+        /* Snapshot the PIN under the lock (same contract as the
+         * now-playing buffers); render the PIN when set, else the
+         * waiting hint. */
+        char pin[7];
+        portENTER_CRITICAL(&s_info_mux);
+        copy_bounded(pin, sizeof(pin), s_pairing_pin);
+        portEXIT_CRITICAL(&s_info_mux);
+        if (pin[0] != '\0') {
+            char line[MICHI_LINE_CHARS + 3];
+            snprintf(line, sizeof(line), "Pairing PIN: %s", pin);
+            draw_centered(fb, fb_w, fb_h, 140, line, MICHI_COLOR_WHITE);
+        } else {
+            draw_centered(fb, fb_w, fb_h, 140, "Pairing...", MICHI_COLOR_WHITE);
+            draw_centered(fb, fb_w, fb_h, 156, "Waiting for confirmation",
+                          MICHI_COLOR_WHITE);
+        }
         break;
+    }
     case MICHI_STATE_SESSION_PENDING:
     case MICHI_STATE_BUFFERING:
         draw_centered(fb, fb_w, fb_h, 148, "Buffering...", MICHI_COLOR_WHITE);
@@ -428,4 +446,35 @@ esp_err_t michi_display_clear_now_playing(void)
     portEXIT_CRITICAL(&s_info_mux);
     queue_render();
     return ESP_OK;
+}
+
+esp_err_t michi_display_show_pairing_pin(const char *pin)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    portENTER_CRITICAL(&s_info_mux);
+    if (pin != NULL) {
+        /* The buffer is exactly 6 digits + NUL: a malformed string
+         * renders as "--" (never overflow, never truncation). */
+        bool digits = strlen(pin) == 6;
+        for (size_t i = 0; i < 6; i++) {
+            digits = digits && pin[i] >= '0' && pin[i] <= '9';
+        }
+        if (digits) {
+            memcpy(s_pairing_pin, pin, 7);
+        } else {
+            s_pairing_pin[0] = '\0';
+        }
+    } else {
+        s_pairing_pin[0] = '\0';
+    }
+    portEXIT_CRITICAL(&s_info_mux);
+    queue_render();
+    return ESP_OK;
+}
+
+esp_err_t michi_display_clear_pairing_pin(void)
+{
+    return michi_display_show_pairing_pin(NULL);
 }

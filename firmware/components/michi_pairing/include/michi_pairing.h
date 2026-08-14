@@ -5,70 +5,80 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "michi_identity.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* Pairing & security (phase 10): controller registry + the pairing window.
+/* Receiver-button pairing (MS-06): the canonical Michi Link pairing flow
+ * (convergence spec, section 2.3).
  *
- * Architecture (see firmware/README.md, Pairing & security section):
+ * Contract highlights:
  * - The physical button is the ONLY authority that opens the pairing
  *   window: michi_pairing_open_window() is called exclusively from the
- *   button path (michi_button, task context) or an equivalent physical
- *   gate. There is NO network-visible API that opens it - the phase-12
- *   HTTP handlers can only request/confirm challenges INSIDE a window
- *   already opened by the button.
- * - A window is a short-lived (MICHI_PAIRING_WINDOW_SECONDS) pairing
- *   session: it issues challenges (16 random bytes from esp_fill_random,
- *   hex, 32 chars) bound to the requesting initiator id (single-slot: one
- *   active challenge per window; a new get_challenge overwrites the
- *   previous challenge+owner pair) and accepts one confirmation
- *   (challenge + initiator id + token) - only from the SAME id that
- *   issued the challenge. The window closes on expiry (one-shot
- *   esp_timer), on a successful pairing, on confirm-attempt exhaustion
- *   (anti brute force) or on an explicit close - always posting
- *   MICHI_EVENT_PAIRING_WINDOW_CLOSED (PAIRING -> IDLE in the FSM).
- * - Tokens are receiver-checked by their SHA-256: only the digest is
- *   stored (NVS namespace "michi_pairing", single versioned blob), and
- *   validation compares digests in CONSTANT TIME (mbedtls_ct_memcmp)
- *   against every slot, without early return - the timing never reveals
- *   which controller matched, nor how many are stored (empty slots are
- *   compared against a fixed zero digest).
- * - Rate limits per window: MICHI_PAIRING_MAX_CHALLENGES_PER_WINDOW
- *   issues and MICHI_PAIRING_MAX_CONFIRM_ATTEMPTS failed confirmations;
- *   exceeding the confirmation limit CLOSES the window (log + FSM event).
- * - Attempts contract: every failed confirmation consumes one of the
- *   window's attempts EXCEPT a malformed initiator id and no-proof-issued
- *   (no challenge was issued for the window), which are rejected without
- *   consuming - they are not authentication attempts.
- * - Zero secrets in logs: challenge/token/digest values are NEVER logged;
- *   logs carry only controller ids (not secret) and counters.
- * - Permissions are a per-controller bitmask granted at pairing time
- *   (MICHI_PERM_DEFAULT). The elevated bits (controller admin, OTA,
- *   factory reset) are documented as NOT granted by default - the grant
- *   management flow is a future phase.
- *
+ *   button path (michi_button) or an equivalent physical gate. There is
+ *   NO network-visible API that opens it - the HTTP pair handlers only
+ *   operate INSIDE a window already opened by the button.
+ * - A window lasts exactly CONFIG_MICHI_PAIRING_WINDOW_SECONDS (default
+ *   120) on the MONOTONIC clock (esp_timer). A reboot closes it (window
+ *   state is RAM-only). Re-opening replaces the previous window AND
+ *   drops every pending pairing session.
+ * - POST /pair/start verifies an Ed25519 signature over the DECODED
+ *   challenge_nonce bytes (michi_identity_verify) and that michi_id ==
+ *   base64url-nopad(blake3(public_key)) (michi_identity_derive_michi_id).
+ *   Any failure answers 400 and creates NO session.
+ * - On success a 6-digit PIN is drawn UNIFORMLY from esp_fill_random
+ *   (rejection sampling: no modulo bias), kept in RAM ONLY, shown
+ *   locally through the PIN display callback and NEVER returned by
+ *   HTTP.
+ * - POST /pair/confirm: the controller identity must match pair/start
+ *   exactly. Five failed PIN attempts are allowed (401); the SIXTH
+ *   confirm attempt answers 429 and the session is consumed (locked).
+ *   A correct PIN issues a receiver-generated token: 32 bytes from
+ *   esp_fill_random, base64url WITHOUT padding (43 chars), returned
+ *   ONCE with expires_in 0 ("no automatic expiry"). Only the SHA-256
+ *   digest of the token is persisted - with the controller michi_id,
+ *   public_key, permissions, creation date and last activity. A second
+ *   (replay) confirmation answers 409.
+ * - Token validation (HTTP Bearer) compares digests in CONSTANT TIME
+ *   against every slot, without early return (no length/timing oracle).
+ * - Rate limits (section MS-06: fixed CONSTANTS, not Kconfig): per
+ *   window, MICHI_PAIRING_MAX_STARTS_PER_WINDOW pair/start requests
+ *   globally and MICHI_PAIRING_MAX_STARTS_PER_IP per source IP.
+ * - Zero secrets in logs: PIN, token, digest, nonce and signature are
+ *   NEVER logged. Session ids, controller michi_ids (public) and
+ *   counters may appear.
+ * - Revocation (michi_pairing_revoke) and factory reset
+ *   (michi_pairing_erase_all, or the device-wide NVS erase) clear the
+ *   controller registry.
+ * - The legacy fields initiator_id and client_token are rejected by
+ *   the HTTP body gate (400) - they are not part of this flow.
+
  * Persistence: the registry lives in NVS as ONE versioned blob (key
  * "controllers", namespace "michi_pairing"). Blob layout
- * (MICHI_PAIRING_BLOB_VERSION = 1):
+ * (MICHI_PAIRING_BLOB_VERSION = 2; version 1 was the phase-10 challenge
+ * registry and is treated as EMPTY on load):
  *   offset 0:  u32 version (MICHI_PAIRING_BLOB_VERSION)
  *   offset 4:  u32 count
- *   offset 8:  count entries, each 80 bytes, field order:
- *                controller_id[32]  (NUL-terminated, <= 31 chars)
- *                digest[32]         (SHA-256 of the token, never the token)
- *                created_unix       (int64, uptime seconds until a wall clock lands)
- *                permissions        (u32 bitmask)
- *                reserved           (u32, explicit tail padding: layout stability,
- *                                    deterministic persisted bytes)
- *   The 8-byte header keeps the entries 8-aligned (created_unix sits at
- *   offset 64 within the entry). Slots [count..MAX) are always zeroed
- *   before persisting (no revoked digests retained on flash), and the
- *   layout is _Static_assert-guarded. Every mutation rewrites the whole
- *   blob (nvs_set_blob + commit) and propagates NVS errors.
+ *   offset 8:  count entries (184 bytes each), field order:
+ *                device_id[37]        (UUID v4 + NUL, assigned by receiver)
+ *                michi_id[44]         (controller michi_id, 43 chars + NUL)
+ *                public_key[44]       (controller public key b64url + NUL)
+ *                digest[32]           (SHA-256 of the token, never the token)
+ *                permissions          (u32 bitmask)
+ *                reserved             (u32, layout stability)
+ *                created_unix         (int64)
+ *                last_activity_unix   (int64)
+ *   The layout is _Static_assert-guarded; entries are zeroed before
+ *   filling so the persisted bytes are deterministic. Every mutation
+ *   rewrites the whole blob (nvs_set_blob + commit) and propagates NVS
+ *   errors. Slots [count..MAX) are zeroed before persisting (no revoked
+ *   digests retained on flash).
  */
 
-/* Controller permissions (bitmask, uint32_t). */
+/* Controller permissions (bitmask, uint32_t) - kept from the phase-10
+ * design; MS-06 stores the granted bitmask per controller. */
 #define MICHI_PERM_STATUS           0x00000001u /*!< Read status/state */
 #define MICHI_PERM_PLAYBACK         0x00000002u /*!< Start/stop/pause playback */
 #define MICHI_PERM_VOLUME           0x00000004u /*!< Read/set volume */
@@ -83,21 +93,81 @@ extern "C" {
 #define MICHI_PERM_DEFAULT (MICHI_PERM_STATUS | MICHI_PERM_PLAYBACK | \
                             MICHI_PERM_VOLUME | MICHI_PERM_SETTINGS)
 
+/* Contract constants (section 2.3 + MS-06 "en constantes"). */
+#define MICHI_PAIRING_PIN_ATTEMPTS 5u           /*!< Max failed PIN attempts per session */
+#define MICHI_PAIRING_PIN_LEN 6u                /*!< PIN digits */
+#define MICHI_PAIRING_PIN_BUF_LEN (MICHI_PAIRING_PIN_LEN + 1u)
+#define MICHI_PAIRING_TOKEN_BYTES 32u           /*!< Receiver-issued token size */
+#define MICHI_PAIRING_TOKEN_B64_LEN 44u         /*!< 43 base64url chars + NUL */
+#define MICHI_PAIRING_DIGEST_BYTES 32u          /*!< SHA-256 */
+#define MICHI_PAIRING_MAX_STARTS_PER_WINDOW 5u  /*!< Global pair/start rate limit per window */
+#define MICHI_PAIRING_MAX_STARTS_PER_IP 3u      /*!< Per-source-IP pair/start rate limit per window */
+#define MICHI_PAIRING_MAX_SESSIONS_PER_WINDOW 4u /*!< Active pairing sessions per window */
+#define MICHI_PAIRING_SESSION_ID_LEN 37u        /*!< UUID v4 + NUL */
+#define MICHI_PAIRING_DEVICE_ID_LEN 37u         /*!< Controller UUID v4 + NUL */
+#define MICHI_PAIRING_EXPIRES_AT_LEN 25u        /*!< RFC 3339 "YYYY-MM-DDTHH:MM:SSZ" + NUL */
+#define MICHI_PAIRING_NONCE_B64_MAX 64u         /*!< challenge_nonce buffer (schema: >= 22 chars) */
+#define MICHI_PAIRING_IP_MAX 46u                /*!< Source IP string (IPv4/IPv6) + NUL */
+#define MICHI_PAIRING_ACTIVITY_PERSIST_SECONDS 60u /*!< Min interval between last-activity NVS writes */
+
+/* The peer (controller) identity carried by pair/start and replayed by
+ * pair/confirm. All fields are base64url WITHOUT padding (canonical wire
+ * encoding). */
+typedef struct {
+    char michi_id[MICHI_IDENTITY_MICHI_ID_LEN];
+    char public_key[MICHI_IDENTITY_PUBLIC_KEY_B64_LEN];
+    char challenge_nonce[MICHI_PAIRING_NONCE_B64_MAX];
+    char challenge_signature[MICHI_IDENTITY_SIGNATURE_B64_LEN];
+} michi_pairing_peer_t;
+
+/* Result codes of michi_pairing_start(): each maps to exactly one HTTP
+ * status in the canonical error map (section 2.7). */
+typedef enum {
+    MICHI_PAIRING_START_OK = 0,          /*!< 201: session created, PIN shown */
+    MICHI_PAIRING_START_WINDOW_CLOSED,   /*!< 403 FORBIDDEN (physical window closed) */
+    MICHI_PAIRING_START_INVALID,         /*!< 400 INVALID_REQUEST (nonce/signature/id) */
+    MICHI_PAIRING_START_RATE_LIMITED,    /*!< 429 RATE_LIMITED (per IP/global) */
+    MICHI_PAIRING_START_INTERNAL,        /*!< 500 INTERNAL_ERROR */
+} michi_pairing_start_result_t;
+
+/* Result codes of michi_pairing_status(). */
+typedef enum {
+    MICHI_PAIRING_STATUS_OK = 0,         /*!< 200: status filled */
+    MICHI_PAIRING_STATUS_NOT_FOUND,      /*!< 404 NOT_FOUND (no such session) */
+} michi_pairing_status_result_t;
+
+/* Result codes of michi_pairing_confirm(). */
+typedef enum {
+    MICHI_PAIRING_CONFIRM_OK = 0,        /*!< 200: token issued exactly once */
+    MICHI_PAIRING_CONFIRM_NOT_FOUND,     /*!< 404 (unknown or expired session) */
+    MICHI_PAIRING_CONFIRM_INVALID,       /*!< 400 (identity mismatch / malformed) */
+    MICHI_PAIRING_CONFIRM_PIN_MISMATCH,  /*!< 401 (wrong PIN; attempt consumed) */
+    MICHI_PAIRING_CONFIRM_LOCKED,        /*!< 429 (sixth attempt; session consumed) */
+    MICHI_PAIRING_CONFIRM_CONFLICT,      /*!< 409 (session already confirmed) */
+    MICHI_PAIRING_CONFIRM_INTERNAL,      /*!< 500 (persistence/identity failure) */
+} michi_pairing_confirm_result_t;
+
+/* Pairing session status (pair/status contract: pending, confirmed,
+ * expired, locked). */
+typedef enum {
+    MICHI_PAIRING_SESSION_PENDING = 0,
+    MICHI_PAIRING_SESSION_CONFIRMED,
+    MICHI_PAIRING_SESSION_EXPIRED,
+    MICHI_PAIRING_SESSION_LOCKED,
+} michi_pairing_session_status_t;
+
 /**
  * @brief Initialize the pairing subsystem: load the controller registry
  *        from NVS (namespace "michi_pairing", key "controllers") and
  *        create the window-expiry timer.
  *
- * A missing/corrupt/version-mismatched store is treated as EMPTY (warn
- * logged): the component never fails boot over a bad store, it starts
- * unpaired. Individual corrupt entries (id not NUL-terminated within
- * 31 chars) are dropped without rejecting the whole store (warn logged,
- * persisted by the next mutation). The loaded blob ALWAYS carries
- * MICHI_PAIRING_BLOB_VERSION in RAM (it is written on every load path),
- * so the next persist survives the round-trip version check. The count
- * of loaded controllers is logged (`pairing: loaded controllers=%u`).
+ * A missing/corrupt/foreign-version store (including the phase-10
+ * version-1 layout) is treated as EMPTY (warn logged): the component
+ * never fails boot over a bad store, it starts unpaired. The count of
+ * loaded controllers is logged (`pairing: loaded controllers=%u`).
  *
- * Must be called after init_nvs() (the registry lives in NVS); the FSM
+ * Must be called after init_nvs() (the registry lives in NVS) and after
+ * michi_identity_init() (pair/start emits the server identity). The FSM
  * must be initialized (the window close posts FSM events). Safe to call
  * once; repeated calls return ESP_OK (idempotent). On failure app_main
  * continues degraded: no pairing, everything else keeps working.
@@ -112,11 +182,14 @@ esp_err_t michi_pairing_init(void);
  *        (michi_button, task context) or an equivalent physical gate -
  *        this is the single authorization point of the whole protocol.
  *
- * If a window is already open it is closed silently (timer cancelled,
- * state cleared, NO FSM event: the caller re-opens immediately and posts
- * PAIRING_STARTED; a close event here would race it) and a fresh window
- * is opened. The one-shot expiry timer (MICHI_PAIRING_WINDOW_SECONDS) is
- * (re)started; on expiry the window closes itself and posts
+ * If a window is already open it is replaced silently (timer restarted,
+ * state cleared, NO FSM event: the button posts PAIRING_STARTED itself
+ * when it was not already in PAIRING) and a fresh window is opened.
+ * Pending pairing sessions and the per-window rate counters are cleared
+ * (contract: "Abrir de nuevo reemplaza la ventana previa y elimina
+ * sesiones de pairing pendientes"). The one-shot expiry timer
+ * (CONFIG_MICHI_PAIRING_WINDOW_SECONDS, monotonic clock) is (re)started;
+ * on expiry the window closes itself and posts
  * MICHI_EVENT_PAIRING_WINDOW_CLOSED (PAIRING -> IDLE).
  *
  * @return ESP_OK; ESP_ERR_INVALID_STATE before init; esp_timer errors
@@ -125,129 +198,158 @@ esp_err_t michi_pairing_init(void);
 esp_err_t michi_pairing_open_window(void);
 
 /**
- * @brief Whether a pairing window is currently open.
- *
- * The one-shot timer owns the expiry close + FSM event; this getter also
- * returns false once the deadline passed but the timer has not fired yet
- * (the close follows within one timer tick) - it never mutates state.
+ * @brief Whether a pairing window is currently open (monotonic deadline
+ *        check; never mutates state).
  *
  * @return true while the window is open and before its deadline.
  */
 bool michi_pairing_is_window_open(void);
 
 /**
- * @brief Issue a challenge for an initiator, bound to the current window.
+ * @brief Whether a session/device identifier is a well-formed UUID
+ *        (8-4-4-4-12 lowercase hex, no braces). Pure validator; also
+ *        used by the HTTP layer for /pair/status session_id.
  *
- * Generates 16 random bytes (esp_fill_random), encodes them as 32
- * lowercase hex chars + NUL into out_hex (out_len must be >= 33) and
- * records one issue for the window's challenge rate limit.
- *
- * Single-slot semantics: ONE active challenge per window, bound to the
- * initiator id that requested it. A new get_challenge (same window or a
- * re-opened one) OVERWRITES the previous challenge+owner pair. The
- * challenge dies with the window (close/expiry clears it); confirm()
- * only accepts the id that issued it.
- *
- * The challenge VALUE is never logged; the owner id (not secret) appears
- * in the `owner=` log field.
- *
- * @param initiator_id The id that will confirm the challenge (1..31
- *                     chars, alphanumeric + '-'); stored as the
- *                     challenge owner.
- * @param out_hex  Buffer for the hex challenge.
- * @param out_len  Size of out_hex.
- * @return ESP_OK; ESP_ERR_INVALID_STATE before init or with no open
- *         window; ESP_ERR_INVALID_ARG for a too-small buffer or a
- *         malformed initiator id (not consumed);
- *         ESP_ERR_TIMEOUT when the window exhausted its issue limit
- *         (MICHI_PAIRING_MAX_CHALLENGES_PER_WINDOW).
+ * @param id NUL-terminated string to check (may be NULL -> false).
+ * @return true when the string is a canonical UUID.
  */
-esp_err_t michi_pairing_get_challenge(const char *initiator_id,
-                                      char *out_hex, size_t out_len);
+bool michi_pairing_uuid_valid(const char *id);
 
 /**
- * @brief Confirm a pairing: prove the challenge, register the initiator
- *        and its token, grant the default permissions.
+ * @brief Whether a PIN string is exactly six decimal digits. Pure
+ *        validator; also used by the HTTP layer for /pair/confirm.
  *
- * Validations, in order: window open (INVALID_STATE), initiator id format
- * (1..31 chars, alphanumeric + '-', INVALID_ARG - NOT consumed), challenge
- * format (32 hex chars, INVALID_ARG) compared to the issued challenge in
- * constant time (mismatch = ESP_ERR_NOT_FOUND), the initiator id vs. the
- * challenge owner (INVALID_STATE, plain strcmp - the id is not secret:
- * the challenge is single-slot and only the id that issued it may
- * confirm), token format (64 hex chars, INVALID_ARG) whose SHA-256 digest
- * becomes the stored credential.
- *
- * Attempts contract: EVERY failed confirmation consumes one of the
- * window's MICHI_PAIRING_MAX_CONFIRM_ATTEMPTS attempts EXCEPT a
- * malformed initiator id and no-proof-issued (no challenge issued for
- * the window), which are rejected without consuming - they are not
- * authentication attempts. When the limit is exceeded the window CLOSES
- * (log + FSM event) and ESP_ERR_TIMEOUT is returned.
- *
- * The initiator id is the controller identity: if a controller with the
- * same id is already stored, its entry is REUSED (token replaced,
- * permissions reset to MICHI_PERM_DEFAULT, created updated) - re-pairing
- * rotates the credential. Otherwise a new entry is appended (up to
- * MICHI_PAIRING_MAX_CONTROLLERS). The store is written to NVS (blob +
- * commit) before the in-RAM registry is updated; NVS errors are returned
- * and the in-RAM state is unchanged.
- *
- * On success the window closes (MICHI_EVENT_PAIRING_WINDOW_CLOSED, so the
- * FSM leaves PAIRING) and the granted controller id + permissions are
- * returned.
- *
- * @param challenge_hex     The hex challenge previously issued by
- *                          michi_pairing_get_challenge().
- * @param initiator_id      Client-claimed identity (1..31 chars,
- *                          alphanumeric + '-'); it becomes the stored
- *                          controller id and MUST match the id the
- *                          challenge was issued for.
- * @param token_hex         The controller credential: 64 hex chars (32
- *                          bytes of client randomness). Stored ONLY as
- *                          its SHA-256 digest.
- * @param out_controller_id Buffer for the granted controller id
- *                          (>= 32 bytes).
- * @param out_id_len        Size of out_controller_id.
- * @param out_permissions   Receives the granted permission bitmask.
- * @return ESP_OK; ESP_ERR_INVALID_STATE before init, window closed, no
- *         challenge issued yet for the window, or initiator id != the
- *         challenge owner (attempt consumed); ESP_ERR_INVALID_ARG
- *         (malformed input - malformed initiator id NOT consumed,
- *         malformed challenge/token consumed; too-small buffers);
- *         ESP_ERR_NOT_FOUND (wrong challenge - attempt consumed);
- *         ESP_ERR_NO_MEM (registry full); ESP_ERR_TIMEOUT (window closed
- *         by attempt exhaustion); NVS errors propagated unchanged.
+ * @param pin NUL-terminated string to check (may be NULL -> false).
+ * @return true when the string is a canonical 6-digit PIN.
  */
-esp_err_t michi_pairing_confirm(const char *challenge_hex,
-                                const char *initiator_id,
-                                const char *token_hex,
-                                char *out_controller_id,
-                                size_t out_id_len,
-                                uint32_t *out_permissions);
+bool michi_pairing_pin_valid(const char *pin);
 
 /**
- * @brief Validate a token against the stored registry (constant time)
- *        and return the owning controller + its permissions.
+ * @brief Constant-time byte-sequence comparison (all bytes examined,
+ *        no data-dependent early exit). Used for PINs and token digests.
  *
- * The token's SHA-256 digest is compared with mbedtls_ct_memcmp against
- * EVERY slot (empty slots against a fixed zero digest), with NO early
- * return on match: the time does not reveal which controller matched nor
- * how many controllers are stored (trade-off: O(MAX_CONTROLLERS)
- * comparisons per validation).
+ * @param a First buffer.
+ * @param b Second buffer.
+ * @param n Number of bytes to compare.
+ * @return true when both buffers are byte-identical.
+ */
+bool michi_pairing_token_matches(const uint8_t *a, const uint8_t *b, size_t n);
+
+/**
+ * @brief Start a pairing session (POST /pair/start), only inside the
+ *        physical window.
  *
- * @param token_hex         The 64-hex-char token to validate.
- * @param out_controller_id Buffer for the owning controller id
- *                          (>= 32 bytes).
- * @param out_id_len        Size of out_controller_id.
- * @param out_permissions   Receives the controller's permission bitmask.
+ * Validations, in order: window open (WINDOW_CLOSED), per-IP and global
+ * rate limits (RATE_LIMITED), peer field formats + Ed25519 signature
+ * over the DECODED challenge_nonce bytes under public_key
+ * (michi_identity_verify) + michi_id == base64url-nopad(blake3(pubkey))
+ * (michi_identity_derive_michi_id) - any failure is INVALID and creates
+ * NO session.
+ *
+ * On success: a fresh UUID v4 session_id, a uniformly-drawn 6-digit PIN
+ * (esp_fill_random, rejection sampling), the session deadline (window
+ * deadline, monotonic) and an RFC 3339 expires_at. The PIN is handed to
+ * the PIN display callback (michi_pairing_set_pin_display_cb) for the
+ * local screen and is NOT part of any return value.
+ *
+ * @param peer                  Controller identity (all fields
+ *                              base64url-nopad strings).
+ * @param ip                    Source IP of the request (rate limit
+ *                              key; NULL maps to a reserved slot).
+ * @param out_session_id        Buffer (>= MICHI_PAIRING_SESSION_ID_LEN).
+ * @param session_id_len        Size of out_session_id.
+ * @param out_expires_at        Buffer (>= MICHI_PAIRING_EXPIRES_AT_LEN).
+ * @param expires_len           Size of out_expires_at.
+ * @param out_attempts_remaining Receives MICHI_PAIRING_PIN_ATTEMPTS.
+ * @return A MICHI_PAIRING_START_* result code.
+ */
+michi_pairing_start_result_t michi_pairing_start(
+    const michi_pairing_peer_t *peer, const char *ip,
+    char *out_session_id, size_t session_id_len,
+    char *out_expires_at, size_t expires_len,
+    uint32_t *out_attempts_remaining);
+
+/**
+ * @brief Query a pairing session (GET /pair/status).
+ *
+ * A pending session past its deadline reports status "expired" (the
+ * session record stays until the window is re-opened). Locked sessions
+ * report their real remaining attempts (0); the HTTP layer clamps to the
+ * schema floor (1) when serializing.
+ *
+ * @param session_id              Session UUID.
+ * @param out_status              Buffer (>= 12 bytes).
+ * @param status_len              Size of out_status.
+ * @param out_expires_at          Buffer (>= MICHI_PAIRING_EXPIRES_AT_LEN).
+ * @param expires_len             Size of out_expires_at.
+ * @param out_attempts_remaining  Receives attempts left (0 when locked).
+ * @return MICHI_PAIRING_STATUS_OK / MICHI_PAIRING_STATUS_NOT_FOUND.
+ */
+michi_pairing_status_result_t michi_pairing_status(
+    const char *session_id, char *out_status, size_t status_len,
+    char *out_expires_at, size_t expires_len,
+    uint32_t *out_attempts_remaining);
+
+/**
+ * @brief Confirm a pairing session (POST /pair/confirm).
+ *
+ * Validations, in order: session exists (NOT_FOUND), not confirmed
+ * (CONFLICT), not locked (LOCKED - the sixth attempt and beyond answer
+ * 429 and the session stays consumed), not expired (NOT_FOUND), michi_id
+ * and public_key EXACTLY equal to the pair/start values (INVALID), PIN
+ * format (INVALID, no attempt consumed). A wrong well-formed PIN
+ * consumes one attempt (PIN_MISMATCH); when the last attempt is consumed
+ * the session becomes locked.
+ *
+ * On success the receiver generates the token (32 bytes esp_fill_random,
+ * base64url-nopad, 43 chars), assigns a fresh UUID v4 device_id, stores
+ * ONLY the SHA-256 digest of the token (with michi_id, public_key, the
+ * default permissions, creation date and last activity) in NVS, and
+ * marks the session confirmed. The token is returned exactly ONCE (this
+ * call); a later replay gets CONFLICT. A persistence failure returns
+ * INTERNAL and leaves the session pending (no token was issued).
+ *
+ * The PIN and the token are never logged.
+ *
+ * @param session_id      Session UUID from pair/start.
+ * @param pin             Six-digit PIN.
+ * @param michi_id        Controller michi_id (must match pair/start).
+ * @param public_key      Controller public key (must match pair/start).
+ * @param out_token       Buffer (>= MICHI_PAIRING_TOKEN_B64_LEN).
+ * @param token_len       Size of out_token.
+ * @param out_device_id   Buffer (>= MICHI_PAIRING_DEVICE_ID_LEN).
+ * @param device_id_len   Size of out_device_id.
+ * @return A MICHI_PAIRING_CONFIRM_* result code.
+ */
+michi_pairing_confirm_result_t michi_pairing_confirm(
+    const char *session_id, const char *pin, const char *michi_id,
+    const char *public_key, char *out_token, size_t token_len,
+    char *out_device_id, size_t device_id_len);
+
+/**
+ * @brief Validate a bearer token (43-char base64url-nopad) against the
+ *        stored registry (constant time) and return the owning device id
+ *        + its permissions.
+ *
+ * The token's SHA-256 digest is compared in constant time against EVERY
+ * slot (empty slots against a fixed zero digest), with NO early return
+ * on match: the time does not reveal which controller matched nor how
+ * many are stored. On success the controller's last activity timestamp
+ * is refreshed in RAM and persisted at most once per
+ * MICHI_PAIRING_ACTIVITY_PERSIST_SECONDS (flash-wear guard).
+ *
+ * @param token          The base64url-nopad token to validate.
+ * @param out_device_id  Buffer (>= MICHI_PAIRING_DEVICE_ID_LEN).
+ * @param id_len         Size of out_device_id.
+ * @param out_permissions Receives the controller's permission bitmask.
  * @return ESP_OK; ESP_ERR_INVALID_STATE before init;
  *         ESP_ERR_INVALID_ARG (malformed token / too-small buffers);
- *         ESP_ERR_NOT_FOUND (no controller matches).
+ *         ESP_ERR_NOT_FOUND (no controller matches); NVS errors from
+ *         the activity refresh are swallowed (validation still succeeds).
  */
-esp_err_t michi_pairing_validate_token(const char *token_hex,
-                                       char *out_controller_id,
-                                       size_t out_id_len,
+esp_err_t michi_pairing_validate_token(const char *token,
+                                       char *out_device_id,
+                                       size_t id_len,
                                        uint32_t *out_permissions);
 
 /**
@@ -259,25 +361,25 @@ esp_err_t michi_pairing_validate_token(const char *token_hex,
  * distinguish "invalid" from "forbidden" here; use
  * michi_pairing_validate_token() when the error matters.
  *
- * @param token_hex The 64-hex-char token.
- * @param perm      One MICHI_PERM_* bit (or a mask).
+ * @param token The base64url-nopad token.
+ * @param perm  One MICHI_PERM_* bit (or a mask).
  * @return true when the token matches a stored controller whose
  *         permissions include perm.
  */
-bool michi_pairing_has_permission(const char *token_hex, uint32_t perm);
+bool michi_pairing_has_permission(const char *token, uint32_t perm);
 
 /**
  * @brief Revoke a controller: remove its entry and persist.
  *
- * @param controller_id The controller id (as granted by confirm).
+ * @param device_id The device id assigned at confirm time (UUID v4).
  * @return ESP_OK; ESP_ERR_INVALID_STATE before init;
  *         ESP_ERR_INVALID_ARG (malformed id); ESP_ERR_NOT_FOUND
  *         (no such controller); NVS errors propagated unchanged.
  */
-esp_err_t michi_pairing_revoke(const char *controller_id);
+esp_err_t michi_pairing_revoke(const char *device_id);
 
 /**
- * @brief List stored controller ids as "id1,id2" (no secrets, no
+ * @brief List stored controller device ids as "id1,id2" (no secrets, no
  *        permissions, no digests).
  *
  * Pre-init contract as the rest of the API: the registry is not valid
@@ -293,14 +395,43 @@ esp_err_t michi_pairing_revoke(const char *controller_id);
 esp_err_t michi_pairing_list(char *out, size_t out_len);
 
 /**
+ * @brief Factory-reset hook: erase the whole controller registry (NVS
+ *        key + in-RAM copy). A full-device factory reset erases the
+ *        whole NVS partition and achieves the same; this is the pairing-
+ *        side guarantee when only the identity/registry must be wiped.
+ *
+ * @return ESP_OK; ESP_ERR_INVALID_STATE before init; NVS errors
+ *         propagated unchanged.
+ */
+esp_err_t michi_pairing_erase_all(void);
+
+/**
+ * @brief PIN display callback: called with the 6-digit PIN when a
+ *        pairing session is created, and with NULL when the window
+ *        closes (the screen must clear). Runs in task context (the HTTP
+ *        handler), never from an ISR or the timer task.
+ *
+ * @param pin The PIN string, or NULL to clear.
+ * @param ctx Opaque context passed to michi_pairing_set_pin_display_cb.
+ */
+typedef void (*michi_pairing_pin_display_cb_t)(const char *pin, void *ctx);
+
+/**
+ * @brief Register the PIN display callback (single slot; NULL clears).
+ *
+ * app_main registers the screen glue so the component never depends on
+ * michi_display. The pairing host tests register a spy.
+ */
+void michi_pairing_set_pin_display_cb(michi_pairing_pin_display_cb_t cb,
+                                      void *ctx);
+
+/**
  * @brief Close the pairing window and post MICHI_EVENT_PAIRING_WINDOW_CLOSED
  *        (PAIRING -> IDLE in the FSM) - but only if it was open.
  *
- * Clears the challenge and the per-window counters, cancels the expiry
- * timer. Idempotent: closing an already-closed window returns ESP_OK
- * without posting. This is the single close path used by the expiry
- * timer, the confirm success, the attempt-exhaustion close and the
- * explicit API call.
+ * Clears the sessions, the per-window counters, the PIN display (NULL
+ * callback) and cancels the expiry timer. Idempotent: closing an
+ * already-closed window returns ESP_OK without posting.
  *
  * @return ESP_OK; ESP_ERR_INVALID_STATE before init.
  */
@@ -314,13 +445,6 @@ esp_err_t michi_pairing_close_window(void);
  * Idempotent: a second call when the subsystem is already off returns
  * ESP_OK. MUST be called from regular task context: deleting the timer
  * from inside its own callback (the esp_timer task) is not supported.
- *
- * Teardown order (F3, deadlock-safe vs. the timer callback): set the
- * internal s_teardown flag (the callback checks it BEFORE taking the
- * mutex and returns - it can never block on, or take, a mutex that is
- * about to be deleted), stop the timer, take the mutex, delete the
- * timer, release the mutex, and ONLY THEN delete the mutex and clear
- * s_initialized.
  *
  * @return ESP_OK.
  */
