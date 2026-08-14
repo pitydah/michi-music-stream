@@ -88,21 +88,18 @@ curl -s "http://localhost:53319/api/v1/pair/status?session_id=$SESSION_ID" | jq 
 #   [LOCAL DISPLAY] Pairing session: <uuid>   ← debe coincidir con $SESSION_ID
 
 # pair/confirm con PIN y sesión REALES (leídos del display local)
-curl -s http://localhost:53319/api/v1/pair/confirm \
+# IMPORTANTE: la sesión se consume en esta llamada; el token SOLO está en
+# ESTA respuesta (un segundo confirm responde 409 PAIRING_ALREADY_CONSUMED
+# y no incluye token). Guardá la respuesta y extraé el token de ella.
+CONFIRM_RESPONSE=$(curl -s http://localhost:53319/api/v1/pair/confirm \
   -H "Content-Type: application/json" \
   -d "$(jq -n --arg sid "$SESSION_ID" --arg pin "<PIN_DEL_DISPLAY_LOCAL>" \
        '{session_id: $sid, pin: $pin,
          michi_id: "JXcHys3oHoK2xsmQqlWEKi-KH_s4TrxJGw3YbiKP9-U",
-         public_key: "j8oIHv906goIsvcANXl_SZX8-OPcZftDkTPwTYaQQ7E"}')" | jq .
+         public_key: "j8oIHv906goIsvcANXl_SZX8-OPcZftDkTPwTYaQQ7E"}')")
+echo "$CONFIRM_RESPONSE" | jq .
 # → 200 + token (emitido por el receptor; expires_in=0)
-# Extraer el token DE LA RESPUESTA:
-TOKEN=$(curl -s http://localhost:53319/api/v1/pair/confirm \
-  -H "Content-Type: application/json" \
-  -d "$(jq -n --arg sid "$SESSION_ID" --arg pin "<PIN_DEL_DISPLAY_LOCAL>" \
-       '{session_id: $sid, pin: $pin,
-         michi_id: "JXcHys3oHoK2xsmQqlWEKi-KH_s4TrxJGw3YbiKP9-U",
-         public_key: "j8oIHv906goIsvcANXl_SZX8-OPcZftDkTPwTYaQQ7E"}')" | jq -r .token)
-# Nota: un segundo confirm con la misma sesión responde 409 PAIRING_ALREADY_CONSUMED.
+TOKEN=$(echo "$CONFIRM_RESPONSE" | jq -r .token)
 ```
 
 ### 3. Pairing sin ventana → 403 esperado
