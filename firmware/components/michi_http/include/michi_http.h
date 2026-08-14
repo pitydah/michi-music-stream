@@ -213,6 +213,60 @@ esp_err_t michi_http_send_error(httpd_req_t *req, int status,
 esp_err_t michi_http_send_json(httpd_req_t *req, int status,
                                const cJSON *root);
 
+/**
+ * @brief Parse + copy the canonical pair/start body (POST /pair/start).
+ *
+ * Validates the schema shape (device_name/device_type/roles/auth_strategy
+ * presence, types and enums), REJECTS the legacy fields initiator_id and
+ * client_token (spec 2.3 + MS-06: they are not part of the
+ * receiver-button flow), and copies the four identity fields
+ * (michi_id/public_key/challenge_nonce/challenge_signature) into the
+ * caller's buffers. On failure the offending field name ("initiator_id",
+ * "client_token", "michi_id", ...) is written to err_field - the caller
+ * answers 400 INVALID_REQUEST with details.field. Pure cJSON + pure
+ * validators: compiled and tested by the host-side tests.
+ *
+ * @param obj                Parsed request object.
+ * @param michi_id           Buffer (>= 44 bytes).
+ * @param public_key         Buffer (>= 44 bytes).
+ * @param challenge_nonce    Buffer (>= 22 + NUL bytes; the schema allows
+ *                           up to 63 chars here).
+ * @param challenge_signature Buffer (>= 87 bytes).
+ * @param err_field          Buffer (>= 20 bytes) for the field name.
+ * @return true when the body is canonical and everything was copied.
+ */
+bool michi_http_json_get_pair_start(const cJSON *obj,
+                                    char *michi_id, size_t michi_id_len,
+                                    char *public_key, size_t public_key_len,
+                                    char *challenge_nonce, size_t nonce_len,
+                                    char *challenge_signature,
+                                    size_t signature_len,
+                                    char *err_field, size_t err_field_len);
+
+/**
+ * @brief Parse + copy the canonical pair/confirm body (POST /pair/confirm).
+ *
+ * Rejects the legacy fields initiator_id and client_token, validates
+ * session_id (UUID v4), pin (6 digits), michi_id and public_key
+ * (43-char base64url-nopad) and copies everything into the caller's
+ * buffers. On failure err_field receives the offending field name.
+ * Pure cJSON + pure validators: compiled and tested by the host tests.
+ *
+ * @param obj          Parsed request object.
+ * @param session_id   Buffer (>= MICHI_PAIRING_SESSION_ID_LEN bytes).
+ * @param pin          Buffer (>= MICHI_PAIRING_PIN_BUF_LEN bytes).
+ * @param michi_id     Buffer (>= 44 bytes).
+ * @param public_key   Buffer (>= 44 bytes).
+ * @param err_field    Buffer (>= 20 bytes) for the field name.
+ * @return true when the body is canonical and everything was copied.
+ */
+bool michi_http_json_get_pair_confirm(const cJSON *obj,
+                                      char *session_id, size_t session_id_len,
+                                      char *pin, size_t pin_len,
+                                      char *michi_id, size_t michi_id_len,
+                                      char *public_key, size_t public_key_len,
+                                      char *err_field, size_t err_field_len);
+
 #ifdef __cplusplus
 }
 #endif

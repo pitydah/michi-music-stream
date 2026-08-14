@@ -17,97 +17,48 @@ static int failures = 0;
         }                                                                   \
     } while (0)
 
-/* ── id_valid ─────────────────────────────────────────────── */
+/* ── pin_valid ────────────────────────────────────────────── */
 
-static void test_id_valid(void)
+static void test_pin_valid(void)
 {
-    printf("pairing: id_valid\n");
-    CHECK(michi_pairing_id_valid("a"), "single alnum");
-    CHECK(michi_pairing_id_valid("A"), "single upper");
-    CHECK(michi_pairing_id_valid("1"), "single digit");
-    CHECK(michi_pairing_id_valid("abc-123"), "alnum + dash");
-    CHECK(michi_pairing_id_valid("0"), "digit");
-    {
-        char long_id[MICHI_PAIRING_ID_MAX + 1];
-        memset(long_id, 'x', MICHI_PAIRING_ID_MAX);
-        long_id[MICHI_PAIRING_ID_MAX] = '\0';
-        CHECK(michi_pairing_id_valid(long_id), "max length 31");
-        char long_dash[MICHI_PAIRING_ID_MAX + 1];
-        memset(long_dash, 'x', MICHI_PAIRING_ID_MAX - 2);
-        long_dash[MICHI_PAIRING_ID_MAX - 2] = '-';
-        long_dash[MICHI_PAIRING_ID_MAX - 1] = 'y';
-        long_dash[MICHI_PAIRING_ID_MAX] = '\0';
-        CHECK(michi_pairing_id_valid(long_dash), "max length with dash");
-    }
-    CHECK(!michi_pairing_id_valid(NULL), "NULL rejected");
-    CHECK(!michi_pairing_id_valid(""), "empty rejected");
-    CHECK(!michi_pairing_id_valid("_"), "underscore rejected");
-    CHECK(!michi_pairing_id_valid("abc_123"), "underscore rejected");
-    CHECK(!michi_pairing_id_valid("abc 123"), "space rejected");
-    CHECK(!michi_pairing_id_valid("ab.c"), "dot rejected");
-    CHECK(!michi_pairing_id_valid("a/b"), "slash rejected");
-    CHECK(!michi_pairing_id_valid("a\tb"), "tab rejected");
-    {
-        char bad_control[3] = {'a', 0x01, '\0'};
-        CHECK(!michi_pairing_id_valid(bad_control), "control char rejected");
-    }
-    {
-        char too_long[MICHI_PAIRING_ID_MAX + 2];
-        memset(too_long, 'x', MICHI_PAIRING_ID_MAX + 1);
-        too_long[MICHI_PAIRING_ID_MAX + 1] = '\0';
-        CHECK(!michi_pairing_id_valid(too_long), "32 chars rejected");
-    }
+    printf("pairing: pin_valid\n");
+    CHECK(michi_pairing_pin_valid("000000"), "all zeros");
+    CHECK(michi_pairing_pin_valid("042731"), "arbitrary digits");
+    CHECK(michi_pairing_pin_valid("999999"), "all nines");
+    CHECK(!michi_pairing_pin_valid(NULL), "NULL rejected");
+    CHECK(!michi_pairing_pin_valid(""), "empty rejected");
+    CHECK(!michi_pairing_pin_valid("12345"), "5 digits rejected");
+    CHECK(!michi_pairing_pin_valid("1234567"), "7 digits rejected");
+    CHECK(!michi_pairing_pin_valid("12345a"), "letter rejected");
+    CHECK(!michi_pairing_pin_valid(" 23456"), "space rejected");
+    CHECK(!michi_pairing_pin_valid("12345\n"), "newline rejected");
+    CHECK(!michi_pairing_pin_valid("+12345"), "sign rejected");
+    CHECK(!michi_pairing_pin_valid("-12345"), "minus rejected");
 }
 
-/* ── hex helpers ──────────────────────────────────────────── */
+/* ── uuid_valid ───────────────────────────────────────────── */
 
-static void test_hex_decode(void)
+static void test_uuid_valid(void)
 {
-    printf("pairing: hex decode\n");
-    uint8_t out[32] = {0};
-    const char *tok_hex = "0123456789abcdef";
-    const char *tok_upper = "0123456789ABCDEF";
-    const char *tok_odd = "z123456789abcdef";
-
-    CHECK(michi_pairing_hex_decode(tok_hex, 16, out, 8), "16 hex -> 8 bytes");
-    CHECK(out[0] == 0x01 && out[7] == 0xef, "decoded values");
-    CHECK(michi_pairing_hex_decode(tok_upper, 16, out, 8), "uppercase hex");
-    CHECK(!michi_pairing_hex_decode(tok_odd, 16, out, 8), "non-hex rejected");
-    CHECK(!michi_pairing_hex_decode(tok_hex, 15, out, 8), "wrong src_len rejected");
-    CHECK(!michi_pairing_hex_decode(tok_hex, 17, out, 8), "wrong src_len rejected");
-    CHECK(!michi_pairing_hex_decode(NULL, 16, out, 8), "NULL src rejected");
-    CHECK(!michi_pairing_hex_decode(tok_hex, 16, NULL, 8), "NULL dst rejected");
-
-    /* 64-hex token (32 bytes) - the pairing token shape. */
-    char full[65];
-    memset(full, 'a', 64);
-    full[64] = '\0';
-    CHECK(michi_pairing_hex_decode(full, 64, out, 32), "64 hex accepted");
-    char short_hex[64];
-    memset(short_hex, 'a', 63);
-    short_hex[63] = '\0';
-    CHECK(!michi_pairing_hex_decode(short_hex, 63, out, 32), "63 hex rejected");
-    full[63] = 'g';
-    CHECK(!michi_pairing_hex_decode(full, 64, out, 32), "'g' rejected");
-
-    /* hex_val direct. */
-    CHECK(michi_pairing_hex_val('0') == 0 && michi_pairing_hex_val('f') == 15,
-          "hex_val bounds");
-    CHECK(michi_pairing_hex_val('F') == 15, "hex_val upper");
-    CHECK(michi_pairing_hex_val('x') == 0xff, "hex_val non-hex sentinel");
-}
-
-static void test_hex_roundtrip(void)
-{
-    printf("pairing: hex roundtrip\n");
-    const uint8_t raw[8] = {0x00, 0x11, 0xab, 0xcd, 0xef, 0x99, 0x7f, 0x80};
-    char hex[17];
-    uint8_t back[8] = {0};
-    michi_pairing_hex_encode(raw, sizeof(raw), hex);
-    CHECK(strcmp(hex, "0011abcdef997f80") == 0, "encode output");
-    CHECK(michi_pairing_hex_decode(hex, strlen(hex), back, sizeof(back)),
-          "roundtrip decode");
-    CHECK(memcmp(raw, back, sizeof(raw)) == 0, "roundtrip equality");
+    printf("pairing: uuid_valid\n");
+    CHECK(michi_pairing_uuid_valid("550e8400-e29b-41d4-a716-446655440000"),
+          "canonical uuid");
+    CHECK(michi_pairing_uuid_valid("00000000-0000-4000-8000-000000000000"),
+          "zeroes with version/variant");
+    CHECK(!michi_pairing_uuid_valid(NULL), "NULL rejected");
+    CHECK(!michi_pairing_uuid_valid(""), "empty rejected");
+    CHECK(!michi_pairing_uuid_valid("550e8400e29b41d4a716446655440000"),
+          "missing dashes rejected");
+    CHECK(!michi_pairing_uuid_valid("550e8400-e29b-41d4-a716-44665544000"),
+          "35 chars rejected");
+    CHECK(!michi_pairing_uuid_valid("550e8400-e29b-41d4-a716-4466554400000"),
+          "37 chars rejected");
+    CHECK(!michi_pairing_uuid_valid("550e8400-e29b-41d4-a716-44665544000G"),
+          "uppercase hex rejected");
+    CHECK(!michi_pairing_uuid_valid("550e8400-e29b-41d4-a716-44665544000-"),
+          "dash at the end rejected");
+    CHECK(!michi_pairing_uuid_valid("550e8400e29b-41d4-a716-446655440000"),
+          "dash at wrong position rejected");
 }
 
 /* ── token_matches (constant-time) ────────────────────────── */
@@ -121,7 +72,8 @@ static void test_token_matches(void)
 
     CHECK(michi_pairing_token_matches(a, b, sizeof(a)), "identical buffers");
     CHECK(michi_pairing_token_matches(a, a, sizeof(a)), "same pointer");
-    CHECK(michi_pairing_token_matches(NULL, NULL, 0), "n=0 is vacuously equal");
+    CHECK(!michi_pairing_token_matches(NULL, NULL, 0),
+          "NULL rejected even for n=0 (guard first)");
 
     /* Difference in EVERY position must be detected (a single-position
      * mismatch is not a proxy: the no-early-return property is structural
@@ -161,9 +113,8 @@ static void test_token_matches(void)
 
 int main(void)
 {
-    test_id_valid();
-    test_hex_decode();
-    test_hex_roundtrip();
+    test_pin_valid();
+    test_uuid_valid();
     test_token_matches();
     if (failures == 0) {
         printf("PASS test_pairing_validators\n");

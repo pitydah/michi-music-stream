@@ -88,6 +88,34 @@ esp_err_t michi_display_clear_now_playing(void);
  */
 void michi_display_request_redraw(void);
 
+/**
+ * @brief Show the pairing PIN on the PAIRING screen (receiver-button
+ *        pairing, MS-06: the PIN is displayed locally, never returned
+ *        by HTTP).
+ *
+ * Copies the 6-digit PIN into an internal buffer (truncation is
+ * impossible: the buffer is exactly MICHI_PAIRING_PIN_LEN + 1; a
+ * malformed string renders as "--") and requests a re-render. Called by
+ * the pairing PIN display callback, from TASK context only; never
+ * blocks (render queue contract of request_redraw).
+ *
+ * @param pin The 6-digit PIN (NULL renders as "--").
+ * @return ESP_OK; ESP_ERR_INVALID_STATE if the subsystem is not
+ *         initialized (nothing was updated).
+ */
+esp_err_t michi_display_show_pairing_pin(const char *pin);
+
+/**
+ * @brief Clear the pairing PIN (window closed/expired, confirm success,
+ *        reboot) and request a re-render.
+ *
+ * TASK context only; never blocks. Safe to call when no PIN is set.
+ *
+ * @return ESP_OK; ESP_ERR_INVALID_STATE if the subsystem is not
+ *         initialized.
+ */
+esp_err_t michi_display_clear_pairing_pin(void);
+
 #ifdef __cplusplus
 }
 #endif

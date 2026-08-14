@@ -119,13 +119,16 @@ static esp_err_t post_with_retry(michi_event_id_t id, uint32_t data)
 
 static void handle_short_press(uint32_t press_ms, michi_state_t st)
 {
-    if (st == MICHI_STATE_IDLE || st == MICHI_STATE_UNPROVISIONED) {
+    if (st == MICHI_STATE_IDLE || st == MICHI_STATE_UNPROVISIONED ||
+        st == MICHI_STATE_PAIRING) {
         ESP_LOGI(TAG, "button: press_ms=%u action=pairing", (unsigned)press_ms);
-        /* Phase 10: the physical press is the ONLY authority that opens
-         * the pairing window. PAIRING_STARTED is posted ONLY when the
-         * window actually opened: posting it anyway would strand the FSM
-         * in PAIRING (no window -> no challenge, no close event -> no
-         * PAIRING -> IDLE transition). On failure the press is a no-op
+        /* The physical press is the ONLY authority that opens the pairing
+         * window. From IDLE/UNPROVISIONED, PAIRING_STARTED is posted ONLY
+         * when the window actually opened: posting it anyway would strand
+         * the FSM in PAIRING. From PAIRING the press REPLACES the open
+         * window (contract 2.3: "abrir de nuevo reemplaza la ventana
+         * previa y elimina sesiones pendientes") - the FSM already sits
+         * in PAIRING, no event is posted. On failure the press is a no-op
          * (logged): the next press retries. */
         const esp_err_t err = michi_pairing_open_window();
         if (err != ESP_OK) {
@@ -133,11 +136,13 @@ static void handle_short_press(uint32_t press_ms, michi_state_t st)
                      esp_err_to_name(err));
             return;
         }
-        post_with_retry(MICHI_EVENT_PAIRING_STARTED, 0);
+        if (st != MICHI_STATE_PAIRING) {
+            post_with_retry(MICHI_EVENT_PAIRING_STARTED, 0);
+        }
         return;
     }
     ESP_LOGW(TAG, "button: press_ms=%u action=pairing state=%s "
-             "(expected IDLE or UNPROVISIONED)",
+             "(expected IDLE, UNPROVISIONED or PAIRING)",
              (unsigned)press_ms, michi_state_name(st));
 }
 
