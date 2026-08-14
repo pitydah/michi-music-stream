@@ -78,5 +78,7 @@ Códigos: `INVALID_REQUEST` (400), `UNAUTHORIZED` (401), `FORBIDDEN` (403),
   dígitos local; el receptor genera el token (32 bytes, base64url) y
   persiste solo su digest SHA-256 en NVS.
 - `session_token` (32 bytes, base64url) solo existe en RAM y se entrega una vez.
-- Factory reset: botón presionado 10 segundos.
+- Factory reset: botón presionado >= 10 s (arm window de 10 s post-arranque;
+  bloqueado en BOOTING/SELF_TEST/UPDATING). Recovery: pulsación de 5-10 s
+  con el estado RECOVERABLE_ERROR.
 - TLS, PAKE y hardening de producción son trabajo futuro (MS-12).

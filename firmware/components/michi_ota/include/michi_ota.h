@@ -21,9 +21,12 @@ extern "C" {
  *        from the onboard microSD - see michi_ota_start_local().
  *
  * Flow (see firmware/README.md, OTA section):
- *  - POST /api/v1/receiver/updates {url} -> michi_ota_start(): the URL
- *    points at a SIGNED MANIFEST (JSON, RSA-2048 PKCS#1 v1.5 SHA-256
- *    verified against the embedded public key michi_ota_pubkey_der).
+ *  - michi_ota_start(url): the URL points at a SIGNED MANIFEST (JSON,
+ *    RSA-2048 PKCS#1 v1.5 SHA-256 verified against the embedded public
+ *    key michi_ota_pubkey_der). The canonical HTTP trigger
+ *    POST /api/v1/receiver-lite/firmware is DEFERRED (501 NOT_
+ *    IMPLEMENTED) - the wired path today is the LOCAL SD flow
+ *    (michi_ota_start_local(), below).
  *  - The manifest is validated field by field: board exact match with the
  *    product profile, strict semver (version > current, version >=
  *    min_version - downgrade prevention), binary URL re-validated

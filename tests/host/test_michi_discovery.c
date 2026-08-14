@@ -20,6 +20,7 @@
 #include "discovery_nvs.h"
 #include "michi_discovery.h"
 #include "michi_identity.h"
+#include "michi_product_profile.h"
 #include "nvs.h" /* fake NVS shim: test hooks only */
 
 static int failures = 0;
@@ -162,6 +163,25 @@ static void test_canonical_rejects_invalid(void)
           "too-small buffer rejected");
 }
 
+/* Builder contract (not product truth): whatever flags the caller
+ * provides are serialized verbatim - the product wiring always feeds the
+ * canonical table, but the pure builder must not assume true. */
+static void test_canonical_serializes_false_flags(void)
+{
+    printf("canonical: builder serializes false flags verbatim\n");
+    michi_discovery_announce_t a = vec_announce();
+    a.feature_session = false;
+    a.feature_heartbeat = false;
+    a.feature_volume = false;
+    char out[512];
+    CHECK(michi_discovery_canonical_json(&a, out, sizeof(out)) == ESP_OK,
+          "canonical build succeeds with false flags");
+    CHECK(strstr(out, "\"heartbeat\":false") != NULL &&
+              strstr(out, "\"session\":false") != NULL &&
+              strstr(out, "\"volume\":false") != NULL,
+          "false flags serialize verbatim");
+}
+
 /* ── signed datagram (golden signature verifies) ──────────── */
 
 static void test_datagram_golden_signature(void)
@@ -298,6 +318,11 @@ static void test_build_announce_own_identity(void)
                                               sizeof(pk_b64)) == ESP_OK,
           "identity material available");
 
+    /* The flags come from the canonical capability source - the same
+     * wiring announce_now_locked() runs (no duplicated literals). */
+    const michi_product_capabilities_t *caps =
+        michi_product_profile_capabilities();
+
     const michi_discovery_announce_t a = {
         .device_id = VEC_DEVICE_ID,
         .name = VEC_NAME,
@@ -305,9 +330,9 @@ static void test_build_announce_own_identity(void)
         .api_version = MICHI_DISCOVERY_API_VERSION,
         .host = VEC_HOST,
         .port = 80,
-        .feature_session = false,
-        .feature_heartbeat = false,
-        .feature_volume = false,
+        .feature_session = caps->session,
+        .feature_heartbeat = caps->heartbeat,
+        .feature_volume = caps->volume,
         .michi_id = michi_id,
         .public_key = pk_b64,
         .timestamp_ms = 1234567890123LL,
@@ -492,6 +517,7 @@ int main(void)
     test_constants();
     test_canonical_golden();
     test_canonical_rejects_invalid();
+    test_canonical_serializes_false_flags();
     test_datagram_golden_signature();
     test_build_announce_golden_inputs();
     test_build_announce_own_identity();

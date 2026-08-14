@@ -128,22 +128,24 @@ esp_err_t build_info_json(cJSON *root, const michi_product_profile_t *p)
         return ESP_ERR_NO_MEM;
     }
 
-    /* Feature flags are truthful by construction: a flag is true only
-     * while its handler is registered AND implemented. Session and the
-     * heartbeat lease are implemented (MS-07/MS-08) with positive
-     * tests, and volume lives inside the session PATCH mutation
-     * (implemented with the session), so all three are true. The
-     * certified now-playing payload and the OTA flow still answer 501
-     * NOT_IMPLEMENTED, so their flags are false; diagnostics is
-     * implemented (its response shape is not frozen by the contract). */
+    /* Feature flags: read from the single canonical source
+     * (michi_product_profile_capabilities) - no capability literal is
+     * duplicated here. /server/info carries the full 6-flag surface:
+     * session/heartbeat/volume true (MS-07/MS-08, positive tests),
+     * now_playing and ota false (their handlers still answer 501
+     * NOT_IMPLEMENTED), diagnostics true. */
+    const michi_product_capabilities_t *caps =
+        michi_product_profile_capabilities();
     cJSON *feat = cJSON_AddObjectToObject(root, "features");
     if (feat == NULL ||
-        cJSON_AddBoolToObject(feat, "session", true) == NULL ||
-        cJSON_AddBoolToObject(feat, "heartbeat", true) == NULL ||
-        cJSON_AddBoolToObject(feat, "volume", true) == NULL ||
-        cJSON_AddBoolToObject(feat, "now_playing", false) == NULL ||
-        cJSON_AddBoolToObject(feat, "diagnostics", true) == NULL ||
-        cJSON_AddBoolToObject(feat, "ota", false) == NULL) {
+        cJSON_AddBoolToObject(feat, "session", caps->session) == NULL ||
+        cJSON_AddBoolToObject(feat, "heartbeat", caps->heartbeat) == NULL ||
+        cJSON_AddBoolToObject(feat, "volume", caps->volume) == NULL ||
+        cJSON_AddBoolToObject(feat, "now_playing", caps->now_playing) ==
+            NULL ||
+        cJSON_AddBoolToObject(feat, "diagnostics", caps->diagnostics) ==
+            NULL ||
+        cJSON_AddBoolToObject(feat, "ota", caps->ota) == NULL) {
         return ESP_ERR_NO_MEM;
     }
 

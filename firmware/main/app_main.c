@@ -192,10 +192,12 @@ void app_main(void)
         ESP_LOGI(TAG, "subsystem=led state=failed phase=7");
     }
 
-    /* Pairing button (phase 8): debounced physical button that ONLY posts
-     * events (pairing / recovery / factory reset); the ISR records edges
-     * and timestamps, the debounce task runs the actions. On failure boot
-     * continues degraded - no button, everything else keeps working. */
+    /* Pairing button (phase 8): debounced physical button that posts the
+     * pairing/recovery events and executes the physical factory reset
+     * (identity + pairing wipe + full NVS erase + restart, only from
+     * stable states); the ISR records edges and timestamps, the debounce
+     * task runs the actions. On failure boot continues degraded - no
+     * button, everything else keeps working. */
     err = michi_button_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "michi_button_init failed: %s (no pairing button)",

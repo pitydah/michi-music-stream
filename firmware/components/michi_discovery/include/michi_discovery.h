@@ -30,6 +30,11 @@ extern "C" {
  *   signature excluded), byte-identical to the michi-identity Rust crate
  *   DiscoveryEngine::canonical_bytes (golden vectors:
  *   contracts/michi-link/vectors/discovery/).
+ * - Clock gate (P0-02): timestamp_ms comes from michi_time (SNTP wall
+ *   clock). Until the clock is synchronized NO signed UDP announce is
+ *   emitted (deferred, logged once per transition); the announce
+ *   resumes immediately when a fresh sync lands (michi_time sync
+ *   callback). mDNS advertising is unaffected.
  *
  * Ownership: michi_wifi owns the network bring-up and calls
  * michi_discovery_start()/stop() on GOT_IP / disconnect. All announce
@@ -94,7 +99,10 @@ typedef struct {
     bool feature_volume;     /*!< Truthful capability flag */
     const char *michi_id;    /*!< base64url-nopad, 43 chars */
     const char *public_key;  /*!< Ed25519 pk, base64url-nopad, 43 chars */
-    int64_t timestamp_ms;    /*!< Epoch ms when the announce is signed */
+    int64_t timestamp_ms;    /*!< Epoch ms when the announce is signed
+                                  (michi_time synchronized wall clock;
+                                  the runtime never signs with an
+                                  unsynchronized clock - P0-02) */
     const char *nonce;       /*!< base64url-nopad, >= 22 chars (16 bytes) */
 } michi_discovery_announce_t;
 

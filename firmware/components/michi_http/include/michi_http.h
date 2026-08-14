@@ -171,7 +171,10 @@ esp_err_t michi_http_build_error(cJSON **out_root, const char *code,
  * service is derived from the profile tier (michi-stream-standard or
  * michi-stream-hifi); name, version, api_version ("v1-lite"), roles
  * (["audio_receiver"]), auth (RECEIVER_BUTTON), the truthful feature
- * flags and the certified audio block follow. The identity group
+ * flags and the certified audio block follow. The feature flags are read
+ * from michi_product_profile_capabilities() - the single canonical
+ * source shared with the discovery announce (no duplicated literals).
+ * The identity group
  * (server_id/identity_scheme/michi_id/public_key) is NOT emitted: it
  * requires the persistent Ed25519 identity (MS-04). Pure cJSON +
  * michi_product_profile_t: compiled and tested by the host-side tests.

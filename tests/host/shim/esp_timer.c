@@ -75,6 +75,21 @@ esp_err_t esp_timer_start_once(esp_timer_handle_t timer, uint64_t timeout_us)
     return ESP_OK;
 }
 
+esp_err_t esp_timer_restart(esp_timer_handle_t timer, uint64_t timeout_us)
+{
+    if (timer == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    timer->deadline_us = s_now_us + (int64_t)timeout_us;
+    timer->armed = true;
+    return ESP_OK;
+}
+
+bool esp_timer_is_active(esp_timer_handle_t timer)
+{
+    return timer != NULL && timer->armed;
+}
+
 esp_err_t esp_timer_stop(esp_timer_handle_t timer)
 {
     if (timer == NULL) {

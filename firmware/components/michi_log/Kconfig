@@ -69,8 +69,9 @@ menu "Michi Music Stream Log"
         default 200
         range 50 500
         help
-          Hard cap for the count query parameter of GET
-          /api/v1/receiver/logs (handler default 100). Bounds the
+          Hard cap for the count query parameter of the logs endpoint
+          (REMOVED with the legacy dialect, MS-10 - retained so a future
+          re-exposure cannot exceed it; handler default 100). Bounds the
           response size (each entry renders to at most ~519 bytes). The
           range is capped at 500: default 200; larger values spike
           internal-RAM cJSON usage (~130 KB at 200, ~1 MB at 2000) on

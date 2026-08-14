@@ -18,3 +18,7 @@ CONFIG_BT_NIMBLE_ENABLED=y
 # so network bursts land in the jitter buffer instead of lwip's default
 # 6-packet mailbox (drops there are invisible to the engine metrics).
 CONFIG_LWIP_UDP_RECVMBOX_SIZE=64
+# P0-02: SNTP wall clock for signed discovery. michi_time uses the IDF
+# 5.3 esp_netif_sntp API (esp_netif_sntp_init/start/sync_wait), which
+# drives the lwIP SNTP client - the module must be enabled.
+CONFIG_LWIP_SNTP=y

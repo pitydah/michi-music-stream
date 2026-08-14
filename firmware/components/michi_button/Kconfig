@@ -1,6 +1,6 @@
 menu "Michi Music Stream Button"
 
-    comment "Short press posts MICHI_EVENT_PAIRING_STARTED only in IDLE or UNPROVISIONED. The firmware enables the INTERNAL pull-up on MICHI_BUTTON_GPIO (active low to GND)."
+    comment "Deterministic gestures (contract in michi_button_gesture.h): short press (< RECOVERY_PRESS_MS) opens the pairing window; long press (>= RECOVERY_PRESS_MS and < FACTORY_RESET_PRESS_MS) runs recovery ONLY in RECOVERABLE_ERROR; very long press (>= FACTORY_RESET_PRESS_MS) runs the factory reset (armed). Both gestures are ALWAYS available - no choice can build a firmware without the physical factory reset."
 
     config MICHI_BUTTON_DEBOUNCE_MS
         int "Debounce window (ms)"
@@ -17,42 +17,33 @@ menu "Michi Music Stream Button"
           whole stable window - contacts that bounce long need a larger
           window.
 
-    config MICHI_BUTTON_LONG_PRESS_MS
-        int "Long press threshold (ms)"
+    config MICHI_BUTTON_RECOVERY_PRESS_MS
+        int "Recovery press threshold (ms)"
         default 5000
         range 500 30000
         help
           Press duration (measured edge-to-edge from the ISR timestamps) at
-          or above which the press counts as LONG and runs
-          MICHI_BUTTON_LONG_PRESS_ACTION instead of pairing. 5 s is long
-          enough that a normal pairing tap can never trip it, short enough
-          to be practical as a recovery/factory-reset gesture.
+          or above which the press counts as LONG and runs the RECOVERY
+          gesture (post MICHI_EVENT_RECOVER) instead of pairing. Recovery
+          fires only when the FSM is in RECOVERABLE_ERROR at the release;
+          in any other state the long press is ignored. 5 s is long enough
+          that a normal pairing tap can never trip it. Must be <
+          MICHI_BUTTON_FACTORY_RESET_PRESS_MS (the factory-reset range is
+          bounded by this symbol; a build-time assert backs it up).
 
-    choice MICHI_BUTTON_LONG_PRESS_ACTION
-        prompt "Long press action"
-        default MICHI_BUTTON_LONG_PRESS_RECOVERY
+    config MICHI_BUTTON_FACTORY_RESET_PRESS_MS
+        int "Factory reset press threshold (ms)"
+        default 10000
+        range MICHI_BUTTON_RECOVERY_PRESS_MS 60000
         help
-          What a long press (>= MICHI_BUTTON_LONG_PRESS_MS) does. Both
-          actions are ignored while the FSM is in BOOTING, SELF_TEST or
-          UPDATING.
-
-        config MICHI_BUTTON_LONG_PRESS_RECOVERY
-            bool "Recovery: post MICHI_EVENT_RECOVER"
-            help
-              Posts MICHI_EVENT_RECOVER, which drives RECOVERABLE_ERROR ->
-              IDLE (event mapping in michi_state). Safe in every state; the
-              FSM only applies it from RECOVERABLE_ERROR.
-
-        config MICHI_BUTTON_LONG_PRESS_FACTORY_RESET
-            bool "Factory reset: erase NVS + restart"
-            help
-              Erases the NVS partition (network profile, DAC override,
-              device id, ...) and restarts. DESTRUCTIVE: all stored
-              settings are lost. Blocked while UPDATING so a long press
-              can never brick an OTA in progress; additionally armed by
-              MICHI_BUTTON_FACTORY_ARM_MS so a press held through power-on
-              can never erase NVS.
-    endchoice
+          Press duration at or above which the press runs the FACTORY
+          RESET gesture (wipe the whole NVS partition - identity,
+          controllers, wifi credentials, DAC override, server_id - and
+          restart) instead of recovery/pairing. 10 s is deliberately
+          distinct from the 5 s recovery gesture so a recovery hold can
+          never drift into a destructive reset. Always available in the
+          default build (no choice): a corrupt identity store has no
+          other physical recovery path.
 
     config MICHI_BUTTON_FACTORY_ARM_MS
         int "Factory reset arm window (ms)"
@@ -65,7 +56,8 @@ menu "Michi Music Stream Button"
           power-on, or a stuck pin, would otherwise confirm a "press" with
           ~0 ms elapsed as soon as the FSM leaves the protected states and
           erase NVS. 0 disables the arm window. Recovery is NOT gated by
-          the arm window.
+          the arm window (a recoverable error right after boot must stay
+          recoverable).
 
     config MICHI_BUTTON_POLL_MS
         int "Debounce task poll period (ms)"

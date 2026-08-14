@@ -1,0 +1,16 @@
+# Direct dependencies of the Michi Music Stream host-side tooling (P2-01).
+# Versions are pinned EXACTLY (==); the full transitive lock lives in
+# requirements.txt, which is what CI installs (see .github/workflows/ci.yml).
+#
+# Regenerating the lock:
+#   python3 -m venv /tmp/michi-lock
+#   /tmp/michi-lock/bin/pip install -r requirements.in
+#   /tmp/michi-lock/bin/pip freeze | sort > requirements.txt
+#
+# Deliberate upgrades: bump a pin HERE, regenerate the lock, run
+# ./scripts/run_tests.sh and commit BOTH files in the same change.
+flask==3.1.3
+pytest==8.4.2
+jsonschema==4.26.0
+blake3==1.0.9
+cryptography==48.0.0

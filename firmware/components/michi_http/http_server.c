@@ -82,6 +82,7 @@
 #include "michi_sd.h"
 #include "michi_session.h"
 #include "michi_state.h"
+#include "michi_time.h"
 #include "michi_wifi.h"
 
 #define TAG "michi_http"
@@ -1262,6 +1263,21 @@ static esp_err_t diagnostics_get_handler(httpd_req_t *req)
                                          reconnects) == NULL)) {
                 send_err = ESP_ERR_NO_MEM;
             }
+        }
+    }
+    if (send_err == ESP_OK) {
+        /* P0-02 time block: wall-clock state, non-sensitive. unix_ms is
+         * 0 while not synchronized (michi_time never hands out a
+         * silently invalid timestamp). */
+        cJSON *tm = cJSON_AddObjectToObject(root, "time");
+        if (tm == NULL ||
+            cJSON_AddBoolToObject(tm, "synchronized",
+                                  michi_time_is_synchronized()) == NULL ||
+            cJSON_AddNumberToObject(tm, "unix_ms",
+                                    (double)michi_time_unix_ms()) == NULL ||
+            cJSON_AddStringToObject(tm, "source",
+                                    michi_time_sync_source()) == NULL) {
+            send_err = ESP_ERR_NO_MEM;
         }
     }
     if (send_err == ESP_OK) {

@@ -197,11 +197,12 @@ def error_body(code, message, details=None):
 
 
 class SimulatorState:
-    def __init__(self, config, mono_clock=None, wall_clock=None):
+    def __init__(self, config, mono_clock=None, wall_clock=None, show_local_pin=False):
         self.config = config
         self.mono_clock = mono_clock or time.monotonic
         self.wall_clock = wall_clock or time.time
         self.boot_mono = self.mono_clock()
+        self.show_local_pin = show_local_pin
 
         self.window_open = False
         self.window_expires_mono = 0.0
@@ -328,7 +329,11 @@ class SimulatorState:
             "expires_at": self._rfc3339(self._now_wall() + PAIRING_WINDOW_SECONDS),
         }
         self.pairing_sessions[session_id] = session
-        log.info("Pairing session created: %s (PIN displayed locally)", session_id)
+        if self.show_local_pin:
+            log.info("[LOCAL DISPLAY] Pairing PIN: %s", pin)
+            log.info("[LOCAL DISPLAY] Pairing session: %s", session_id)
+        else:
+            log.info("Pairing session created: %s (PIN displayed locally)", session_id)
         return 201, {
             "session_id": session_id,
             "expires_at": session["expires_at"],
@@ -847,6 +852,9 @@ def main():
                         help="Start with a paired controller and active session")
     parser.add_argument("--fail-heartbeat", action="store_true",
                         help="Start with an active session whose lease is already expired")
+    parser.add_argument("--show-local-pairing-pin", action="store_true",
+                        help="DEV-ONLY: print the 6-digit pairing PIN to the local log "
+                             "(simulator development only; never available in firmware)")
 
     args = parser.parse_args()
 
@@ -856,7 +864,14 @@ def main():
     else:
         cfg = HIFI_CONFIG if args.type == "hifi" else STANDARD_CONFIG
 
-    state = SimulatorState(cfg)
+    state = SimulatorState(cfg, show_local_pin=args.show_local_pairing_pin)
+
+    if args.show_local_pairing_pin:
+        log.warning(
+            "DEV-ONLY flag --show-local-pairing-pin is active: the pairing PIN "
+            "will be printed to local logs. Development/simulator use only - "
+            "never in firmware or production. Pairing tokens are never printed."
+        )
 
     if args.pairing_open:
         state.open_pairing_window()

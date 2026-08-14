@@ -86,3 +86,38 @@ michi-music-stream/
 
 El firmware es **universal**: Standard y Hi-Fi se derivan del perfil de
 producto detectado en hardware, no de árboles de build separados.
+
+## Dependencias del tooling (host, P2-01)
+
+El tooling Python (simulador, tests de contrato, E2E) se instala desde el
+**lock** `requirements.txt` — es lo que CI ejecuta con
+`pip install -r requirements.txt`. Los pins son EXACTOS (`==`), directos y
+transitivos, para builds reproducibles.
+
+- `requirements.in`: dependencias directas pineadas — el único archivo que
+  se edita a mano.
+- `requirements.txt`: lock completo generado desde `requirements.in`
+  (regenerar con: `python3 -m venv /tmp/michi-lock && /tmp/michi-lock/bin/pip install -r requirements.in && /tmp/michi-lock/bin/pip freeze | sort > requirements.txt`).
+- Actualización deliberada: subir el pin en `requirements.in`, regenerar el
+  lock, correr `./scripts/run_tests.sh` y commitear AMBOS archivos juntos.
+- Licencias de los deps directos (BSD-3-Clause Flask, MIT pytest/jsonschema,
+  CC0-1.0 OR Apache-2.0 blake3, Apache-2.0 OR BSD-3-Clause cryptography):
+  ver el encabezado de `requirements.txt`.
+
+Los tests C (`tests/host/`) compilan las fuentes REALES del firmware y
+además requieren **libcjson-dev** (Ubuntu/Debian: `sudo apt-get install -y
+libcjson-dev`; Arch: `sudo pacman -S cjson`; o un prefix local exportando
+`PKG_CONFIG_PATH=<prefix>/lib/pkgconfig`). El runner detecta su ausencia y
+falla con el comando de instalación — nunca omite silenciosamente.
+
+### Runner local
+
+`./scripts/run_tests.sh` corre TODA la suite (default, `--full`): sync del
+bundle, tests de contrato/schema/ejemplos, simulador (unit/scenarios/HTTP),
+E2E completo + reporte determinístico con drift guard, tests C del host y
+los dos scans de hardening (referencias legacy y el gate de hardware de
+MS-11). `--quick` corre solo las suites Python rápidas + los scans.
+Fail-fast con el nombre exacto de la suite que falla y su código de salida
+real; la salida nunca se filtra y el resumen final solo lista las suites
+ejecutadas.
+

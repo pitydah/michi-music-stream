@@ -22,7 +22,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
@@ -43,6 +42,7 @@
 #include "michi_discovery.h"
 #include "michi_identity.h"
 #include "michi_product_profile.h"
+#include "michi_time.h"
 
 #define TAG "michi_discovery"
 
@@ -54,6 +54,10 @@
 
 static bool s_initialized;
 static bool s_active;
+/* Clock gate (P0-02): the defer warning is logged ONCE per transition
+ * into the gated state (never every 30 s tick), and reset as soon as a
+ * synchronized announce goes out. */
+static bool s_clock_gate_logged;
 static char s_ip[MICHI_DISCOVERY_IP_MAX];
 static int s_sock = -1;
 static bool s_mdns_advertised;
@@ -84,6 +88,20 @@ static void announce_now_locked(void)
     if (!s_server_id_ok || !identity_ready_locked()) {
         return;
     }
+    /* P0-02 clock gate: a signed announce carries a timestamp Michi
+     * Link rejects outside +-90 s - never emit one until the wall
+     * clock is synchronized. The defer warning is logged exactly once
+     * per transition (rate-limited, no 30 s spam); the announce
+     * resumes immediately via the michi_time sync callback. */
+    if (!michi_time_is_synchronized()) {
+        if (!s_clock_gate_logged) {
+            s_clock_gate_logged = true;
+            ESP_LOGW(TAG, "discovery: signed announce deferred, clock "
+                     "not synchronized");
+        }
+        return;
+    }
+    s_clock_gate_logged = false;
     const michi_product_profile_t *p = michi_product_profile_get();
     if (p == NULL || p->product_name[0] == '\0') {
         /* Boot race: the profile is built later in app_main. The 30 s
@@ -119,9 +137,13 @@ static void announce_now_locked(void)
                               ? "michi-stream-hifi"
                               : "michi-stream-standard";
 
-    /* Truthful capability flags: session/heartbeat/volume are NOT
-     * implemented yet (their handlers answer 501 - MS-07/MS-08); a
-     * feature is announced true only once it has a positive test. */
+    /* Capability flags from the single canonical source
+     * (michi_product_profile_capabilities): session/heartbeat/volume
+     * are implemented (MS-07/MS-08) and advertised true. The announce
+     * carries ONLY this canonical group - the extended flags
+     * (now_playing/diagnostics/ota) belong to /server/info. */
+    const michi_product_capabilities_t *caps =
+        michi_product_profile_capabilities();
     const michi_discovery_announce_t announce = {
         .device_id = s_server_id,
         .name = p->product_name,
@@ -129,12 +151,14 @@ static void announce_now_locked(void)
         .api_version = MICHI_DISCOVERY_API_VERSION,
         .host = s_ip,
         .port = MICHI_DISCOVERY_HTTP_PORT,
-        .feature_session = false,
-        .feature_heartbeat = false,
-        .feature_volume = false,
+        .feature_session = caps->session,
+        .feature_heartbeat = caps->heartbeat,
+        .feature_volume = caps->volume,
         .michi_id = michi_id,
         .public_key = pk_b64,
-        .timestamp_ms = (int64_t)time(NULL) * 1000,
+        /* P0-02: the synchronized wall clock (michi_time) - gated
+         * above, so this is never a silently invalid 0. */
+        .timestamp_ms = michi_time_unix_ms(),
         .nonce = nonce_b64,
     };
 
@@ -292,6 +316,26 @@ static void announce_timer_cb(void *arg)
     xSemaphoreGive(s_announce_mutex);
 }
 
+/* P0-02: michi_time sync callback (runs in the michi_time sync task
+ * context). A fresh wall clock resumes the announce IMMEDIATELY -
+ * without waiting for the next 30 s tick. Bounded mutex wait like
+ * every other entry point; ignored when discovery is off. */
+static void on_time_sync_cb(void *ctx)
+{
+    (void)ctx;
+    if (!s_initialized || s_announce_mutex == NULL) {
+        return;
+    }
+    if (!xSemaphoreTake(s_announce_mutex,
+                        pdMS_TO_TICKS(MICHI_DISCOVERY_LOCK_MS))) {
+        return; /* contended: the periodic tick covers it */
+    }
+    if (s_active) {
+        announce_now_locked();
+    }
+    xSemaphoreGive(s_announce_mutex);
+}
+
 /* ------------------------------------------------------------------ */
 /* Public API                                                          */
 /* ------------------------------------------------------------------ */
@@ -346,6 +390,17 @@ esp_err_t michi_discovery_init(void)
         ESP_LOGE(TAG, "discovery: announce timer failed: %s",
                  esp_err_to_name(err));
         return err;
+    }
+
+    /* P0-02: resume announcing the moment a fresh wall clock lands
+     * (michi_time sync callback). Degraded path if the registration
+     * fails: the 30 s tick still resumes once synchronized. */
+    const esp_err_t cb_err =
+        michi_time_register_sync_cb(on_time_sync_cb, NULL);
+    if (cb_err != ESP_OK) {
+        ESP_LOGW(TAG, "discovery: time sync callback registration "
+                 "failed: %s (resume via the periodic tick only)",
+                 esp_err_to_name(cb_err));
     }
 
     s_announce_mutex = xSemaphoreCreateMutex();
@@ -420,6 +475,9 @@ esp_err_t michi_discovery_stop(void)
     }
     if (s_active) {
         s_active = false;
+        /* New network-up cycle: a fresh gate transition may log the
+         * defer warning again (once per cycle, never per tick). */
+        s_clock_gate_logged = false;
         if (s_announce_timer != NULL) {
             esp_timer_stop(s_announce_timer);
         }

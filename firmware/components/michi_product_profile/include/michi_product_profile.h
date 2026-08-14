@@ -82,6 +82,44 @@ typedef struct {
 } michi_product_profile_t;
 
 /**
+ * @brief Canonical product capability flags - THE single source of truth
+ *        for the boolean feature surface (MS-08, P0-01 hardening).
+ *
+ * The discovery announce (michi_discovery) and GET /server/info
+ * (michi_http canonical_json.c) BOTH read this table; no subsystem may
+ * duplicate a capability literal. A flag is true only while its handler
+ * is implemented with a positive test:
+ *  - session/heartbeat/volume: implemented (MS-07/MS-08);
+ *  - diagnostics: implemented (its response shape is not frozen by the
+ *    contract);
+ *  - now_playing: the certified payload still answers 501 NOT_IMPLEMENTED;
+ *  - ota: the A/B partitions exist, but the OTA service lands in phase 13
+ *    (501).
+ *
+ * The announce carries ONLY the canonical group {heartbeat, session,
+ * volume}; the extended flags (now_playing/diagnostics/ota) belong to
+ * /server/info, not to the announce.
+ */
+typedef struct {
+    bool session;     /*!< session feature implemented (MS-07) */
+    bool heartbeat;   /*!< heartbeat lease implemented (MS-08) */
+    bool volume;      /*!< volume via the session PATCH, implemented */
+    bool now_playing; /*!< certified payload answers 501 NOT_IMPLEMENTED */
+    bool diagnostics; /*!< implemented */
+    bool ota;         /*!< 501 NOT_IMPLEMENTED (service lands in phase 13) */
+} michi_product_capabilities_t;
+
+/**
+ * @brief Get the canonical capability flags (single source of truth).
+ *
+ * Pure C, no ESP-IDF runtime dependency: the firmware components and the
+ * host-side tests compile the SAME source (capabilities.c).
+ *
+ * @return Pointer to the immutable canonical table; never NULL.
+ */
+const michi_product_capabilities_t *michi_product_profile_capabilities(void);
+
+/**
  * @brief Build the profile once and cache it (refresh(); the consolidated
  *        summary log lives in app_main).
  *

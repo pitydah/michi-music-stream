@@ -7,8 +7,10 @@ Builds the canonical signed payload
     version|board|min_version|url|sha256
 
 computes RSA-SHA256 (PKCS#1 v1.5) with the given private key and emits the
-JSON manifest the firmware consumes at POST /api/v1/receiver/updates
-(HTTPS OTA) or from the onboard microSD (local OTA, phase 17).
+JSON manifest the firmware consumes through the OTA engine
+(michi_ota_start, HTTPS manifest fetch - the canonical HTTP trigger
+POST /api/v1/receiver-lite/firmware is DEFERRED, 501 NOT_IMPLEMENTED)
+or from the onboard microSD (local OTA, phase 17).
 
 The private key is an INPUT ONLY: it is never embedded, logged or stored by
 this script, and it must live OUTSIDE the repository (see

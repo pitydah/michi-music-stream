@@ -804,7 +804,8 @@ powered off before trusting it (camera interface forfeited — see below).
 Phase 8 adds the physical pairing button on `MICHI_BUTTON_GPIO` (default
 **GPIO17**, camera PWDN — the camera is not populated on this unit, reuse
 forfeits it). Active low to GND, internal pull-up enabled. Scope: the
-component **only posts events** — the pairing protocol itself is phase 10.
+component **posts events** (pairing / recovery) and executes the physical
+factory reset — the pairing protocol itself is phase 10.
 
 ### Architecture: minimal ISR → debounce task
 
@@ -812,9 +813,9 @@ component **only posts events** — the pairing protocol itself is phase 10.
 flowchart LR
     BTN["button (active low)"] -->|ANYEDGE ISR| ISR["GPIO ISR service handler<br/>(edge level + timestamp ONLY)"]
     ISR -->|s_edge under portMUX| DT["debounce task<br/>(prio 2, 10 ms poll)"]
-    DT -->|short press, in IDLE/UNPROVISIONED| FSM1["post PAIRING_STARTED"]
-    DT -->|long press, recovery| FSM2["post RECOVER"]
-    DT -->|long press, factory_reset| NVS["nvs_flash_erase + esp_restart"]
+    DT -->|short press < 5 s| FSM1["open pairing window + post PAIRING_STARTED"]
+    DT -->|5-10 s press, RECOVERABLE_ERROR| FSM2["post RECOVER"]
+    DT -->|>= 10 s press, armed| NVS["identity + pairing wipe, nvs_flash_erase + esp_restart"]
 ```
 
 The ISR handler contains **NO logic**: it records the edge level and the
@@ -830,13 +831,17 @@ accuracy, debounce window excluded).
 
 ### Actions (task context, NEVER the ISR)
 
+Deterministic gestures (contract in `michi_button_gesture.h`, pure and
+host-tested with the exact boundaries — `tests/host/test_michi_button.c`):
+
 | Press | Action |
 |-------|--------|
-| short (< `MICHI_BUTTON_LONG_PRESS_MS`) | `michi_pairing_open_window()` + `michi_state_post(MICHI_EVENT_PAIRING_STARTED, 0)` — only in **IDLE** or **UNPROVISIONED**; any other state logs the rejection (`state=...`, the FSM would drop the event anyway). `PAIRING_STARTED` is posted ONLY when the window actually opened (a failed open is logged `pairing window open failed err=...` and the press is a no-op: posting anyway would strand the FSM in PAIRING with no window to close it) |
-| long (>= `MICHI_BUTTON_LONG_PRESS_MS`) | `MICHI_BUTTON_LONG_PRESS_ACTION`: `recovery` (default) → `michi_state_post(MICHI_EVENT_RECOVER, 0)` (only from RECOVERABLE_ERROR); `factory_reset` → `nvs_flash_erase()` + `esp_restart()` immediately (no log-flush delay: the log is already in the UART FIFO) |
-| factory-reset arm window | `MICHI_BUTTON_FACTORY_ARM_MS` (default 10000 ms): the factory reset runs only if the press **started** at least this long after boot (boot-hold / stuck-pin protection); recovery is NOT armed |
+| short (< `MICHI_BUTTON_RECOVERY_PRESS_MS`, 5000 ms) | `michi_pairing_open_window()` + `michi_state_post(MICHI_EVENT_PAIRING_STARTED, 0)` — only in **IDLE**, **UNPROVISIONED** or **PAIRING**; any other state logs the rejection (`state=...`, the FSM would drop the event anyway). `PAIRING_STARTED` is posted ONLY when the window actually opened (a failed open is logged `pairing window open failed err=...` and the press is a no-op: posting anyway would strand the FSM in PAIRING with no window to close it) |
+| long (>= `MICHI_BUTTON_RECOVERY_PRESS_MS`, < `MICHI_BUTTON_FACTORY_RESET_PRESS_MS`) | recovery → `michi_state_post(MICHI_EVENT_RECOVER, 0)`, ONLY when the FSM is in **RECOVERABLE_ERROR** at the release; any other state logs the rejection (a press released after the FSM already recovered is a no-op). Recovery is NOT armed |
+| very long (>= `MICHI_BUTTON_FACTORY_RESET_PRESS_MS`, 10000 ms) | factory reset → `michi_button_factory_reset_run()`: `michi_identity_factory_reset()` (own key + in-RAM keys) and `michi_pairing_erase_all()` (registry + RAM copy) FIRST, then `nvs_flash_erase()` (the whole partition: wifi credentials, DAC override, discovery server_id, boot_seq) and `esp_restart()` immediately (no log-flush delay: the log is already in the UART FIFO). Component wipes run before the full erase so the identity RAM wipe cannot be skipped by an already-empty key. If the full erase fails the reset aborts WITHOUT restarting (degraded but never bricked, logged). A corrupt identity does not change the FSM state, so this gesture stays available as the only physical recovery path for a corrupt identity store |
+| factory-reset arm window | `MICHI_BUTTON_FACTORY_ARM_MS` (default 10000 ms): the factory reset runs only if the press **started** at least this long after boot (boot-hold / stuck-pin protection) — holding the button through power-on NEVER triggers it; recovery is NOT armed |
 
-**Anti-accidental protection**: both actions are ignored unless the FSM
+**Anti-accidental protection**: every action is ignored unless the FSM
 was NOT in **BOOTING, SELF_TEST or UPDATING** at the press confirmation
 AND is still outside those states at the release
 (`button: action=ignored press_state=... release_state=...`) — a press
@@ -845,8 +850,9 @@ release (a factory reset during OTA could brick the unit). A factory reset
 is additionally gated by the `MICHI_BUTTON_FACTORY_ARM_MS` arm window
 (see table above). The FSM additionally rejects any
 invalid transition by its own transition table; the button's state gates
-(the IDLE/UNPROVISIONED pairing gate, the RECOVERABLE_ERROR recovery gate)
-exist so the logs stay honest instead of showing FSM-level rejects.
+(the IDLE/UNPROVISIONED/PAIRING pairing gate, the RECOVERABLE_ERROR
+recovery gate) exist so the logs stay honest instead of showing
+FSM-level rejects.
 
 ### Shutdown
 
@@ -862,9 +868,10 @@ Init: `michi_button_init()` right after `michi_led_init()`; a failure
 continues degraded — no pairing button, everything else keeps working
 (`subsystem=button state=failed phase=8`). Success logs
 `subsystem=button state=ok phase=8`. Kconfig (component menu): debounce
-window (20 ms), long-press threshold (5000 ms), long-press action choice
-(recovery | factory_reset), factory-reset arm window (10000 ms), poll
-period (10 ms), task stack (3072).
+window (20 ms), recovery press threshold (5000 ms), factory-reset press
+threshold (10000 ms, always compiled — no choice can drop the physical
+factory reset), factory-reset arm window (10000 ms), poll period (10 ms),
+task stack (3072).
 
 **GPIO17 (camera PWDN) is still pending physical validation** — measure
 continuity between the button pin and GPIO17 (and to GND while pressed),
@@ -2032,6 +2039,10 @@ reimplementation, no duplication:
   no-early-return sweep);
 - `test_json_helpers.c` → `components/michi_http/json_helpers.c` (checked
   cJSON accessors) against the system cJSON — CI installs `libcjson-dev`.
+- `test_michi_button.c` → `components/michi_button/michi_button_gesture.c`
+  (the deterministic gesture contract: exact 4999/5000/9999/10000 ms
+  boundaries, protected states, arm window) + the REAL identity component
+  (corrupt store → factory reset → fresh working identity).
 
 Run locally (needs `cc`; `test_json_helpers` additionally needs
 `libcjson-dev`, otherwise it is skipped with a message):

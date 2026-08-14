@@ -15,6 +15,9 @@ scripts/run_receiver_sim_hifi.sh
 
 # Standard con pairing CERRADO (pair/start responde 403)
 scripts/run_receiver_sim_pairing_closed.sh
+
+# Standard con pairing abierto + PIN visible en el "display local" (SOLO desarrollo)
+python3 simulator/receiver_sim.py --type standard --pairing-open --show-local-pairing-pin --port 53319
 ```
 
 El puerto `53319` es el default recomendado para integración con Micro Server.
@@ -26,6 +29,7 @@ El puerto `53319` es el default recomendado para integración con Micro Server.
 | Standard listo para emparejar | `--type standard --pairing-open --port 53319` |
 | Hi-Fi listo para emparejar | `--type hifi --pairing-open --port 53319` |
 | Standard con ventana cerrada | `--type standard --pairing-closed --port 53319` |
+| Standard con PIN en display local (dev) | `--type standard --pairing-open --show-local-pairing-pin --port 53319` |
 | Sesión ya activa (test continuidad) | `--type standard --active-session --port 53319` |
 | Lease ya expirado (test timeout) | `--type standard --fail-heartbeat --port 53319` |
 
@@ -41,27 +45,61 @@ curl -s http://localhost:53319/api/v1/server/info | jq .
 # → 200, service=michi-stream-standard, roles=["audio_receiver"]
 ```
 
-### 2. Pairing completo (ventana abierta con --pairing-open)
+### 2. Pairing manual con datos dinámicos (ventana abierta con --pairing-open)
+
+El PIN y el session_id son ALEATORIOS en cada ejecución del simulador
+(`secrets.randbelow` + `uuid.uuid4` en runtime). Los vectores de pairing
+del bundle con PIN fijo (`pair-confirm-*.json`) NO sirven contra el
+simulador en runtime: confirmarlos responde `401 PAIRING_PIN_MISMATCH`.
+El flujo manual debe leer los valores reales en runtime.
+
+**Canal del PIN**: el PIN solo existe dentro del proceso del simulador y
+se entrega por el "display local" (nunca por HTTP, por diseño del
+contrato). Para un flujo manual/CI, el simulador ofrece el flag
+exclusivamente de desarrollo `--show-local-pairing-pin`:
+
+- por defecto el PIN **no** aparece en logs (solo
+  `Pairing session created: <uuid> (PIN displayed locally)`);
+- al activarlo imprime una advertencia y, por cada sesión de pairing:
+  `[LOCAL DISPLAY] Pairing PIN: 123456` y
+  `[LOCAL DISPLAY] Pairing session: <uuid>`;
+- es SOLO desarrollo: nunca existe en firmware ni en producción;
+- nunca imprime tokens de producción (el Bearer jamás se imprime; el PIN
+  sí, únicamente bajo este flag).
 
 ```bash
-# Terminal 1: simulator con ventana abierta
-scripts/run_receiver_sim_standard.sh
+# Terminal 1: simulator con ventana abierta y display local de desarrollo
+python3 simulator/receiver_sim.py --type standard --pairing-open --show-local-pairing-pin --port 53319
 
 # Terminal 2: pair/start firmado (vector del bundle) — crea la sesión de pairing
-curl -s http://localhost:53319/api/v1/pair/start \
+START=$(curl -s http://localhost:53319/api/v1/pair/start \
   -H "Content-Type: application/json" \
-  -d "$(cat contracts/michi-link/vectors/pairing/pair-start-valid.json)" | jq .
-# → 201 + session_id (el PIN de 6 dígitos se muestra en el log local)
+  -d "$(cat contracts/michi-link/vectors/pairing/pair-start-valid.json)")
+echo "$START" | jq .
+# → 201; extraer el session_id DE LA RESPUESTA (nunca de un vector)
+SESSION_ID=$(echo "$START" | jq -r .session_id)
 
-# pair/status
-curl -s "http://localhost:53319/api/v1/pair/status?session_id=<session_id>" | jq .
+# pair/status con la sesión real
+curl -s "http://localhost:53319/api/v1/pair/status?session_id=$SESSION_ID" | jq .
 # → 200 + status=pending
 
-# pair/confirm con el PIN del log local (PIN del vector: 042731)
-curl -s http://localhost:53319/api/v1/pair/confirm \
+# Leer en Terminal 1:
+#   [LOCAL DISPLAY] Pairing PIN: 042731
+#   [LOCAL DISPLAY] Pairing session: <uuid>   ← debe coincidir con $SESSION_ID
+
+# pair/confirm con PIN y sesión REALES (leídos del display local)
+# IMPORTANTE: la sesión se consume en esta llamada; el token SOLO está en
+# ESTA respuesta (un segundo confirm responde 409 PAIRING_ALREADY_CONSUMED
+# y no incluye token). Guardá la respuesta y extraé el token de ella.
+CONFIRM_RESPONSE=$(curl -s http://localhost:53319/api/v1/pair/confirm \
   -H "Content-Type: application/json" \
-  -d "$(cat contracts/michi-link/vectors/pairing/pair-confirm-valid.json)" | jq .
+  -d "$(jq -n --arg sid "$SESSION_ID" --arg pin "<PIN_DEL_DISPLAY_LOCAL>" \
+       '{session_id: $sid, pin: $pin,
+         michi_id: "JXcHys3oHoK2xsmQqlWEKi-KH_s4TrxJGw3YbiKP9-U",
+         public_key: "j8oIHv906goIsvcANXl_SZX8-OPcZftDkTPwTYaQQ7E"}')")
+echo "$CONFIRM_RESPONSE" | jq .
 # → 200 + token (emitido por el receptor; expires_in=0)
+TOKEN=$(echo "$CONFIRM_RESPONSE" | jq -r .token)
 ```
 
 ### 3. Pairing sin ventana → 403 esperado
@@ -81,7 +119,7 @@ curl -s http://localhost:53319/api/v1/pair/start \
 # Con el token del pairing:
 curl -s http://localhost:53319/api/v1/receiver-lite/session \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <pairing_token>" \
+  -H "Authorization: Bearer $TOKEN" \
   -d "$(cat contracts/michi-link/examples/positive/receiver-session-create.json)" | jq .
 # → 201 + session_id, session_token, lease_seconds=30, effective.stream_port
 ```
@@ -91,7 +129,7 @@ curl -s http://localhost:53319/api/v1/receiver-lite/session \
 ```bash
 curl -s http://localhost:53319/api/v1/receiver-lite/session \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <pairing_token>" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"buffer_ms": 49, "codec": "pcm_s16le", "sample_rate": 48000,
        "bit_depth": 16, "channels": 2, "packet_ms": 10, "payload_type": 97,
        "ssrc": 1, "volume": 70, "transport": "rtp_udp"}' | jq .
@@ -103,7 +141,7 @@ curl -s http://localhost:53319/api/v1/receiver-lite/session \
 ```bash
 curl -s http://localhost:53319/api/v1/receiver-lite/heartbeat \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <pairing_token>" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "X-Michi-Session: <session_token>" \
   -d '{"session_id": "<session_id>", "sequence": 1, "sent_at_ms": 0}' | jq .
 # → 200 + lease_seconds=30; replay → 409 CONFLICT
@@ -113,7 +151,7 @@ curl -s http://localhost:53319/api/v1/receiver-lite/heartbeat \
 
 ```bash
 curl -s -X DELETE http://localhost:53319/api/v1/receiver-lite/session \
-  -H "Authorization: Bearer <pairing_token>" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "X-Michi-Session: <session_token>"
 # → 204 (sin cuerpo)
 ```
@@ -126,9 +164,13 @@ scripts/run_tests.sh
 
 Ejecuta, en orden: sync del bundle vendorizado, `simulator/tests/test_simulator.py`
 (29 tests), `simulator/tests/test_integration_http.py` (18 tests),
-`tests/contract/test_contract.py` (13 casos) y
+`tests/contract/test_contract.py` (13 casos),
+`tests/contract/test_examples.py` (validación de ejemplos oficiales) y
 `tests/e2e/test_e2e_micro_stream.py` (7 casos). La suite completa de pytest
-(`python3 -m pytest -q`) recoge 86 tests. Todos deben pasar para considerar
+(`python3 -m pytest -q`) recoge también
+`tests/contract/test_schema.py` (suites de esquemas del bundle),
+`tests/contract/test_examples.py` y el smoke de pairing manual
+`tests/e2e/test_manual_pairing_smoke.py`. Todos deben pasar para considerar
 el simulator válido.
 
 ## Integración con Micro Server

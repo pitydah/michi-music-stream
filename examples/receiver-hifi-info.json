@@ -1,29 +1,51 @@
 {
   "service": "michi-stream-hifi",
-  "name": "Michi Stream Living Hi-Fi",
-  "device_id": "rcv_hifi_001",
+  "name": "Michi Stream Cocina",
+  "server_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "version": "0.3.0",
   "api_version": "v1-lite",
-  "michi_link_version": "1.0.0-alpha",
-  "firmware": "0.1.0",
-  "type": "michi_stream_hifi",
-  "roles": ["audio_receiver", "music_stream_receiver"],
+  "roles": [
+    "audio_receiver"
+  ],
+  "identity_scheme": "ed25519-blake3-v1",
+  "michi_id": "f2UwxQaeA6vA8LO7Cr1nGRr5MStned_Gbmc_ua48qUc",
+  "public_key": "RpHnJr9oP1DXBkPuIMuk0hJ2hAJ5SiWO2hAQVCMGREE",
   "auth": {
     "required": true,
     "strategy": "RECEIVER_BUTTON",
     "token_refresh": false
   },
-  "output": {
-    "connector": "rca_stereo",
-    "dac": "hifi_i2s",
-    "max_sample_rate": 96000,
-    "max_bit_depth": 24,
-    "channels": 2
-  },
-  "supported_codecs": ["pcm_s16le", "pcm_s24le", "opus"],
   "features": {
-    "pairing_button": true,
-    "volume": true,
+    "session": true,
     "heartbeat": true,
-    "ota_update": true
+    "volume": true,
+    "now_playing": false,
+    "diagnostics": false,
+    "ota": false
+  },
+  "audio": {
+    "transports": [
+      "rtp_udp"
+    ],
+    "codecs": [
+      "pcm_s16le"
+    ],
+    "sample_rates": [
+      48000
+    ],
+    "bit_depths": [
+      16
+    ],
+    "channels": [
+      2
+    ],
+    "packet_ms": [
+      10
+    ],
+    "payload_types": [
+      97
+    ],
+    "buffer_ms_min": 50,
+    "buffer_ms_max": 500
   }
 }

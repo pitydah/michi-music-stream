@@ -18,6 +18,10 @@ __pycache__/
 /tests/host/test_pairing_http
 /tests/host/test_http_canonical
 /tests/host/test_michi_discovery
+/tests/host/test_michi_time
+/tests/host/test_capability_parity
 /tests/host/test_michi_session
 /tests/host/test_rtp_guard
 /tests/host/test_session_http
+/tests/host/test_discovery_disc
+/tests/host/test_michi_button

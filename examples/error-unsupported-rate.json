@@ -1,10 +1,10 @@
 {
   "error": {
-    "code": "unsupported_rate",
-    "message": "Sample rate 96000 excede el maximo 48000.",
+    "code": "INVALID_REQUEST",
+    "message": "sample_rate must be exactly 48000",
+    "request_id": "550e8400-e29b-41d4-a716-446655440000",
     "details": {
-      "requested_rate": 96000,
-      "max_rate": 48000
+      "field": "sample_rate"
     }
   }
 }
