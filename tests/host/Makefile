@@ -19,6 +19,11 @@ CPPFLAGS = -Ishim \
            -I../../firmware/components/michi_pairing/include \
            -I../../firmware/components/michi_identity/include \
            -I../../firmware/components/michi_http/include \
+           -I../../firmware/components/michi_session/include \
+           -I../../firmware/components/michi_audio \
+           -I../../firmware/components/michi_audio/include \
+           -I../../firmware/components/michi_volume/include \
+           -I../../firmware/components/michi_display/include \
            -I../../firmware/components/michi_product_profile/include \
            -I../../firmware/components/michi_dac/include
 
@@ -48,8 +53,8 @@ IDENTITY_INC = -I$(IDENTITY_DIR)/include -I$(IDENTITY_DIR)/monocypher \
                -I$(IDENTITY_DIR)/blake3
 
 TESTS := test_semver test_pairing_validators test_michi_identity \
-         test_michi_pairing \
-         $(if $(filter yes,$(HAS_CJSON)),test_json_helpers test_http_canonical test_michi_discovery test_pairing_http)
+         test_michi_pairing test_michi_session test_rtp_guard \
+         $(if $(filter yes,$(HAS_CJSON)),test_json_helpers test_http_canonical test_michi_discovery test_pairing_http test_session_http)
 
 .PHONY: all test clean
 
@@ -57,17 +62,19 @@ all: $(TESTS)
 
 test: all
 	@set -e; \
-	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing; do ./$$t; done; \
+	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard; do ./$$t; done; \
 	if [ "$(HAS_CJSON)" = "yes" ]; then \
 	    ./test_json_helpers; \
 	    ./test_http_canonical; \
 	    ./test_michi_discovery; \
 	    ./test_pairing_http; \
+	    ./test_session_http; \
 	else \
 	    echo "SKIP test_json_helpers (libcjson-dev not installed - CI installs it)"; \
 	    echo "SKIP test_http_canonical (libcjson-dev not installed - CI installs it)"; \
 	    echo "SKIP test_michi_discovery (libcjson-dev not installed - CI installs it)"; \
 	    echo "SKIP test_pairing_http (libcjson-dev not installed - CI installs it)"; \
+	    echo "SKIP test_session_http (libcjson-dev not installed - CI installs it)"; \
 	fi
 
 test_semver: test_semver.c $(FIRMWARE)/michi_ota/semver.c \
@@ -131,6 +138,39 @@ test_michi_identity: test_michi_identity.c $(IDENTITY_SRC) \
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(IDENTITY_INC) $(IDENTITY_DEFS) \
 	    -o $@ test_michi_identity.c $(IDENTITY_SRC)
 
+# michi_session: compiles the REAL session layer against test doubles
+# for the engine (michi_audio_fake), volume, display and the state bus.
+# The REAL public headers (michi_audio.h/michi_volume.h/michi_display.h)
+# are compiled in - no struct drift.
+SESSION_DIR = $(FIRMWARE)/michi_session
+SESSION_SRC = $(SESSION_DIR)/michi_session.c shim/esp_timer.c \
+              shim/michi_state.c shim/michi_audio_fake.c \
+              shim/michi_volume_fake.c shim/michi_display_fake.c
+SESSION_INC = -I$(SESSION_DIR)/include
+
+test_michi_session: test_michi_session.c $(SESSION_SRC) \
+                    $(SESSION_DIR)/include/michi_session.h \
+                    shim/michi_audio_fake.h shim/michi_volume_fake.h \
+                    shim/michi_display_fake.h $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SESSION_INC) -pthread -o $@ \
+	    test_michi_session.c $(SESSION_SRC)
+
+# rtp_guard: the SAME datagram validation the engine runs (pure C).
+test_rtp_guard: test_rtp_guard.c $(FIRMWARE)/michi_audio/rtp_guard.c \
+                $(FIRMWARE)/michi_audio/rtp_guard.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ test_rtp_guard.c \
+	    $(FIRMWARE)/michi_audio/rtp_guard.c
+
+# Session HTTP body gates: the SAME json_helpers.c + validators.c the
+# firmware builds (cJSON-gated like the other HTTP tests).
+test_session_http: test_session_http.c $(FIRMWARE)/michi_http/json_helpers.c \
+                   $(FIRMWARE)/michi_http/include/michi_http.h \
+                   $(FIRMWARE)/michi_pairing/validators.c \
+                   $(FIRMWARE)/michi_pairing/validators.h $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CJSON_CFLAGS) -o $@ test_session_http.c \
+	    $(FIRMWARE)/michi_http/json_helpers.c \
+	    $(FIRMWARE)/michi_pairing/validators.c $(CJSON_LIBS)
+
 # michi_discovery: compiles the REAL announce builder + server_id NVS
 # wrapper + the identity sources (signing) against the test shims.
 DISCOVERY_DIR = $(FIRMWARE)/michi_discovery
@@ -148,4 +188,5 @@ test_michi_discovery: test_michi_discovery.c $(DISCOVERY_SRC) \
 clean:
 	rm -f test_semver test_pairing_validators test_json_helpers \
 	      test_http_canonical test_michi_identity test_michi_discovery \
-	      test_michi_pairing test_pairing_http
+	      test_michi_pairing test_pairing_http test_michi_session \
+	      test_rtp_guard test_session_http

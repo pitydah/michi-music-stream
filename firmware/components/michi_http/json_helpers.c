@@ -271,3 +271,197 @@ bool michi_http_json_get_pair_confirm(const cJSON *obj,
     memcpy(public_key, pk->valuestring, 44);
     return true;
 }
+
+/* --- session body gates (MS-07) ---------------------------------------- */
+
+/* The canonical session-create field names (receiver-session-create
+ * .schema.json): additionalProperties is false - anything else is 400. */
+static bool session_create_field_known(const char *name)
+{
+    static const char *const k_fields[] = {
+        "transport", "codec", "sample_rate", "bit_depth", "channels",
+        "packet_ms", "buffer_ms", "payload_type", "ssrc", "volume",
+    };
+    for (size_t i = 0; i < sizeof(k_fields) / sizeof(k_fields[0]); i++) {
+        if (strcmp(name, k_fields[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Any property outside the canonical set is rejected: the receiver picks
+ * the stream port and the RTP source IP is the HTTP request peer - they
+ * can never arrive in JSON (stream_port/source_ip -> 400). */
+static const char *session_create_extra_field(const cJSON *obj)
+{
+    for (const cJSON *item = obj->child; item != NULL; item = item->next) {
+        if (item->string != NULL && !session_create_field_known(item->string)) {
+            return item->string;
+        }
+    }
+    return NULL;
+}
+
+/* Exact JSON string equal to `expect` (const values are not ranges). */
+static bool json_string_is(const cJSON *obj, const char *key,
+                           const char *expect)
+{
+    const cJSON *item = cJSON_GetObjectItem(obj, key);
+    return item != NULL && cJSON_IsString(item) && item->valuestring != NULL &&
+           strcmp(item->valuestring, expect) == 0;
+}
+
+/* Exact JSON integer equal to `expect` (const values are not ranges). */
+static bool json_int_is(const cJSON *obj, const char *key, int expect)
+{
+    const cJSON *item = cJSON_GetObjectItem(obj, key);
+    if (item == NULL || !cJSON_IsNumber(item)) {
+        return false;
+    }
+    const double d = item->valuedouble;
+    return d == (double)expect && d == (double)(int)d;
+}
+
+bool michi_http_json_get_session_create(const cJSON *obj,
+                                        michi_http_session_create_body_t *out,
+                                        char *err_field,
+                                        size_t err_field_len)
+{
+    if (obj == NULL || out == NULL || err_field == NULL ||
+        err_field_len == 0) {
+        return false;
+    }
+    /* Required + exact const/range values, in schema order. No rounding,
+     * no correction: an invalid value is rejected and NAMED. */
+    if (!json_string_is(obj, "transport", "rtp_udp")) {
+        snprintf(err_field, err_field_len, "%s", "transport");
+        return false;
+    }
+    if (!json_string_is(obj, "codec", "pcm_s16le")) {
+        snprintf(err_field, err_field_len, "%s", "codec");
+        return false;
+    }
+    if (!json_int_is(obj, "sample_rate", 48000)) {
+        snprintf(err_field, err_field_len, "%s", "sample_rate");
+        return false;
+    }
+    if (!json_int_is(obj, "bit_depth", 16)) {
+        snprintf(err_field, err_field_len, "%s", "bit_depth");
+        return false;
+    }
+    if (!json_int_is(obj, "channels", 2)) {
+        snprintf(err_field, err_field_len, "%s", "channels");
+        return false;
+    }
+    if (!json_int_is(obj, "packet_ms", 10)) {
+        snprintf(err_field, err_field_len, "%s", "packet_ms");
+        return false;
+    }
+    int buffer_ms = 0;
+    if (!michi_http_json_get_int(obj, "buffer_ms", &buffer_ms) ||
+        buffer_ms < 50 || buffer_ms > 500) {
+        snprintf(err_field, err_field_len, "%s", "buffer_ms");
+        return false;
+    }
+    if (!json_int_is(obj, "payload_type", 97)) {
+        snprintf(err_field, err_field_len, "%s", "payload_type");
+        return false;
+    }
+    /* ssrc: unsigned 32-bit 1..4294967295 - beyond INT_MAX, so the
+     * checked double path (exact integer, no fractional, no coercion). */
+    const cJSON *ssrc_item = cJSON_GetObjectItem(obj, "ssrc");
+    if (ssrc_item == NULL || !cJSON_IsNumber(ssrc_item)) {
+        snprintf(err_field, err_field_len, "%s", "ssrc");
+        return false;
+    }
+    const double ssrc_d = ssrc_item->valuedouble;
+    if (ssrc_d < 1.0 || ssrc_d > 4294967295.0 ||
+        ssrc_d != (double)(uint64_t)ssrc_d) {
+        snprintf(err_field, err_field_len, "%s", "ssrc");
+        return false;
+    }
+    int volume = 0;
+    if (!michi_http_json_get_int(obj, "volume", &volume) ||
+        volume < 0 || volume > 100) {
+        snprintf(err_field, err_field_len, "%s", "volume");
+        return false;
+    }
+    /* additionalProperties: false - an unknown property (including
+     * stream_port/source_ip) is a 400 with the offending field name. */
+    const char *extra = session_create_extra_field(obj);
+    if (extra != NULL) {
+        snprintf(err_field, err_field_len, "%s", extra);
+        return false;
+    }
+    /* Copy everything (parse -> copy -> delete: only copies leave). */
+    const cJSON *t = cJSON_GetObjectItem(obj, "transport");
+    const cJSON *c = cJSON_GetObjectItem(obj, "codec");
+    if (t == NULL || c == NULL) {
+        snprintf(err_field, err_field_len, "%s", "body");
+        return false;
+    }
+    if (strlen(t->valuestring) >= sizeof(out->transport) ||
+        strlen(c->valuestring) >= sizeof(out->codec)) {
+        snprintf(err_field, err_field_len, "%s", "body");
+        return false;
+    }
+    strlcpy(out->transport, t->valuestring, sizeof(out->transport));
+    strlcpy(out->codec, c->valuestring, sizeof(out->codec));
+    out->sample_rate = 48000;
+    out->bit_depth = 16;
+    out->channels = 2;
+    out->packet_ms = 10;
+    out->buffer_ms = buffer_ms;
+    out->payload_type = 97;
+    out->ssrc = (uint32_t)ssrc_d;
+    out->volume = volume;
+    return true;
+}
+
+bool michi_http_json_get_session_patch(const cJSON *obj,
+                                       michi_http_session_patch_body_t *out,
+                                       char *err_field, size_t err_field_len)
+{
+    if (obj == NULL || out == NULL || err_field == NULL ||
+        err_field_len == 0) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    /* additionalProperties: false - only volume/paused exist. */
+    for (const cJSON *item = obj->child; item != NULL; item = item->next) {
+        if (item->string == NULL) {
+            continue;
+        }
+        if (strcmp(item->string, "volume") != 0 &&
+            strcmp(item->string, "paused") != 0) {
+            snprintf(err_field, err_field_len, "%s", item->string);
+            return false;
+        }
+    }
+    const cJSON *v = cJSON_GetObjectItem(obj, "volume");
+    if (v != NULL) {
+        if (!cJSON_IsNumber(v) || !michi_http_json_get_int(obj, "volume",
+                                                            &out->volume) ||
+            out->volume < 0 || out->volume > 100) {
+            snprintf(err_field, err_field_len, "%s", "volume");
+            return false;
+        }
+        out->has_volume = true;
+    }
+    const cJSON *p = cJSON_GetObjectItem(obj, "paused");
+    if (p != NULL) {
+        if (!cJSON_IsBool(p)) {
+            snprintf(err_field, err_field_len, "%s", "paused");
+            return false;
+        }
+        out->has_paused = true;
+        out->paused = cJSON_IsTrue(p);
+    }
+    if (!out->has_volume && !out->has_paused) {
+        /* minProperties: 1 - an empty body is a 400. */
+        snprintf(err_field, err_field_len, "%s", "body");
+        return false;
+    }
+    return true;
+}

@@ -24,14 +24,17 @@
  * implemented: pair/start (physical 120 s window + Ed25519 challenge +
  * local PIN), pair/status and pair/confirm (receiver-issued token,
  * SHA-256 digest only in NVS, expires_in 0). The canonical RTP session
- * and lease (MS-07/MS-08), the certified now-playing payload and the
- * OTA flow are NOT implemented yet: their handlers still enforce the
- * route-table auth and the strict JSON body gate, then answer 501
- * NOT_IMPLEMENTED, and the matching feature flag in /server/info is
- * false. Diagnostics is the only optional extension implemented (its
- * response shape is not frozen by the contract, so the existing snapshot
- * conforms). Unknown routes answer the canonical 404 error envelope via
- * the registered httpd 404 handler.
+ * lifecycle (MS-07) is implemented: POST/GET/PATCH/DELETE
+ * /receiver-lite/session with strict body gates, the receiver-picked UDP
+ * stream port, the RAM-only 43-char base64url session token and the
+ * exact state body. The lease renewal (MS-08), the certified now-playing
+ * payload and the OTA flow are NOT implemented yet: their handlers
+ * still enforce the route-table auth and the strict JSON body gate,
+ * then answer 501 NOT_IMPLEMENTED, and the matching feature flag in
+ * /server/info is false. Diagnostics is the only optional extension
+ * implemented (its response shape is not frozen by the contract, so the
+ * existing snapshot conforms). Unknown routes answer the canonical 404
+ * error envelope via the registered httpd 404 handler.
  *
  * Every error response uses the single canonical envelope
  * (michi_http_send_error): {error:{code,message,request_id,details}},
@@ -676,58 +679,333 @@ static esp_err_t pair_confirm_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* POST /api/v1/receiver-lite/session (Bearer): deferred - the canonical
- * RTP session lifecycle lands in MS-07/MS-08. */
+/* Session state name for the canonical state body (contract 2.5). */
+static const char *session_state_name(michi_session_state_t st)
+{
+    switch (st) {
+    case MICHI_SESSION_STATE_STARTING: return "starting";
+    case MICHI_SESSION_STATE_PLAYING:  return "playing";
+    case MICHI_SESSION_STATE_PAUSED:   return "paused";
+    case MICHI_SESSION_STATE_STOPPING: return "stopping";
+    default:                           return "stopping";
+    }
+}
+
+/* The canonical GET/PATCH session state body (receiver-session
+ * .schema.json, state form): the session_token NEVER appears here. */
+static esp_err_t send_session_state(httpd_req_t *req,
+                                    const michi_session_info_t *info)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) {
+        return michi_http_send_error(req, 500,
+                                     "out of memory while building session "
+                                     "state", NULL);
+    }
+    esp_err_t err = ESP_OK;
+    if (cJSON_AddStringToObject(root, "session_id", info->session_id) == NULL ||
+        cJSON_AddStringToObject(root, "state",
+                                session_state_name(info->state)) == NULL ||
+        cJSON_AddNumberToObject(root, "lease_remaining_ms",
+                                (double)info->lease_remaining_ms) == NULL ||
+        cJSON_AddNumberToObject(root, "volume", (double)info->volume) == NULL ||
+        cJSON_AddBoolToObject(root, "paused", info->paused) == NULL ||
+        cJSON_AddNumberToObject(root, "stream_port",
+                                (double)info->stream_port) == NULL ||
+        cJSON_AddNumberToObject(root, "ssrc", (double)info->ssrc) == NULL ||
+        cJSON_AddNumberToObject(root, "packets_received",
+                                (double)info->packets_received) == NULL ||
+        cJSON_AddNumberToObject(root, "packets_rejected",
+                                (double)info->packets_rejected) == NULL ||
+        cJSON_AddNumberToObject(root, "packets_lost",
+                                (double)info->packets_lost) == NULL ||
+        cJSON_AddNumberToObject(root, "underruns",
+                                (double)info->underruns) == NULL) {
+        err = ESP_ERR_NO_MEM;
+    }
+    if (err == ESP_OK) {
+        err = michi_http_send_json(req, 200, root);
+    }
+    cJSON_Delete(root);
+    if (err != ESP_OK) {
+        return michi_http_send_error(req, 500,
+                                     "failed to build session state", NULL);
+    }
+    return ESP_OK;
+}
+
+/* The X-Michi-Session header (contract 2.4): PATCH/DELETE require it.
+ * Missing/malformed answers 401 UNAUTHORIZED - the header value is a
+ * credential, never logged. */
+static esp_err_t read_session_token(httpd_req_t *req, char *out,
+                                    size_t out_len)
+{
+    if (httpd_req_get_hdr_value_str(req, "X-Michi-Session", out,
+                                    out_len) != ESP_OK ||
+        !michi_session_token_valid(out)) {
+        return michi_http_send_error(req, 401,
+                                     "missing or invalid session token",
+                                     NULL);
+    }
+    return ESP_OK;
+}
+
+/* POST /api/v1/receiver-lite/session (Bearer): the canonical session
+ * creation (contract 2.5, MS-07). Strict body gate (400 INVALID_REQUEST
+ * with details.field) -> one-session rule (409 CONFLICT) -> the RTP
+ * source IP is the HTTP request peer -> michi_session_start (the
+ * receiver picks the UDP port in 49152..65535; all-or-nothing start).
+ * 201 returns the session_token ONCE (RAM-only). */
 static esp_err_t session_start_handler(httpd_req_t *req)
 {
     char controller_id[MICHI_PAIRING_DEVICE_ID_LEN] = {0};
     if (!auth_gate(req, MICHI_PERM_PLAYBACK, controller_id,
-                     sizeof(controller_id))) {
+                   sizeof(controller_id))) {
         return ESP_OK; /* 401/403 already sent (P0-5) */
     }
-    return not_implemented_with_body(req,
-                                     "canonical receiver-lite audio sessions "
-                                     "are not implemented");
+
+    cJSON *root = read_json_body(req);
+    if (root == NULL) {
+        return ESP_OK; /* 400 already sent (P0-5) */
+    }
+    michi_http_session_create_body_t body;
+    char field[32] = {0};
+    const bool body_ok = michi_http_json_get_session_create(
+        root, &body, field, sizeof(field));
+    cJSON_Delete(root);
+    if (!body_ok) {
+        return michi_http_send_error(req, 400,
+                                     "invalid session create request body",
+                                     field);
+    }
+
+    /* One session per receiver: a second POST while one is active
+     * answers 409 CONFLICT (validation wins over the conflict check, as
+     * in the simulator reference). */
+    if (michi_session_active()) {
+        return michi_http_send_error(req, 409,
+                                     "a session already exists", NULL);
+    }
+
+    /* The RTP source IP is the TCP peer of THIS request - never JSON. */
+    char source_ip[16] = {0};
+    client_ip_str(req, source_ip, sizeof(source_ip));
+    if (source_ip[0] == '\0') {
+        return michi_http_send_error(req, 500,
+                                     "could not determine the client "
+                                     "address", NULL);
+    }
+
+    const michi_session_start_params_t params = {
+        .owner_controller_id = controller_id,
+        .codec = body.codec,
+        .sample_rate = (uint32_t)body.sample_rate,
+        .bit_depth = (uint8_t)body.bit_depth,
+        .channels = (uint8_t)body.channels,
+        .packet_ms = (uint8_t)body.packet_ms,
+        .buffer_ms = (uint16_t)body.buffer_ms,
+        .payload_type = (uint8_t)body.payload_type,
+        .ssrc = body.ssrc,
+        .volume = (uint8_t)body.volume,
+        .source_ip = source_ip,
+    };
+    char token[MICHI_SESSION_TOKEN_LEN];
+    const esp_err_t start_err = michi_session_start(&params, token,
+                                                    sizeof(token));
+    if (start_err != ESP_OK) {
+        ESP_LOGW(TAG, "session start failed: %s",
+                 esp_err_to_name(start_err));
+        /* All-or-nothing start: bind/buffer/pipeline failures already
+         * rolled back - no session exists, the client retries. */
+        return michi_http_send_error(req, 500,
+                                     "the audio session could not be "
+                                     "started", NULL);
+    }
+    michi_session_info_t info;
+    if (michi_session_get_info(&info) != ESP_OK) {
+        /* Defensive: a session that was just started must be readable;
+         * tear it down instead of answering half a contract. */
+        (void)michi_session_stop(token);
+        return michi_http_send_error(req, 500,
+                                     "the audio session could not be "
+                                     "started", NULL);
+    }
+
+    cJSON *resp = cJSON_CreateObject();
+    if (resp == NULL) {
+        /* The one-shot token was never delivered; tear the session down
+         * instead of leaving an unreachable ghost session. */
+        (void)michi_session_stop(token);
+        return michi_http_send_error(req, 500,
+                                     "out of memory while building "
+                                     "response", NULL);
+    }
+    esp_err_t err = ESP_OK;
+    cJSON *effective = cJSON_AddObjectToObject(resp, "effective");
+    if (cJSON_AddStringToObject(resp, "session_id", info.session_id) == NULL ||
+        cJSON_AddStringToObject(resp, "session_token", token) == NULL ||
+        cJSON_AddNumberToObject(resp, "lease_seconds",
+                                MICHI_SESSION_LEASE_SECONDS) == NULL ||
+        effective == NULL ||
+        cJSON_AddStringToObject(effective, "transport",
+                                body.transport) == NULL ||
+        cJSON_AddStringToObject(effective, "codec", body.codec) == NULL ||
+        cJSON_AddNumberToObject(effective, "sample_rate",
+                                (double)body.sample_rate) == NULL ||
+        cJSON_AddNumberToObject(effective, "bit_depth",
+                                (double)body.bit_depth) == NULL ||
+        cJSON_AddNumberToObject(effective, "channels",
+                                (double)body.channels) == NULL ||
+        cJSON_AddNumberToObject(effective, "packet_ms",
+                                (double)body.packet_ms) == NULL ||
+        cJSON_AddNumberToObject(effective, "buffer_ms",
+                                (double)info.buffer_ms) == NULL ||
+        cJSON_AddNumberToObject(effective, "payload_type",
+                                (double)body.payload_type) == NULL ||
+        cJSON_AddNumberToObject(effective, "ssrc",
+                                (double)info.ssrc) == NULL ||
+        cJSON_AddNumberToObject(effective, "stream_port",
+                                (double)info.stream_port) == NULL ||
+        cJSON_AddNumberToObject(effective, "volume",
+                                (double)info.volume) == NULL) {
+        err = ESP_ERR_NO_MEM;
+    }
+    if (err == ESP_OK) {
+        err = michi_http_send_json(req, 201, resp);
+    }
+    cJSON_Delete(resp);
+    if (err != ESP_OK) {
+        /* Response build/send failed after a successful start: the token
+         * was never delivered, so stop the session (no ghost session). */
+        (void)michi_session_stop(token);
+        return michi_http_send_error(req, 500,
+                                     "failed to build session response",
+                                     NULL);
+    }
+    return ESP_OK;
 }
 
-/* GET /api/v1/receiver-lite/session (Bearer): deferred (MS-07). */
+/* GET /api/v1/receiver-lite/session (Bearer): the canonical state body.
+ * Requires Bearer but NOT X-Michi-Session (contract 2.4). 404 without a
+ * session. The session_token NEVER appears. */
 static esp_err_t session_current_get_handler(httpd_req_t *req)
 {
     char controller_id[MICHI_PAIRING_DEVICE_ID_LEN] = {0};
     if (!auth_gate(req, MICHI_PERM_STATUS, controller_id,
-                     sizeof(controller_id))) {
+                   sizeof(controller_id))) {
         return ESP_OK; /* 401/403 already sent (P0-5) */
     }
-    return send_not_implemented(req,
-                                "canonical receiver-lite audio sessions are "
-                                "not implemented");
+    michi_session_info_t info;
+    if (michi_session_get_info(&info) != ESP_OK) {
+        return michi_http_send_error(req, 404, "no active session", NULL);
+    }
+    return send_session_state(req, &info);
 }
 
-/* PATCH /api/v1/receiver-lite/session (Bearer): deferred (MS-07). */
+/* PATCH /api/v1/receiver-lite/session (Bearer + X-Michi-Session):
+ * canonical patch (volume 0..100 and/or paused). Guard order matches
+ * the simulator reference: bearer -> session exists (404) -> session
+ * token (401) -> body (400). Answers the SAME state body as GET after
+ * applying. */
 static esp_err_t session_patch_handler(httpd_req_t *req)
 {
     char controller_id[MICHI_PAIRING_DEVICE_ID_LEN] = {0};
     if (!auth_gate(req, MICHI_PERM_PLAYBACK, controller_id,
-                     sizeof(controller_id))) {
+                   sizeof(controller_id))) {
         return ESP_OK; /* 401/403 already sent (P0-5) */
     }
-    return not_implemented_with_body(req,
-                                     "canonical receiver-lite audio sessions "
-                                     "are not implemented");
+    if (!michi_session_active()) {
+        return michi_http_send_error(req, 404, "no active session", NULL);
+    }
+    char token[MICHI_SESSION_TOKEN_LEN];
+    const esp_err_t token_err = read_session_token(req, token,
+                                                   sizeof(token));
+    if (token_err != ESP_OK) {
+        return token_err; /* 401 already sent (P0-5) */
+    }
+
+    cJSON *root = read_json_body(req);
+    if (root == NULL) {
+        return ESP_OK; /* 400 already sent (P0-5) */
+    }
+    michi_http_session_patch_body_t body;
+    char field[32] = {0};
+    const bool body_ok = michi_http_json_get_session_patch(
+        root, &body, field, sizeof(field));
+    cJSON_Delete(root);
+    if (!body_ok) {
+        return michi_http_send_error(req, 400,
+                                     "invalid session patch request body",
+                                     field);
+    }
+
+    const esp_err_t err = michi_session_patch(
+        token, body.has_volume, (uint8_t)(body.has_volume ? body.volume : 0),
+        body.has_paused, body.paused);
+    if (err == ESP_ERR_NOT_FOUND) {
+        return michi_http_send_error(req, 401,
+                                     "missing or invalid session token",
+                                     NULL);
+    }
+    if (err == ESP_ERR_INVALID_STATE) {
+        return michi_http_send_error(req, 404, "no active session", NULL);
+    }
+    if (err != ESP_OK) {
+        return michi_http_send_error(req, 500,
+                                     "the session patch failed", NULL);
+    }
+
+    michi_session_info_t info;
+    if (michi_session_get_info(&info) != ESP_OK) {
+        return michi_http_send_error(req, 404, "no active session", NULL);
+    }
+    return send_session_state(req, &info);
 }
 
-/* DELETE /api/v1/receiver-lite/session (Bearer, no body): deferred
- * (MS-07). */
+/* DELETE /api/v1/receiver-lite/session (Bearer + X-Michi-Session, no
+ * body): canonical close (contract 2.5). 204 on success - the engine
+ * stops accepting RTP, the buffers/socket are freed and the session
+ * token is wiped from RAM. Guard order: bearer -> session exists (404)
+ * -> session token (401). Idempotent for the authenticated session. */
 static esp_err_t session_delete_handler(httpd_req_t *req)
 {
     char controller_id[MICHI_PAIRING_DEVICE_ID_LEN] = {0};
     if (!auth_gate(req, MICHI_PERM_PLAYBACK, controller_id,
-                     sizeof(controller_id))) {
+                   sizeof(controller_id))) {
         return ESP_OK; /* 401/403 already sent (P0-5) */
     }
-    return send_not_implemented(req,
-                                "canonical receiver-lite audio sessions are "
-                                "not implemented");
+    if (!michi_session_active()) {
+        return michi_http_send_error(req, 404, "no active session", NULL);
+    }
+    char token[MICHI_SESSION_TOKEN_LEN];
+    const esp_err_t token_err = read_session_token(req, token,
+                                                   sizeof(token));
+    if (token_err != ESP_OK) {
+        return token_err; /* 401 already sent (P0-5) */
+    }
+
+    const esp_err_t err = michi_session_stop(token);
+    if (err == ESP_ERR_NOT_FOUND) {
+        return michi_http_send_error(req, 401,
+                                     "missing or invalid session token",
+                                     NULL);
+    }
+    if (err == ESP_ERR_INVALID_STATE) {
+        return michi_http_send_error(req, 404, "no active session", NULL);
+    }
+    if (err == ESP_ERR_TIMEOUT) {
+        return michi_http_send_error(req, 500,
+                                     "the session did not stop - retry",
+                                     NULL);
+    }
+    if (err != ESP_OK) {
+        return michi_http_send_error(req, 500,
+                                     "the session could not be closed",
+                                     NULL);
+    }
+    /* 204: no body, no content type. */
+    httpd_resp_set_status(req, "204 No Content");
+    return httpd_resp_send(req, NULL, 0);
 }
 
 /* POST /api/v1/receiver-lite/heartbeat (Bearer): deferred - the
@@ -929,9 +1207,9 @@ static esp_err_t diagnostics_get_handler(httpd_req_t *req)
                 cJSON_AddNumberToObject(audio, "underruns", m.underruns) == NULL ||
                 cJSON_AddNumberToObject(audio, "overruns", m.overruns) == NULL ||
                 cJSON_AddNumberToObject(audio, "drops_malformed", m.drops_malformed) == NULL ||
-                cJSON_AddNumberToObject(audio, "drops_pt_s24le", m.drops_pt_s24le) == NULL ||
                 cJSON_AddNumberToObject(audio, "drops_pt_other", m.drops_pt_other) == NULL ||
                 cJSON_AddNumberToObject(audio, "drops_ssrc_filtered", m.drops_ssrc_filtered) == NULL ||
+                cJSON_AddNumberToObject(audio, "drops_source_ip", m.drops_source_ip) == NULL ||
                 cJSON_AddNumberToObject(audio, "drops_payload_geometry", m.drops_payload_geometry) == NULL ||
                 cJSON_AddNumberToObject(audio, "jitter_us", m.jitter_us) == NULL ||
                 cJSON_AddNumberToObject(audio, "buffer_ms", m.buffer_ms) == NULL ||

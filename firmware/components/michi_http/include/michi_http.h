@@ -9,6 +9,7 @@
 #include "cJSON.h"
 
 #include "michi_product_profile.h"
+#include "michi_session.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -266,6 +267,77 @@ bool michi_http_json_get_pair_confirm(const cJSON *obj,
                                       char *michi_id, size_t michi_id_len,
                                       char *public_key, size_t public_key_len,
                                       char *err_field, size_t err_field_len);
+
+/**
+ * @brief Canonical session-create body (POST /receiver-lite/session),
+ *        validated and copied (receiver-session-create.schema.json).
+ */
+typedef struct {
+    char transport[10]; /*!< "rtp_udp" (exact) */
+    char codec[MICHI_SESSION_CODEC_LEN]; /*!< "pcm_s16le" (exact) */
+    int sample_rate;    /*!< 48000 (exact) */
+    int bit_depth;      /*!< 16 (exact) */
+    int channels;       /*!< 2 (exact) */
+    int packet_ms;      /*!< 10 (exact) */
+    int buffer_ms;      /*!< 50..500 */
+    int payload_type;   /*!< 97 (exact) */
+    uint32_t ssrc;      /*!< 1..4294967295 (exact negotiation) */
+    int volume;         /*!< 0..100 */
+} michi_http_session_create_body_t;
+
+/**
+ * @brief Parse + copy the canonical session-create body (MS-07).
+ *
+ * Strict validation per receiver-session-create.schema.json: every field
+ * is required with its exact type and const/range value (transport
+ * rtp_udp, codec pcm_s16le, 48000/16/2, packet_ms 10, payload_type 97,
+ * buffer_ms 50..500, ssrc 1..4294967295, volume 0..100); ANY other
+ * property (e.g. stream_port or source_ip - the receiver picks the port
+ * and the RTP source IP is the HTTP request peer, never JSON) is
+ * rejected with 400 details.field. No rounding, no correction: invalid
+ * values are rejected, never clamped.
+ *
+ * On failure err_field receives the offending field name (or "body").
+ * Pure cJSON: compiled and tested by the host-side tests.
+ *
+ * @param obj        Parsed request object.
+ * @param out        Copied, validated body.
+ * @param err_field  Buffer (>= 20 bytes) for the field name.
+ * @param err_field_len Size of err_field.
+ * @return true when the body is canonical and everything was copied.
+ */
+bool michi_http_json_get_session_create(const cJSON *obj,
+                                        michi_http_session_create_body_t *out,
+                                        char *err_field,
+                                        size_t err_field_len);
+
+/**
+ * @brief Canonical session-patch body (PATCH /receiver-lite/session),
+ *        validated and copied (receiver-session-patch.schema.json).
+ */
+typedef struct {
+    bool has_volume; /*!< volume was present */
+    int  volume;     /*!< 0..100 */
+    bool has_paused; /*!< paused was present */
+    bool paused;     /*!< target pause state */
+} michi_http_session_patch_body_t;
+
+/**
+ * @brief Parse + copy the canonical session-patch body (MS-07).
+ *
+ * Strict validation per receiver-session-patch.schema.json: at least
+ * one property; only volume (integer 0..100) and paused (boolean) are
+ * accepted - any other property is rejected with 400 details.field.
+ *
+ * @param obj        Parsed request object.
+ * @param out        Copied, validated body.
+ * @param err_field  Buffer (>= 20 bytes) for the field name.
+ * @param err_field_len Size of err_field.
+ * @return true when the body is canonical and everything was copied.
+ */
+bool michi_http_json_get_session_patch(const cJSON *obj,
+                                       michi_http_session_patch_body_t *out,
+                                       char *err_field, size_t err_field_len);
 
 #ifdef __cplusplus
 }
