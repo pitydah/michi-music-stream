@@ -159,6 +159,68 @@ esp_err_t nvs_set_blob(nvs_handle_t handle, const char *key, const void *value,
     return ESP_OK;
 }
 
+esp_err_t nvs_get_str(nvs_handle_t handle, const char *key, char *out,
+                      size_t *length)
+{
+    test_nvs_namespace_t *store = test_nvs_store();
+    if (handle < 0 || handle >= TEST_NVS_MAX_NAMESPACES ||
+        !store[handle].present || key == NULL || length == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (store[handle].force_read_error) {
+        return ESP_FAIL; /* simulated flash/CRC read failure */
+    }
+    for (int j = 0; j < TEST_NVS_MAX_NAMESPACES; j++) {
+        test_nvs_entry_t *e = &store[handle].entries[j];
+        if (e->present && strcmp(e->key, key) == 0) {
+            /* NVS strings are NUL-terminated in the store. */
+            if (out != NULL) {
+                size_t copy = e->len < *length ? e->len : *length;
+                memcpy(out, e->data, copy);
+                if (copy < *length) {
+                    out[copy] = '\0';
+                }
+            }
+            *length = e->len;
+            return ESP_OK;
+        }
+    }
+    return ESP_ERR_NVS_NOT_FOUND;
+}
+
+esp_err_t nvs_set_str(nvs_handle_t handle, const char *key,
+                      const char *value)
+{
+    test_nvs_namespace_t *store = test_nvs_store();
+    if (handle < 0 || handle >= TEST_NVS_MAX_NAMESPACES ||
+        !store[handle].present || key == NULL || value == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const size_t length = strlen(value) + 1;
+    if (length > TEST_NVS_MAX_BLOBS) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    test_nvs_entry_t *e = NULL;
+    for (int j = 0; j < TEST_NVS_MAX_NAMESPACES; j++) {
+        if (store[handle].entries[j].present &&
+            strcmp(store[handle].entries[j].key, key) == 0) {
+            e = &store[handle].entries[j];
+            break;
+        }
+        if (e == NULL && !store[handle].entries[j].present) {
+            e = &store[handle].entries[j];
+        }
+    }
+    if (e == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    strncpy(e->key, key, sizeof(e->key) - 1);
+    memcpy(e->data, value, length);
+    e->len = length;
+    e->present = true;
+    return ESP_OK;
+}
+
 esp_err_t nvs_commit(nvs_handle_t handle)
 {
     test_nvs_namespace_t *store = test_nvs_store();

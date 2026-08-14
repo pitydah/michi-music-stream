@@ -30,7 +30,7 @@ CJSON_LIBS   := $(shell pkg-config --libs libcjson 2>/dev/null)
 SHIMS := $(wildcard shim/*.h)
 
 TESTS := test_semver test_pairing_validators test_michi_identity \
-         $(if $(filter yes,$(HAS_CJSON)),test_json_helpers test_http_canonical)
+         $(if $(filter yes,$(HAS_CJSON)),test_json_helpers test_http_canonical test_michi_discovery)
 
 .PHONY: all test clean
 
@@ -42,9 +42,11 @@ test: all
 	if [ "$(HAS_CJSON)" = "yes" ]; then \
 	    ./test_json_helpers; \
 	    ./test_http_canonical; \
+	    ./test_michi_discovery; \
 	else \
 	    echo "SKIP test_json_helpers (libcjson-dev not installed - CI installs it)"; \
 	    echo "SKIP test_http_canonical (libcjson-dev not installed - CI installs it)"; \
+	    echo "SKIP test_michi_discovery (libcjson-dev not installed - CI installs it)"; \
 	fi
 
 test_semver: test_semver.c $(FIRMWARE)/michi_ota/semver.c \
@@ -87,6 +89,20 @@ test_michi_identity: test_michi_identity.c $(IDENTITY_SRC) \
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(IDENTITY_INC) $(IDENTITY_DEFS) \
 	    -o $@ test_michi_identity.c $(IDENTITY_SRC)
 
+# michi_discovery: compiles the REAL announce builder + server_id NVS
+# wrapper + the identity sources (signing) against the test shims.
+DISCOVERY_DIR = $(FIRMWARE)/michi_discovery
+DISCOVERY_SRC = $(DISCOVERY_DIR)/announce.c $(DISCOVERY_DIR)/discovery_nvs.c
+DISCOVERY_INC = -I$(DISCOVERY_DIR) -I$(DISCOVERY_DIR)/include
+
+test_michi_discovery: test_michi_discovery.c $(DISCOVERY_SRC) \
+                      $(DISCOVERY_DIR)/include/michi_discovery.h \
+                      $(DISCOVERY_DIR)/discovery_nvs.h \
+                      $(IDENTITY_SRC) $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(DISCOVERY_INC) $(IDENTITY_INC) \
+	    $(IDENTITY_DEFS) $(CJSON_CFLAGS) -o $@ test_michi_discovery.c \
+	    $(DISCOVERY_SRC) $(IDENTITY_SRC) $(CJSON_LIBS)
+
 clean:
 	rm -f test_semver test_pairing_validators test_json_helpers \
-	      test_http_canonical test_michi_identity
+	      test_http_canonical test_michi_identity test_michi_discovery

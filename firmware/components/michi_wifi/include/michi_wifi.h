@@ -15,8 +15,9 @@ extern "C" {
  * Owns the network bring-up of the universal firmware: STA interface,
  * connection with exponential backoff, BLE provisioning via
  * wifi_prov_mgr (NimBLE transport, WIFI_PROV_SECURITY_1/SRP6a with a
- * Kconfig proof-of-possession), mDNS announcements and the NVS
- * credentials store.
+ * Kconfig proof-of-possession) and the NVS credentials store. Signed
+ * discovery (mDNS + UDP announce, MS-05) is delegated to
+ * michi_discovery on network up/down.
  *
  * Hard rules (see firmware/README.md, WiFi & provisioning section):
  * - Credentials live ONLY in the NVS "wifi" namespace (keys: ssid,
@@ -45,7 +46,8 @@ extern "C" {
 
 /**
  * @brief Initialize netif + Wi-Fi STA + event handlers + NVS "wifi"
- *        namespace + mDNS and auto-start (connect or provisioning).
+ *        namespace + signed discovery (michi_discovery) and auto-start
+ *        (connect or provisioning).
  *
  * Runs the boot plan (connect vs provision) and defers the FSM placement
  * to a MICHI_EVENT_STATE_CHANGED observer: it acts when the FSM first
@@ -151,7 +153,8 @@ esp_err_t michi_wifi_get_reconnect_count(uint32_t *out);
 /**
  * @brief Shut the network subsystem down: provisioning stopped (with
  *        cooperative task join), reconnect timer cancelled, handlers
- *        unregistered, Wi-Fi stopped/deinitialized, mDNS retired.
+ *        unregistered, Wi-Fi stopped/deinitialized, discovery
+ *        (michi_discovery) retired.
  *
  * Idempotent: a second call when the subsystem is already off returns
  * ESP_OK. On provisioning-join timeout the provisioning task is left to
