@@ -10,7 +10,7 @@
 #include <string.h>
 
 #include "cJSON.h"
-#include "validators.h"
+#include "michi_pairing.h"
 
 bool michi_http_json_get_string(const cJSON *obj, const char *key,
                                 char *out, size_t out_len)

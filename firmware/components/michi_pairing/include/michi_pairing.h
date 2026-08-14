@@ -206,6 +206,27 @@ esp_err_t michi_pairing_open_window(void);
 bool michi_pairing_is_window_open(void);
 
 /**
+ * @brief Whether a session/device identifier is a well-formed UUID
+ *        (8-4-4-4-12 lowercase hex, no braces). Pure validator; also
+ *        used by the HTTP layer for /pair/status session_id.
+ *
+ * @param id NUL-terminated string to check (may be NULL -> false).
+ * @return true when the string is a canonical UUID.
+ */
+bool michi_pairing_uuid_valid(const char *id);
+
+/**
+ * @brief Constant-time byte-sequence comparison (all bytes examined,
+ *        no data-dependent early exit). Used for PINs and token digests.
+ *
+ * @param a First buffer.
+ * @param b Second buffer.
+ * @param n Number of bytes to compare.
+ * @return true when both buffers are byte-identical.
+ */
+bool michi_pairing_token_matches(const uint8_t *a, const uint8_t *b, size_t n);
+
+/**
  * @brief Start a pairing session (POST /pair/start), only inside the
  *        physical window.
  *

@@ -258,7 +258,9 @@ static void client_ip_str(httpd_req_t *req, char *out, size_t out_len)
 {
     out[0] = '\0';
     struct sockaddr_storage ss;
-    if (httpd_req_to_sockaddr(req, (struct sockaddr *)&ss) != ESP_OK) {
+    socklen_t ss_len = (socklen_t)sizeof(ss);
+    const int fd = httpd_req_to_sockfd(req);
+    if (fd < 0 || getpeername(fd, (struct sockaddr *)&ss, &ss_len) != 0) {
         return;
     }
     if (ss.ss_family != AF_INET) {
