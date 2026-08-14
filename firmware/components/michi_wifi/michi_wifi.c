@@ -74,7 +74,6 @@
 #include "nvs_flash.h"
 
 #include "cJSON.h"
-#include "mdns.h"
 
 #include "wifi_provisioning/manager.h"
 #include "wifi_provisioning/scheme_ble.h"
@@ -82,7 +81,7 @@
 #include "esp_netif_ip_addr.h"
 #include "lwip/ip4_addr.h"
 
-#include "michi_product_profile.h"
+#include "michi_discovery.h"
 #include "michi_state.h"
 #include "michi_wifi.h"
 
@@ -100,12 +99,6 @@
 #define MICHI_WIFI_DEVICE_NAME_MAX 32
 #define MICHI_WIFI_REGION_MAX 16
 
-/* mDNS: announced on GOT_IP (profile is ready by then), retired on
- * disconnect. */
-#define MICHI_WIFI_MDNS_SERVICE "_michi-receiver"
-#define MICHI_WIFI_MDNS_PROTO "_tcp"
-#define MICHI_WIFI_MDNS_PORT 80
-
 /* Backoff cap: BASE << attempt grows fast (BASE 5000 << 9 ~ 42 min). */
 #define MICHI_WIFI_RECONNECT_MAX_MS 300000
 
@@ -113,9 +106,6 @@
  * service is restarted after MICHI_PROV_RETRY_MS, max this many retries;
  * exhausted sessions land on UNPROVISIONED (long press restarts). */
 #define MICHI_PROV_RETRY_MAX 3
-
-/* Serialization timeout for the mDNS advertise/retire mutex (F10). */
-#define MICHI_WIFI_MDNS_LOCK_MS 500
 
 /* Provisioning task: below the FSM (5) and the display render (4) so a
  * blocking BLE bring-up never delays them; above the LED animation (3)
@@ -176,13 +166,6 @@ static volatile uint32_t s_reconnects;
 /* Provisioning sessions failed this cycle (F7): counts toward
  * MICHI_PROV_RETRY_MAX before the automatic retries are exhausted. */
 static volatile int s_prov_retries;
-static volatile bool s_mdns_advertised;
-
-/* Serializes the mDNS advertise/retire operations with the flag (F10).
- * NOT the portMUX: the mdns v1.x API takes an internal semaphore with
- * portMAX_DELAY (mdns_service.c MDNS_SERVICE_LOCK), so the calls can
- * block and must never run under a critical section. */
-static SemaphoreHandle_t s_mdns_mutex;
 
 /* SSID cache (log/UI only, NEVER the password). Written under the mux;
  * readers may observe the previous value - the cache is not a
@@ -375,77 +358,13 @@ static void arm_reconnect(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* mDNS (TXT built from the product profile - single source of truth)  */
+/* Signed discovery (MS-05)                                           */
 /* ------------------------------------------------------------------ */
 
-/* F10: the mdns v1.x API takes an internal semaphore with portMAX_DELAY
- * (mdns_service.c MDNS_SERVICE_LOCK), so it can block and must NEVER run
- * under a portMUX critical section; the dedicated mutex serializes
- * advertise/retire and guards the flag together with the calls. Every
- * return is checked before the flag is set. */
-static void mdns_txt_set(const char *key, const char *value)
-{
-    if (mdns_service_txt_item_set(MICHI_WIFI_MDNS_SERVICE,
-                                  MICHI_WIFI_MDNS_PROTO, key,
-                                  value) != ESP_OK) {
-        ESP_LOGW(TAG, "mdns: txt item %s failed", key);
-    }
-}
-
-static void mdns_advertise(void)
-{
-    if (s_mdns_mutex == NULL ||
-        !xSemaphoreTake(s_mdns_mutex,
-                        pdMS_TO_TICKS(MICHI_WIFI_MDNS_LOCK_MS))) {
-        ESP_LOGW(TAG, "mdns: advertise skipped (serialization timeout)");
-        return;
-    }
-    if (!s_mdns_advertised) {
-        const michi_product_profile_t *p = michi_product_profile_get();
-        /* The TXT keys come FROM the profile: no duplicated product strings.
-         * (Managed espressif/mdns v1.x: txt_item_set/service_remove take NO
-         * instance argument.) */
-        const esp_err_t err =
-            mdns_service_add(NULL, MICHI_WIFI_MDNS_SERVICE,
-                             MICHI_WIFI_MDNS_PROTO, MICHI_WIFI_MDNS_PORT,
-                             NULL, 0);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "mdns: service_add failed: %s",
-                     esp_err_to_name(err));
-        } else {
-            mdns_txt_set("name", p->product_name);
-            mdns_txt_set("tier", michi_product_profile_tier_name());
-            mdns_txt_set("api_version", p->api_version);
-            mdns_txt_set("fw_version", p->firmware_version);
-            mdns_txt_set("board", p->board_model);
-            s_mdns_advertised = true;
-            ESP_LOGI(TAG, "mdns: advertising %s (%s)",
-                     MICHI_WIFI_MDNS_SERVICE, p->product_name);
-        }
-    }
-    xSemaphoreGive(s_mdns_mutex);
-}
-
-static void mdns_retire(void)
-{
-    if (s_mdns_mutex == NULL ||
-        !xSemaphoreTake(s_mdns_mutex,
-                        pdMS_TO_TICKS(MICHI_WIFI_MDNS_LOCK_MS))) {
-        ESP_LOGW(TAG, "mdns: retire skipped (serialization timeout)");
-        return;
-    }
-    if (s_mdns_advertised) {
-        s_mdns_advertised = false;
-        const esp_err_t err =
-            mdns_service_remove(MICHI_WIFI_MDNS_SERVICE,
-                                MICHI_WIFI_MDNS_PROTO);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "mdns: service_remove failed: %s",
-                     esp_err_to_name(err));
-        }
-    }
-    xSemaphoreGive(s_mdns_mutex);
-}
+/* mDNS + the UDP announce are owned by michi_discovery: the
+ * service/TXT/group/port constants and the announce timer live there.
+ * michi_wifi only notifies network up/down - no duplicated product
+ * strings, no duplicated announce state. */
 
 /* ------------------------------------------------------------------ */
 /* esp_event handlers (NON-BLOCKING, P0-11)                            */
@@ -493,7 +412,13 @@ static void handle_got_ip(const ip_event_got_ip_t *event)
     ESP_LOGI(TAG, "wifi: ssid=%s ip=%s retry=0", michi_wifi_get_ssid(),
              ipbuf);
 
-    mdns_advertise();
+    /* Signed discovery (MS-05): mDNS service + first UDP announce on
+     * network up; IP renewals re-announce with the current address. */
+    const esp_err_t d_err = michi_discovery_start(ipbuf);
+    if (d_err != ESP_OK) {
+        ESP_LOGW(TAG, "discovery: announce start failed: %s",
+                 esp_err_to_name(d_err));
+    }
 
     /* F5: replay only the events whose mapping applies to the CURRENT
      * state (no warn noise, e.g. on IP renewal while IDLE). When the FSM
@@ -512,7 +437,9 @@ static void handle_disconnected(void)
          * re-arm the chain or move the FSM. */
         return;
     }
-    mdns_retire();
+    /* Signed discovery: close the UDP socket, stop the announce timer
+     * and retire the mDNS service on link loss (contract 2.2). */
+    (void)michi_discovery_stop();
 
     portENTER_CRITICAL(&s_mux);
     const bool prov_active = s_prov_active;
@@ -1185,13 +1112,14 @@ esp_err_t michi_wifi_init(void)
         return err;
     }
 
-    /* F10: serialization mutex for the mDNS advertise/retire operations.
-     * Not critical-section-safe: the mdns API can block on its internal
-     * semaphore. A failed creation disables mDNS announcements (logged). */
-    s_mdns_mutex = xSemaphoreCreateMutex();
-    if (s_mdns_mutex == NULL) {
-        ESP_LOGW(TAG, "init: mdns mutex creation failed (no mDNS "
-                 "announcements)");
+    /* Signed discovery (MS-05): owned by michi_discovery - mDNS stack,
+     * announce timer and UDP socket. Runs here (not in app_main) so the
+     * network bring-up and the announce lifecycle share one place; the
+     * service itself is advertised on GOT_IP. */
+    err = michi_discovery_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "init: michi_discovery_init failed: %s "
+                 "(no discovery announcements)", esp_err_to_name(err));
     }
 
     /* Credentials: NVS "wifi" namespace ONLY. */
@@ -1204,22 +1132,6 @@ esp_err_t michi_wifi_init(void)
         s_has_creds = true;
         portEXIT_CRITICAL(&s_mux);
         ESP_LOGI(TAG, "wifi: stored credentials (ssid=%s)", s_ssid_cache);
-    }
-
-    /* mDNS: hostname from the MAC (deterministic, valid); the service
-     * itself is advertised on GOT_IP (the product profile is ready by
-     * then). */
-    err = mdns_init();
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "init: mdns_init failed: %s (no mDNS announcements)",
-                 esp_err_to_name(err));
-    } else {
-        uint8_t mac[6] = {0, 0, 0, 0, 0, 0};
-        esp_read_mac(mac, ESP_MAC_WIFI_STA);
-        char host[32];
-        snprintf(host, sizeof(host), "michi-%02X%02X", mac[4], mac[5]);
-        mdns_hostname_set(host);
-        ESP_LOGI(TAG, "mdns: hostname=%s", host);
     }
 
     /* Boot plan. */
@@ -1352,7 +1264,8 @@ esp_err_t michi_wifi_erase_credentials(void)
     if (s_prov_retry_timer != NULL) {
         esp_timer_stop(s_prov_retry_timer);
     }
-    mdns_retire();
+    /* Discovery: stop announcing while the network profile is wiped. */
+    (void)michi_discovery_stop();
 
     if (s_wifi_started) {
         /* Fires STA_DISCONNECTED: the handler sees no credentials and
@@ -1483,13 +1396,9 @@ esp_err_t michi_wifi_shutdown(void)
     esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, event_handler);
     esp_event_handler_unregister(IP_EVENT, ESP_EVENT_ANY_ID, event_handler);
 
-    mdns_retire();
-    /* Managed espressif/mdns v1.x: mdns_free() (no mdns_stop()). */
-    mdns_free();
-    if (s_mdns_mutex != NULL) {
-        vSemaphoreDelete(s_mdns_mutex);
-        s_mdns_mutex = NULL;
-    }
+    /* Signed discovery: retire mDNS, close the UDP socket, stop the
+     * timer and free the mDNS stack. */
+    (void)michi_discovery_shutdown();
 
     ESP_LOGI(TAG, "subsystem=wifi state=off phase=9");
     return ESP_OK;
