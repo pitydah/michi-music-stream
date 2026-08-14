@@ -75,11 +75,13 @@ run_suite() {
 }
 
 # ── Suite 9 preflight: libcjson must be resolvable (no silent skip) ──
+# The check MUST match tests/host/Makefile (HAS_CJSON) exactly: both gate on
+# the `libcjson` pkg-config module. Accepting `cJSON` here while the
+# Makefile only honors `libcjson` would let the cJSON-based suites (the
+# cross-repo hardening core: pairing/session/discovery HTTP gates) skip
+# silently and report a false PASS.
 require_host_cjson() {
     if pkg-config --exists libcjson 2>/dev/null; then
-        return 0
-    fi
-    if pkg-config --exists cJSON 2>/dev/null; then
         return 0
     fi
     echo "FAIL: host C tests require libcjson (the cJSON-based suites), but"
