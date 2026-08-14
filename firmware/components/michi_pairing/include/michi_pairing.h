@@ -41,6 +41,19 @@ extern "C" {
  *   digest of the token is persisted - with the controller michi_id,
  *   public_key, permissions, creation date and last activity. A second
  *   (replay) confirmation answers 409.
+ * - Controller registry (hardening P1-04): the LOGICAL IDENTITY of a
+ *   controller is the EXACT pair (michi_id, public_key) - both fields
+ *   must match byte for byte. Re-pairing an identity already in the
+ *   registry REPLACES its entry in place: the token digest is replaced
+ *   (the previous token stops validating immediately), the device_id is
+ *   KEPT (the controller keeps the id it was originally assigned), the
+ *   permissions are reset to the default grant, both dates are
+ *   refreshed to the confirmation time, and controller_count does NOT
+ *   increase. A NEW identity is appended only while there is capacity
+ *   (otherwise the confirm fails with INTERNAL and the session stays
+ *   pending). A confirm whose (michi_id, public_key) differs from the
+ *   session in either field is rejected (INVALID) and can never replace
+ *   a registered entry.
  * - Token validation (HTTP Bearer) compares digests in CONSTANT TIME
  *   against every slot, without early return (no length/timing oracle).
  * - Rate limits (section MS-06: fixed CONSTANTS, not Kconfig): per
@@ -302,14 +315,36 @@ michi_pairing_status_result_t michi_pairing_status(
  * the session becomes locked.
  *
  * On success the receiver generates the token (32 bytes esp_fill_random,
- * base64url-nopad, 43 chars), assigns a fresh UUID v4 device_id, stores
- * ONLY the SHA-256 digest of the token (with michi_id, public_key, the
- * default permissions, creation date and last activity) in NVS, and
- * marks the session confirmed. The token is returned exactly ONCE (this
- * call); a later replay gets CONFLICT. A persistence failure returns
- * INTERNAL and leaves the session pending (no token was issued).
+ * base64url-nopad, 43 chars), stores ONLY the SHA-256 digest of the
+ * token in NVS, and marks the session confirmed. The token is returned
+ * exactly ONCE (this call); a later replay gets CONFLICT.
  *
- * The PIN and the token are never logged.
+ * Registry semantics (hardening P1-04):
+ * - The token is ENCODED before any persistence: an unencodable token
+ *   (response-build failure) returns INTERNAL without touching NVS.
+ * - The logical identity is the exact (michi_id, public_key) pair. A
+ *   confirm whose identity matches an ALREADY REGISTERED controller
+ *   REPLACES that entry in place: digest replaced (the previous token
+ *   stops validating), device_id KEPT, permissions reset to
+ *   MICHI_PERM_DEFAULT, both dates refreshed, count unchanged - a
+ *   re-pair never creates a duplicate entry and works even when the
+ *   registry is full.
+ * - A NEW identity is appended only while the registry has capacity;
+ *   otherwise INTERNAL is returned (the session stays pending).
+ * - The new blob is built in RAM and committed atomically
+ *   (nvs_set_blob + commit) BEFORE the in-RAM registry is replaced: a
+ *   failed write/commit leaves RAM untouched and does NOT consume the
+ *   session (a retry mints a fresh token and re-persists).
+ * - A transport failure AFTER the commit is ambiguous (the token may
+ *   have been delivered): the receiver NEVER auto-revokes in that case;
+ *   the recovery path is a new physical pairing of the same controller,
+ *   which replaces the entry and hands back the same device_id.
+ * - A persistence failure returns INTERNAL and leaves the session
+ *   pending (no token was issued).
+ *
+ * The PIN and the token are never logged; stack secret buffers (PIN,
+ * minted token, decoded bearer token) are wiped once they are no longer
+ * needed.
  *
  * @param session_id      Session UUID from pair/start.
  * @param pin             Six-digit PIN.

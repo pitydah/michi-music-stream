@@ -55,6 +55,17 @@ void test_nvs_force_erase_error(const char *ns, bool force)
     }
 }
 
+void test_nvs_force_write_error(const char *ns, bool force)
+{
+    test_nvs_namespace_t *store = test_nvs_store();
+    for (int i = 0; i < TEST_NVS_MAX_NAMESPACES; i++) {
+        if (store[i].present && strcmp(store[i].name, ns) == 0) {
+            store[i].force_write_error = force;
+            return;
+        }
+    }
+}
+
 bool test_nvs_get_blob(const char *ns, const char *key, uint8_t *out,
                        size_t out_cap, size_t *out_len)
 {
@@ -137,6 +148,9 @@ esp_err_t nvs_set_blob(nvs_handle_t handle, const char *key, const void *value,
         !store[handle].present || key == NULL || value == NULL ||
         length > TEST_NVS_MAX_BLOBS) {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (store[handle].force_write_error) {
+        return ESP_FAIL; /* simulated flash write failure */
     }
     test_nvs_entry_t *e = NULL;
     for (int j = 0; j < TEST_NVS_MAX_NAMESPACES; j++) {

@@ -47,6 +47,7 @@ typedef struct {
     uint32_t write_count;
     bool force_read_error;
     bool force_erase_error;
+    bool force_write_error;
 } test_nvs_namespace_t;
 
 /* --- test hooks (raw store inspection) --- */
@@ -56,6 +57,7 @@ void test_nvs_reset(void);
 uint32_t test_nvs_write_count(const char *ns);
 void test_nvs_force_read_error(const char *ns, bool force);
 void test_nvs_force_erase_error(const char *ns, bool force);
+void test_nvs_force_write_error(const char *ns, bool force);
 bool test_nvs_get_blob(const char *ns, const char *key, uint8_t *out,
                        size_t out_cap, size_t *out_len);
 

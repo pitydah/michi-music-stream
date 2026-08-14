@@ -28,6 +28,8 @@
 #include "michi_state.h" /* fake state bus: test hooks */
 #include "esp_random.h" /* deterministic stream: reseed hook */
 #include "mbedtls/sha256.h" /* host SHA-256 test double */
+#include "sdkconfig.h" /* CONFIG_MICHI_PAIRING_MAX_CONTROLLERS */
+#include "monocypher-ed25519.h" /* fresh controller keypairs (P1-04) */
 
 static int failures = 0;
 
@@ -669,6 +671,401 @@ static void test_revocation_and_erase_all(void)
     CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
 }
 
+/* ── P1-04: re-pair hardening ─────────────────────────────── */
+
+/* Mirror of the persisted controller entry (michi_pairing.h documents
+ * the exact layout). Guarded so a drift against the firmware struct
+ * fails the build instead of silently mis-reading the blob. */
+typedef struct {
+    uint8_t device_id[MICHI_PAIRING_DEVICE_ID_LEN];
+    uint8_t michi_id[MICHI_IDENTITY_MICHI_ID_LEN];
+    uint8_t public_key[MICHI_IDENTITY_PUBLIC_KEY_B64_LEN];
+    uint8_t digest[MICHI_PAIRING_DIGEST_BYTES];
+    uint32_t permissions;
+    uint32_t reserved;
+    int64_t created_unix;
+    int64_t last_activity_unix;
+} test_controller_entry_t;
+
+_Static_assert(sizeof(test_controller_entry_t) == 184,
+               "test entry mirror drifted from the firmware layout");
+
+typedef struct {
+    uint32_t version;
+    uint32_t count;
+    test_controller_entry_t controllers[CONFIG_MICHI_PAIRING_MAX_CONTROLLERS];
+} test_pairing_blob_t;
+
+_Static_assert(sizeof(test_pairing_blob_t) ==
+                   8 + CONFIG_MICHI_PAIRING_MAX_CONTROLLERS * 184,
+               "test blob mirror drifted from the firmware layout");
+
+/* MICHI_PAIRING_BLOB_VERSION as documented in michi_pairing.h. */
+#define TEST_PAIRING_BLOB_VERSION 2u
+
+static bool registry_blob_load(test_pairing_blob_t *out)
+{
+    size_t len = 0;
+    return test_nvs_get_blob("michi_pairing", "controllers", (uint8_t *)out,
+                             sizeof(*out), &len) &&
+           len == sizeof(*out);
+}
+
+/* Deterministic token (base64url-nopad) + its SHA-256 digest: used to
+ * seed a registry entry with a digest whose token we know, so a test
+ * can prove whether the entry survived a re-pair untouched. */
+static void known_token_and_digest(char *token, size_t token_len,
+                                   uint8_t digest[MICHI_PAIRING_DIGEST_BYTES])
+{
+    uint8_t raw[MICHI_PAIRING_TOKEN_BYTES];
+    for (size_t i = 0; i < sizeof(raw); i++) {
+        raw[i] = (uint8_t)(0x40 + i);
+    }
+    mbedtls_sha256(raw, sizeof(raw), digest, 0);
+    michi_identity_base64url_encode(raw, sizeof(raw), token, token_len);
+    memset(raw, 0, sizeof(raw));
+}
+
+static void seed_registry_entry(test_controller_entry_t *e,
+                                const char *device_id, const char *michi_id,
+                                const char *public_key, const uint8_t *digest)
+{
+    memset(e, 0, sizeof(*e));
+    strlcpy((char *)e->device_id, device_id, sizeof(e->device_id));
+    strlcpy((char *)e->michi_id, michi_id, sizeof(e->michi_id));
+    strlcpy((char *)e->public_key, public_key, sizeof(e->public_key));
+    memcpy(e->digest, digest, MICHI_PAIRING_DIGEST_BYTES);
+    e->permissions = MICHI_PERM_DEFAULT;
+    e->created_unix = 1000;
+    e->last_activity_unix = 1000;
+}
+
+/* Writes a caller-prepared blob (entries already filled) to the fake
+ * NVS store. The caller must have zeroed the blob before filling the
+ * entries so the persisted bytes are deterministic. */
+static void seed_registry_blob(test_pairing_blob_t *blob, uint32_t count)
+{
+    blob->version = TEST_PAIRING_BLOB_VERSION;
+    blob->count = count;
+    nvs_handle_t h;
+    CHECK(nvs_open("michi_pairing", NVS_READWRITE, &h) == ESP_OK,
+          "seed open succeeds");
+    CHECK(nvs_set_blob(h, "controllers", blob, sizeof(*blob)) == ESP_OK,
+          "seed write succeeds");
+    CHECK(nvs_commit(h) == ESP_OK, "seed commit succeeds");
+    nvs_close(h);
+}
+
+/* A fresh controller identity: real Ed25519 keypair (monocypher), the
+ * canonical michi_id derivation and a real signature over the decoded
+ * golden nonce - exercises the SAME pair/start validation path. */
+static void make_fresh_controller(michi_pairing_peer_t *out)
+{
+    uint8_t seed[32];
+    uint8_t sk[64];
+    uint8_t pk[MICHI_IDENTITY_KEY_BYTES];
+    uint8_t sig[MICHI_IDENTITY_SIGNATURE_BYTES];
+    esp_fill_random(seed, sizeof(seed));
+    crypto_ed25519_key_pair(sk, pk, seed);
+    memset(seed, 0, sizeof(seed));
+    char pk_b64[MICHI_IDENTITY_PUBLIC_KEY_B64_LEN];
+    char sig_b64[MICHI_IDENTITY_SIGNATURE_B64_LEN];
+    char mi[MICHI_IDENTITY_MICHI_ID_LEN];
+    michi_identity_base64url_encode(pk, sizeof(pk), pk_b64, sizeof(pk_b64));
+    michi_identity_derive_michi_id(pk, mi, sizeof(mi));
+    uint8_t nonce[MICHI_PAIRING_NONCE_B64_MAX];
+    size_t nonce_len = 0;
+    michi_identity_base64url_decode(VEC_PAIR_NONCE_B64, nonce, sizeof(nonce),
+                                    &nonce_len);
+    crypto_ed25519_sign(sig, sk, nonce, nonce_len);
+    michi_identity_base64url_encode(sig, sizeof(sig), sig_b64,
+                                    sizeof(sig_b64));
+    memset(sk, 0, sizeof(sk));
+    memset(nonce, 0, sizeof(nonce));
+    make_peer(out, mi, pk_b64, VEC_PAIR_NONCE_B64, sig_b64);
+}
+
+static void test_p104_first_controller_added(void)
+{
+    printf("p104: first controller is added (count 1)\n");
+    pairing_test_reset(0x2001);
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    char sid[MICHI_PAIRING_SESSION_ID_LEN];
+    char token[MICHI_PAIRING_TOKEN_B64_LEN];
+    char device_id[MICHI_PAIRING_DEVICE_ID_LEN];
+    pair_once(sid, sizeof(sid), token, sizeof(token), device_id,
+              sizeof(device_id));
+
+    char list[128];
+    CHECK(michi_pairing_list(list, sizeof(list)) == ESP_OK &&
+              strcmp(list, device_id) == 0,
+          "registry lists exactly the paired controller");
+    test_pairing_blob_t blob;
+    CHECK(registry_blob_load(&blob), "persisted blob is readable");
+    CHECK(blob.count == 1, "controller_count == 1");
+    uint32_t perms = 0;
+    CHECK(michi_pairing_validate_token(token, device_id, sizeof(device_id),
+                                       &perms) == ESP_OK,
+          "the issued token validates");
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+}
+
+static void test_p104_repair_same_identity_replaces(void)
+{
+    printf("p104: re-pair of the same identity replaces (no duplicate)\n");
+    pairing_test_reset(0x2002);
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    char sid1[MICHI_PAIRING_SESSION_ID_LEN];
+    char token1[MICHI_PAIRING_TOKEN_B64_LEN];
+    char dev1[MICHI_PAIRING_DEVICE_ID_LEN];
+    pair_once(sid1, sizeof(sid1), token1, sizeof(token1), dev1,
+              sizeof(dev1));
+
+    /* A NEW physical pairing of the SAME controller: same michi_id AND
+     * same public_key. */
+    CHECK(michi_pairing_open_window() == ESP_OK, "second window opens");
+    char exp[MICHI_PAIRING_EXPIRES_AT_LEN];
+    uint32_t attempts = 0;
+    char sid2[MICHI_PAIRING_SESSION_ID_LEN];
+    CHECK(michi_pairing_start(valid_peer(), NULL, sid2, sizeof(sid2), exp,
+                              sizeof(exp), &attempts) ==
+              MICHI_PAIRING_START_OK,
+          "second start succeeds");
+    char token2[MICHI_PAIRING_TOKEN_B64_LEN];
+    char dev2[MICHI_PAIRING_DEVICE_ID_LEN];
+    CHECK(michi_pairing_confirm(sid2, spy_pin, VEC_PAIR_MICHI_ID,
+                                VEC_PAIR_PK_B64, token2, sizeof(token2),
+                                dev2, sizeof(dev2)) ==
+              MICHI_PAIRING_CONFIRM_OK,
+          "second confirm succeeds");
+    CHECK(strcmp(dev2, dev1) == 0, "device_id is KEPT on re-pair");
+
+    test_pairing_blob_t blob;
+    CHECK(registry_blob_load(&blob), "persisted blob is readable");
+    CHECK(blob.count == 1, "controller_count did NOT increase");
+    char list[128];
+    CHECK(michi_pairing_list(list, sizeof(list)) == ESP_OK &&
+              strcmp(list, dev1) == 0,
+          "registry still lists exactly one controller");
+
+    uint32_t perms = 0;
+    CHECK(michi_pairing_validate_token(token1, dev1, sizeof(dev1), &perms) ==
+              ESP_ERR_NOT_FOUND,
+          "the previous token no longer validates");
+    CHECK(michi_pairing_validate_token(token2, dev1, sizeof(dev1), &perms) ==
+              ESP_OK,
+          "the new token validates");
+
+    /* Replay of the consumed session still answers 409 without mutating
+     * the registry. */
+    char token3[MICHI_PAIRING_TOKEN_B64_LEN];
+    CHECK(michi_pairing_confirm(sid2, spy_pin, VEC_PAIR_MICHI_ID,
+                                VEC_PAIR_PK_B64, token3, sizeof(token3),
+                                dev2, sizeof(dev2)) ==
+              MICHI_PAIRING_CONFIRM_CONFLICT,
+          "confirm replay -> 409");
+    CHECK(registry_blob_load(&blob) && blob.count == 1,
+          "replay did not mutate the registry");
+    CHECK(michi_pairing_validate_token(token2, dev1, sizeof(dev1), &perms) ==
+              ESP_OK,
+          "the new token survived the replay");
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+}
+
+static void test_p104_same_id_different_key_not_replaced(void)
+{
+    printf("p104: same michi_id with a different key is NOT replaced\n");
+    pairing_test_reset(0x2003);
+    /* Seed the store with one controller that shares the PAIR michi_id
+     * but has a DIFFERENT (receiver) public key: a distinct logical
+     * identity. Its digest belongs to a known token so the test can
+     * prove the entry survived untouched. */
+    char ktoken[MICHI_PAIRING_TOKEN_B64_LEN];
+    uint8_t kdigest[MICHI_PAIRING_DIGEST_BYTES];
+    known_token_and_digest(ktoken, sizeof(ktoken), kdigest);
+    const char *seeded_id = "550e8400-e29b-41d4-a716-4466554400aa";
+    test_pairing_blob_t seed;
+    memset(&seed, 0, sizeof(seed));
+    seed_registry_entry(&seed.controllers[0], seeded_id, VEC_PAIR_MICHI_ID,
+                        VEC_RECEIVER_PK_B64, kdigest);
+    seed_registry_blob(&seed, 1);
+
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    /* Pair the REAL controller: same michi_id, DIFFERENT key than the
+     * seeded entry -> a NEW entry; the seeded one must NOT be replaced. */
+    char sid[MICHI_PAIRING_SESSION_ID_LEN];
+    char token[MICHI_PAIRING_TOKEN_B64_LEN];
+    char dev[MICHI_PAIRING_DEVICE_ID_LEN];
+    pair_once(sid, sizeof(sid), token, sizeof(token), dev, sizeof(dev));
+
+    test_pairing_blob_t blob;
+    CHECK(registry_blob_load(&blob) && blob.count == 2,
+          "two distinct identities are registered");
+    uint32_t perms = 0;
+    char got_id[MICHI_PAIRING_DEVICE_ID_LEN];
+    CHECK(michi_pairing_validate_token(ktoken, got_id, sizeof(got_id),
+                                       &perms) == ESP_OK &&
+              strcmp(got_id, seeded_id) == 0,
+          "the seeded entry is untouched (its token still validates)");
+    CHECK(michi_pairing_validate_token(token, got_id, sizeof(got_id),
+                                       &perms) == ESP_OK &&
+              strcmp(got_id, dev) == 0,
+          "the new entry holds the new token");
+    char list[256];
+    CHECK(michi_pairing_list(list, sizeof(list)) == ESP_OK,
+          "list succeeds with two entries");
+    CHECK(strstr(list, seeded_id) != NULL && strstr(list, dev) != NULL,
+          "both device ids are listed");
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+}
+
+static void test_p104_nvs_write_failure(void)
+{
+    printf("p104: NVS write failure mutates neither RAM nor the session\n");
+    pairing_test_reset(0x2004);
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    char sid1[MICHI_PAIRING_SESSION_ID_LEN];
+    char token1[MICHI_PAIRING_TOKEN_B64_LEN];
+    char dev1[MICHI_PAIRING_DEVICE_ID_LEN];
+    pair_once(sid1, sizeof(sid1), token1, sizeof(token1), dev1,
+              sizeof(dev1));
+
+    /* Re-pair the same controller with the NVS write failing. */
+    CHECK(michi_pairing_open_window() == ESP_OK, "second window opens");
+    char exp[MICHI_PAIRING_EXPIRES_AT_LEN];
+    uint32_t attempts = 0;
+    char sid2[MICHI_PAIRING_SESSION_ID_LEN];
+    CHECK(michi_pairing_start(valid_peer(), NULL, sid2, sizeof(sid2), exp,
+                              sizeof(exp), &attempts) ==
+              MICHI_PAIRING_START_OK,
+          "second start succeeds");
+    test_nvs_force_write_error("michi_pairing", true);
+    char token2[MICHI_PAIRING_TOKEN_B64_LEN];
+    char dev2[MICHI_PAIRING_DEVICE_ID_LEN];
+    CHECK(michi_pairing_confirm(sid2, spy_pin, VEC_PAIR_MICHI_ID,
+                                VEC_PAIR_PK_B64, token2, sizeof(token2),
+                                dev2, sizeof(dev2)) ==
+              MICHI_PAIRING_CONFIRM_INTERNAL,
+          "confirm fails while the write is broken");
+    test_nvs_force_write_error("michi_pairing", false);
+
+    /* The in-RAM registry is untouched. */
+    uint32_t perms = 0;
+    CHECK(michi_pairing_validate_token(token1, dev1, sizeof(dev1), &perms) ==
+              ESP_OK,
+          "the old token still validates (RAM untouched)");
+    char list[128];
+    CHECK(michi_pairing_list(list, sizeof(list)) == ESP_OK &&
+              strcmp(list, dev1) == 0,
+          "the registry is unchanged");
+
+    /* The session is NOT consumed: the retry succeeds and REPLACES. */
+    char status[12];
+    CHECK(michi_pairing_status(sid2, status, sizeof(status), exp, sizeof(exp),
+                               &attempts) == MICHI_PAIRING_STATUS_OK &&
+              strcmp(status, "pending") == 0,
+          "the session is still pending after the failure");
+    CHECK(michi_pairing_confirm(sid2, spy_pin, VEC_PAIR_MICHI_ID,
+                                VEC_PAIR_PK_B64, token2, sizeof(token2),
+                                dev2, sizeof(dev2)) ==
+              MICHI_PAIRING_CONFIRM_OK,
+          "the retry succeeds");
+    test_pairing_blob_t blob;
+    CHECK(registry_blob_load(&blob) && blob.count == 1,
+          "controller_count is still 1 after the retry");
+    CHECK(strcmp(dev2, dev1) == 0, "device_id is kept by the retry");
+    CHECK(michi_pairing_validate_token(token1, dev1, sizeof(dev1), &perms) ==
+              ESP_ERR_NOT_FOUND,
+          "the old token is invalid after the retry");
+    CHECK(michi_pairing_validate_token(token2, dev1, sizeof(dev1), &perms) ==
+              ESP_OK,
+          "the retry token validates");
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+}
+
+static void test_p104_registry_full(void)
+{
+    printf("p104: full registry replaces existing, rejects new\n");
+    pairing_test_reset(0x2005);
+    /* Seed a FULL registry: one entry holds the REAL controller identity
+     * (with a known digest) and the rest are fillers. */
+    char ktoken[MICHI_PAIRING_TOKEN_B64_LEN];
+    uint8_t kdigest[MICHI_PAIRING_DIGEST_BYTES];
+    known_token_and_digest(ktoken, sizeof(ktoken), kdigest);
+    /* Fillers carry a DISTINCT digest (no known token maps to it): after
+     * the replace, the known token must match NOTHING. */
+    uint8_t filler_digest[MICHI_PAIRING_DIGEST_BYTES];
+    memset(filler_digest, 0xA5, sizeof(filler_digest));
+    const char *real_seeded_id = "550e8400-e29b-41d4-a716-446655440011";
+    test_pairing_blob_t seed;
+    memset(&seed, 0, sizeof(seed));
+    seed_registry_entry(&seed.controllers[0], real_seeded_id,
+                        VEC_PAIR_MICHI_ID, VEC_PAIR_PK_B64, kdigest);
+    for (uint32_t i = 1; i < CONFIG_MICHI_PAIRING_MAX_CONTROLLERS; i++) {
+        char filler_id[MICHI_PAIRING_DEVICE_ID_LEN];
+        char filler_mi[MICHI_IDENTITY_MICHI_ID_LEN];
+        snprintf(filler_id, sizeof(filler_id),
+                 "550e8400-e29b-41d4-a716-4466554400%02x",
+                 (unsigned)i + 0x20);
+        snprintf(filler_mi, sizeof(filler_mi), "filler-controller-%u",
+                 (unsigned)i);
+        seed_registry_entry(&seed.controllers[i], filler_id, filler_mi,
+                            filler_mi, filler_digest);
+    }
+    seed_registry_blob(&seed, CONFIG_MICHI_PAIRING_MAX_CONTROLLERS);
+
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    /* Re-pair the REAL controller: the registry is FULL, but the identity
+     * is already registered -> the entry is replaced in place. */
+    char sid[MICHI_PAIRING_SESSION_ID_LEN];
+    char token[MICHI_PAIRING_TOKEN_B64_LEN];
+    char dev[MICHI_PAIRING_DEVICE_ID_LEN];
+    pair_once(sid, sizeof(sid), token, sizeof(token), dev, sizeof(dev));
+
+    test_pairing_blob_t blob;
+    CHECK(registry_blob_load(&blob) &&
+              blob.count == CONFIG_MICHI_PAIRING_MAX_CONTROLLERS,
+          "controller_count stays at the maximum");
+    CHECK(strcmp(dev, real_seeded_id) == 0,
+          "the replace keeps the seeded device_id");
+    uint32_t perms = 0;
+    char got_id[MICHI_PAIRING_DEVICE_ID_LEN];
+    CHECK(michi_pairing_validate_token(ktoken, got_id, sizeof(got_id),
+                                       &perms) == ESP_ERR_NOT_FOUND,
+          "the seeded digest was replaced (old token dead)");
+    CHECK(michi_pairing_validate_token(token, got_id, sizeof(got_id),
+                                       &perms) == ESP_OK,
+          "the new token validates");
+
+    /* A REALLY new controller is rejected while the registry is full. */
+    CHECK(michi_pairing_open_window() == ESP_OK, "third window opens");
+    michi_pairing_peer_t fresh;
+    make_fresh_controller(&fresh);
+    char exp[MICHI_PAIRING_EXPIRES_AT_LEN];
+    uint32_t attempts = 0;
+    char sid3[MICHI_PAIRING_SESSION_ID_LEN];
+    CHECK(michi_pairing_start(&fresh, NULL, sid3, sizeof(sid3), exp,
+                              sizeof(exp), &attempts) ==
+              MICHI_PAIRING_START_OK,
+          "the fresh controller starts a session");
+    char token3[MICHI_PAIRING_TOKEN_B64_LEN];
+    char dev3[MICHI_PAIRING_DEVICE_ID_LEN];
+    CHECK(michi_pairing_confirm(sid3, spy_pin, fresh.michi_id,
+                                fresh.public_key, token3, sizeof(token3),
+                                dev3, sizeof(dev3)) ==
+              MICHI_PAIRING_CONFIRM_INTERNAL,
+          "a truly new controller is rejected when full");
+    CHECK(registry_blob_load(&blob) &&
+              blob.count == CONFIG_MICHI_PAIRING_MAX_CONTROLLERS,
+          "controller_count unchanged after the rejection");
+    char status[12];
+    CHECK(michi_pairing_status(sid3, status, sizeof(status), exp, sizeof(exp),
+                               &attempts) == MICHI_PAIRING_STATUS_OK &&
+              strcmp(status, "pending") == 0,
+          "the rejected session stays pending");
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+}
+
 /* ── shim sanity ──────────────────────────────────────────── */
 
 static void test_sha256_known_answer(void)
@@ -701,6 +1098,11 @@ int main(void)
     test_confirm_success_and_token();
     test_reboot_persists_digest_only();
     test_revocation_and_erase_all();
+    test_p104_first_controller_added();
+    test_p104_repair_same_identity_replaces();
+    test_p104_same_id_different_key_not_replaced();
+    test_p104_nvs_write_failure();
+    test_p104_registry_full();
 
     if (failures == 0) {
         printf("test_michi_pairing: all tests passed\n");

@@ -207,9 +207,14 @@ static esp_err_t digest_of_token(const char *token, uint8_t *out)
     if (michi_identity_base64url_decode(token, raw, sizeof(raw),
                                         &raw_len) != ESP_OK ||
         raw_len != MICHI_PAIRING_TOKEN_BYTES) {
+        memset(raw, 0, sizeof(raw));
         return ESP_ERR_INVALID_ARG;
     }
-    return sha256_bytes(raw, raw_len, out);
+    const esp_err_t err = sha256_bytes(raw, raw_len, out);
+    /* The decoded bearer token is a secret: wipe it as soon as the
+     * digest exists. */
+    memset(raw, 0, sizeof(raw));
+    return err;
 }
 
 /* --- persistence ------------------------------------------------------ */
@@ -678,10 +683,12 @@ michi_pairing_start_result_t michi_pairing_start(
     xSemaphoreGive(s_mutex);
 
     /* Show the PIN locally (never over HTTP). The callback runs outside
-     * the mutex. */
+     * the mutex. The stack PIN buffer is wiped right after the display
+     * got its copy (the session keeps its own RAM-only copy). */
     if (cb != NULL) {
         cb(pin, cb_ctx);
     }
+    memset(pin, 0, sizeof(pin));
     return MICHI_PAIRING_START_OK;
 }
 
@@ -759,6 +766,7 @@ michi_pairing_confirm_result_t michi_pairing_confirm(
 
     uint8_t token_raw[MICHI_PAIRING_TOKEN_BYTES];
     uint8_t digest[MICHI_PAIRING_DIGEST_BYTES];
+    char token_b64[MICHI_PAIRING_TOKEN_B64_LEN];
     char device_id[MICHI_PAIRING_DEVICE_ID_LEN];
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
@@ -820,51 +828,106 @@ michi_pairing_confirm_result_t michi_pairing_confirm(
         return MICHI_PAIRING_CONFIRM_PIN_MISMATCH;
     }
 
-    /* Correct PIN: mint the token (32 CSPRNG bytes -> base64url-nopad),
-     * the device_id, and persist ONLY the digest before anything is
-     * returned. */
+    /* Correct PIN: mint the token (32 CSPRNG bytes -> base64url-nopad)
+     * and encode it NOW, BEFORE any persistence decision: a token that
+     * cannot be encoded is a response-build failure and must never leave
+     * the registry half-mutated. */
     esp_fill_random(token_raw, sizeof(token_raw));
     if (michi_identity_base64url_encode(token_raw, sizeof(token_raw),
-                                        out_token, token_len) != ESP_OK ||
+                                        token_b64, sizeof(token_b64)) !=
+            ESP_OK ||
         sha256_bytes(token_raw, sizeof(token_raw), digest) != ESP_OK) {
+        memset(token_raw, 0, sizeof(token_raw));
+        memset(token_b64, 0, sizeof(token_b64));
         xSemaphoreGive(s_mutex);
         return MICHI_PAIRING_CONFIRM_INTERNAL;
     }
-    uuid_v4_generate(device_id, sizeof(device_id));
 
-    if (s_blob.count >= CONFIG_MICHI_PAIRING_MAX_CONTROLLERS) {
-        ESP_LOGW(TAG, "pairing: registry_full controllers=%u",
-                 (unsigned)s_blob.count);
-        xSemaphoreGive(s_mutex);
-        return MICHI_PAIRING_CONFIRM_INTERNAL;
+    /* Identity lookup: the logical identity of a controller is the EXACT
+     * pair (michi_id, public_key). Both fields must match, byte for
+     * byte, to be "the same controller" (hardening P1-04). */
+    size_t existing = s_blob.count;
+    for (size_t i = 0; i < s_blob.count; i++) {
+        if (strcmp((const char *)s_blob.controllers[i].michi_id,
+                   michi_id) == 0 &&
+            strcmp((const char *)s_blob.controllers[i].public_key,
+                   public_key) == 0) {
+            existing = i;
+            break;
+        }
     }
 
     /* Build the next state in a local copy, persist it, THEN apply it: a
      * failed NVS write never leaves the in-RAM registry half-mutated and
      * never issues a token that would not survive a reboot. */
     michi_pairing_blob_t next = s_blob;
-    michi_controller_entry_t *e = &next.controllers[next.count];
-    memset(e, 0, sizeof(*e));
-    strlcpy((char *)e->device_id, device_id, sizeof(e->device_id));
-    strlcpy((char *)e->michi_id, michi_id, sizeof(e->michi_id));
-    strlcpy((char *)e->public_key, public_key, sizeof(e->public_key));
+    size_t target;
+    if (existing < s_blob.count) {
+        /* Re-pair of an ALREADY REGISTERED identity: replace the entry
+         * IN PLACE. Documented rule (P1-04): the device_id is KEPT (the
+         * controller keeps the id it was originally assigned, so
+         * external references stay valid and a lost response is
+         * recovered by a new physical pairing); the token digest is
+         * REPLACED (the previous token stops validating immediately);
+         * permissions are reset to the default grant and both dates are
+         * refreshed to the confirmation time. The controller count does
+         * NOT increase: a re-pair can never produce a duplicate entry,
+         * even when the registry is full. */
+        target = existing;
+    } else {
+        /* A NEW controller is appended only while there is capacity. */
+        if (next.count >= CONFIG_MICHI_PAIRING_MAX_CONTROLLERS) {
+            ESP_LOGW(TAG, "pairing: registry_full controllers=%u",
+                     (unsigned)next.count);
+            memset(token_raw, 0, sizeof(token_raw));
+            memset(token_b64, 0, sizeof(token_b64));
+            memset(digest, 0, sizeof(digest));
+            xSemaphoreGive(s_mutex);
+            return MICHI_PAIRING_CONFIRM_INTERNAL;
+        }
+        target = next.count;
+        michi_controller_entry_t *ne = &next.controllers[target];
+        memset(ne, 0, sizeof(*ne));
+        uuid_v4_generate(device_id, sizeof(device_id));
+        strlcpy((char *)ne->device_id, device_id, sizeof(ne->device_id));
+        strlcpy((char *)ne->michi_id, michi_id, sizeof(ne->michi_id));
+        strlcpy((char *)ne->public_key, public_key, sizeof(ne->public_key));
+        next.count++;
+    }
+    michi_controller_entry_t *e = &next.controllers[target];
     memcpy(e->digest, digest, sizeof(digest));
     e->permissions = MICHI_PERM_DEFAULT;
     e->created_unix = now_unix();
     e->last_activity_unix = e->created_unix;
-    next.count++;
 
     const esp_err_t perr = persist_blob(&next);
     if (perr != ESP_OK) {
+        /* The session is NOT consumed: a retry re-mints a fresh token
+         * and re-persists (P1-04). The in-RAM registry is untouched. */
+        memset(token_raw, 0, sizeof(token_raw));
+        memset(token_b64, 0, sizeof(token_b64));
+        memset(digest, 0, sizeof(digest));
         xSemaphoreGive(s_mutex);
         return MICHI_PAIRING_CONFIRM_INTERNAL;
     }
     s_blob = next;
     s->status = MICHI_PAIRING_SESSION_CONFIRMED;
 
-    strlcpy(out_device_id, device_id, device_id_len);
+    /* Response buffers are filled only after the commit. A transport
+     * failure AFTER this point is ambiguous (the token may have been
+     * delivered): the receiver never auto-revokes in that case; the
+     * recovery path is a new physical pairing of the same controller. */
+    strlcpy(out_token, token_b64, token_len);
+    strlcpy(out_device_id,
+            (const char *)next.controllers[target].device_id, device_id_len);
     ESP_LOGI(TAG, "pairing: confirmed session_id=%s device_id=%s michi_id=%s",
-             s->session_id, device_id, michi_id);
+             s->session_id, next.controllers[target].device_id, michi_id);
+    /* Wipe the stack secrets: the token and its digest are not needed
+     * anymore (the digest lives in the entry). */
+    memset(token_raw, 0, sizeof(token_raw));
+    memset(token_b64, 0, sizeof(token_b64));
+    memset(digest, 0, sizeof(digest));
+    memset(device_id, 0, sizeof(device_id));
     xSemaphoreGive(s_mutex);
     /* A confirmed session must not leave its PIN on the screen. */
     pin_display_notify(NULL);
