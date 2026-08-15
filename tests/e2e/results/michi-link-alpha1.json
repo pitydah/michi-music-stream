@@ -9,7 +9,7 @@
       "commit": "84b72029e00dcb66915acc0805df0c7f50b026bc"
     },
     "michi_music_stream": {
-      "commit": "625f8d76bfcd74232fef66830ded8e785ed6dd47",
+      "commit": "4dc8cf6722c2bbdef7ae8bc45073bc6ef171c540",
       "note": "tip under test (firmware, simulator and contracts trees)"
     }
   },
