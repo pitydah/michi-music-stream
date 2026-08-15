@@ -1513,6 +1513,13 @@ esp_err_t michi_http_init(void)
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port = MICHI_HTTP_PORT;
     cfg.lru_purge_enable = true;
+    /* H2 (MS-11 on-device): the default max_uri_handlers is 8, but the
+     * canonical surface registers 13 routes + the 404 err handler = 14.
+     * With the default, httpd_register_uri_handler fails with
+     * ESP_ERR_HTTPD_HANDLERS_FULL and the whole API stays down on real
+     * hardware (CI never runs the server). There is no Kconfig for this
+     * in IDF 5.3 - it is a runtime httpd_config_t field. */
+    cfg.max_uri_handlers = 16;
     /* F10: explicit stack size - the default 4096 is tight for the
      * 2048-byte body buffers plus the nested cJSON frames built by the
      * diagnostics handler. */
