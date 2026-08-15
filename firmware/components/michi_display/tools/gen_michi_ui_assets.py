@@ -585,9 +585,11 @@ def emit_fonts():
     pin_map = []
     for code in range(0x20, 0x7F):
         pin_map.append(pin_index.get(chr(code), pin_index[" "]))
-    pin_map.append(pin_index[" "])  # ellipsis -> space (no glyph)
+    # Ellipsis -> '.': PIN has no '…' glyph; the dot is in PIN_CHARS exactly
+    # for this fallback (a truncated PIN must show a dot, not a blank).
+    pin_map.append(pin_index["."])
     lines.append(c_array_u8("michi_ui_pin_map", pin_map))
-    lines.append("/* pin_map: full index -> PIN glyph (unsupported -> space). */\n")
+    lines.append("/* pin_map: full index -> PIN glyph (unsupported -> space, '…' -> '.'). */\n")
 
     os.makedirs(os.path.dirname(FONTS_OUT), exist_ok=True)
     with open(FONTS_OUT, "w") as f:
