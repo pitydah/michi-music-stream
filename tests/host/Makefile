@@ -59,6 +59,7 @@ IDENTITY_INC = -I$(IDENTITY_DIR)/include -I$(IDENTITY_DIR)/monocypher \
 
 TESTS := test_semver test_pairing_validators test_michi_identity \
          test_michi_pairing test_michi_session test_rtp_guard test_michi_button \
+         test_michi_ui \
          $(if $(filter yes,$(HAS_CJSON)),test_json_helpers test_http_canonical test_michi_discovery test_michi_time test_capability_parity test_pairing_http test_session_http test_discovery_disc)
 
 .PHONY: all test clean
@@ -67,7 +68,7 @@ all: $(TESTS)
 
 test: all
 	@set -e; \
-	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard test_michi_button; do ./$$t; done; \
+	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard test_michi_button test_michi_ui; do ./$$t; done; \
 	if [ "$(HAS_CJSON)" = "yes" ]; then \
 	    ./test_json_helpers; \
 	    ./test_http_canonical; \
@@ -195,6 +196,27 @@ test_michi_session: test_michi_session.c $(SESSION_SRC) \
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SESSION_INC) -pthread -o $@ \
 	    test_michi_session.c $(SESSION_SRC)
 
+# michi_ui: compiles the REAL display primitives (michi_ui_text.c,
+# michi_ui_fonts.c with the generated flash tables, michi_ui_components.c)
+# - the exact drawing code the screens run. Proves the wrap/ellipsize
+# contracts and the band contract (banded renders pixel-identical to a
+# full-frame render).
+UI_DIR = $(FIRMWARE)/michi_display
+UI_INC = -I$(UI_DIR)/include
+
+test_michi_ui: test_michi_ui.c $(UI_DIR)/michi_ui_text.c \
+               $(UI_DIR)/michi_ui_fonts.c $(UI_DIR)/michi_ui_components.c \
+               $(UI_DIR)/include/michi_ui.h \
+               $(UI_DIR)/include/michi_ui_components.h \
+               $(UI_DIR)/include/michi_ui_text.h \
+               $(UI_DIR)/include/michi_ui_fonts.h \
+               $(UI_DIR)/include/michi_ui_theme.h \
+               $(UI_DIR)/include/michi_ui_icons.h \
+               $(UI_DIR)/assets/fonts/michi_ui_fonts_data.h $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(UI_INC) -o $@ test_michi_ui.c \
+	    $(UI_DIR)/michi_ui_text.c $(UI_DIR)/michi_ui_fonts.c \
+	    $(UI_DIR)/michi_ui_components.c
+
 # rtp_guard: the SAME datagram validation the engine runs (pure C).
 test_rtp_guard: test_rtp_guard.c $(FIRMWARE)/michi_audio/rtp_guard.c \
                 $(FIRMWARE)/michi_audio/rtp_guard.h
@@ -300,4 +322,5 @@ clean:
 	      test_http_canonical test_michi_identity test_michi_discovery \
 	      test_michi_time test_michi_pairing test_pairing_http \
 	      test_michi_session test_rtp_guard test_session_http \
-	      test_capability_parity test_discovery_disc test_michi_button
+	      test_capability_parity test_discovery_disc test_michi_button \
+	      test_michi_ui

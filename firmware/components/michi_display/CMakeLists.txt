@@ -4,6 +4,7 @@ idf_component_register(
          "michi_ui_fonts.c"
          "michi_ui_text.c"
          "michi_ui_icons.c"
+         "michi_ui_components.c"
     INCLUDE_DIRS "include"
     REQUIRES michi_board michi_state michi_volume michi_product_profile freertos
 )
