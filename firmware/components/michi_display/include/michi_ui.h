@@ -38,10 +38,12 @@ typedef enum michi_ui_align {
 } michi_ui_align_t;
 
 #include "michi_ui_theme.h"
+#include "michi_ui_strings.h"
 #include "michi_ui_fonts.h"
 #include "michi_ui_text.h"
 #include "michi_ui_icons.h"
 #include "michi_ui_components.h"
+#include "michi_ui_screens.h"
 
 #ifdef __cplusplus
 }

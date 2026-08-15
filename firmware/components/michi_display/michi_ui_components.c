@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <string.h>
 
 #include "michi_ui_components.h"
@@ -171,3 +172,102 @@ void michi_ui_draw_centered_message(uint16_t *fb, uint16_t fb_w,
     y = y_center - line_h / 2;
     ui_draw_text_centered(fb, fb_w, fb_h, y_origin, y, buf, font, color);
 }
+
+void michi_ui_draw_header_bar(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                              uint16_t y_origin, const char *brand,
+                              michi_ui_icon_t right_icon, bool show_icon,
+                              uint16_t icon_color)
+{
+    if (brand != NULL) {
+        ui_draw_text(fb, fb_w, fb_h, y_origin, 14, 14, brand,
+                     michi_ui_font_get(MICHI_FONT_MD), MICHI_UI_TEXT_PRIMARY);
+    }
+    if (show_icon) {
+        ui_draw_icon(fb, fb_w, fb_h, y_origin, 214, 14, right_icon,
+                     MICHI_UI_ICON_SIZE_12, icon_color);
+    }
+}
+
+void michi_ui_draw_playback_footer(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                                   uint16_t y_origin, uint8_t volume,
+                                   const char *format_str)
+{
+    char vol_str[8];
+    const michi_ui_font_t *font_sm = michi_ui_font_get(MICHI_FONT_SM);
+
+    /* Left: Speaker icon + Volume */
+    ui_draw_icon(fb, fb_w, fb_h, y_origin, 16, 286, MICHI_UI_ICON_SPEAKER,
+                 MICHI_UI_ICON_SIZE_12, MICHI_UI_TEXT_SECONDARY);
+    snprintf(vol_str, sizeof(vol_str), "%u", (unsigned)volume);
+    ui_draw_text(fb, fb_w, fb_h, y_origin, 34, 286, vol_str,
+                 font_sm, MICHI_UI_TEXT_PRIMARY);
+
+    /* Right: Audio format */
+    if (format_str != NULL && format_str[0] != '\0') {
+        int fmt_w = ui_text_measure(font_sm, format_str);
+        int x = 224 - fmt_w;
+        if (x < 100) {
+            x = 100;
+        }
+        ui_draw_text(fb, fb_w, fb_h, y_origin, x, 286, format_str,
+                     font_sm, MICHI_UI_TEXT_TERTIARY);
+    }
+}
+
+void michi_ui_draw_pin(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                       uint16_t y_origin, int y_center, const char *pin,
+                       uint16_t color)
+{
+    char formatted[16];
+    const michi_ui_font_t *font_pin = michi_ui_font_get(MICHI_FONT_PIN);
+    size_t len;
+    int pin_w;
+    int x;
+    int y;
+
+    if (pin == NULL) {
+        return;
+    }
+    len = strlen(pin);
+    if (len == 6) {
+        /* Format "123456" as "123 456" */
+        formatted[0] = pin[0];
+        formatted[1] = pin[1];
+        formatted[2] = pin[2];
+        formatted[3] = ' ';
+        formatted[4] = pin[3];
+        formatted[5] = pin[4];
+        formatted[6] = pin[5];
+        formatted[7] = '\0';
+    } else {
+        copy_input(formatted, pin);
+    }
+
+    pin_w = ui_text_measure(font_pin, formatted);
+    x = ((int)fb_w - pin_w) / 2;
+    if (x < 0) {
+        x = 0;
+    }
+    y = y_center - (int)font_pin->height / 2;
+    ui_draw_text(fb, fb_w, fb_h, y_origin, x, y, formatted, font_pin, color);
+}
+
+void michi_ui_draw_activity_dots(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                                 uint16_t y_origin, int cx, int cy,
+                                 int count, int spacing, uint16_t color)
+{
+    int total_w;
+    int start_x;
+    int i;
+
+    if (count <= 0) {
+        return;
+    }
+    total_w = (count - 1) * spacing;
+    start_x = cx - total_w / 2;
+    for (i = 0; i < count; i++) {
+        michi_ui_draw_status_dot(fb, fb_w, fb_h, y_origin, start_x + i * spacing,
+                                 cy, color);
+    }
+}
+

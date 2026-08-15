@@ -24,6 +24,7 @@ CPPFLAGS = -Ishim \
            -I../../firmware/components/michi_audio/include \
            -I../../firmware/components/michi_volume/include \
            -I../../firmware/components/michi_display/include \
+           -I../../firmware/components/michi_state/include \
            -I../../firmware/components/michi_product_profile/include \
            -I../../firmware/components/michi_dac/include
 
@@ -206,16 +207,22 @@ UI_INC = -I$(UI_DIR)/include
 
 test_michi_ui: test_michi_ui.c $(UI_DIR)/michi_ui_text.c \
                $(UI_DIR)/michi_ui_fonts.c $(UI_DIR)/michi_ui_components.c \
+               $(UI_DIR)/michi_ui_screens.c $(UI_DIR)/michi_ui_icons.c \
+               $(UI_DIR)/michi_ui_theme.c \
                $(UI_DIR)/include/michi_ui.h \
                $(UI_DIR)/include/michi_ui_components.h \
+               $(UI_DIR)/include/michi_ui_screens.h \
+               $(UI_DIR)/include/michi_ui_strings.h \
                $(UI_DIR)/include/michi_ui_text.h \
                $(UI_DIR)/include/michi_ui_fonts.h \
                $(UI_DIR)/include/michi_ui_theme.h \
                $(UI_DIR)/include/michi_ui_icons.h \
-               $(UI_DIR)/assets/fonts/michi_ui_fonts_data.h $(SHIMS)
+               $(UI_DIR)/assets/fonts/michi_ui_fonts_data.h \
+               $(UI_DIR)/assets/icons/michi_ui_icons_data.h $(SHIMS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(UI_INC) -o $@ test_michi_ui.c \
 	    $(UI_DIR)/michi_ui_text.c $(UI_DIR)/michi_ui_fonts.c \
-	    $(UI_DIR)/michi_ui_components.c
+	    $(UI_DIR)/michi_ui_components.c $(UI_DIR)/michi_ui_screens.c \
+	    $(UI_DIR)/michi_ui_icons.c $(UI_DIR)/michi_ui_theme.c
 
 # rtp_guard: the SAME datagram validation the engine runs (pure C).
 test_rtp_guard: test_rtp_guard.c $(FIRMWARE)/michi_audio/rtp_guard.c \

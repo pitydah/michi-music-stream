@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "michi_ui.h"
@@ -125,6 +126,38 @@ void michi_ui_draw_centered_message(uint16_t *fb, uint16_t fb_w,
                                     uint16_t fb_h, uint16_t y_origin,
                                     int y_center, michi_ui_font_id_t font,
                                     const char *str, uint16_t color);
+
+/**
+ * @brief Draw the standard header bar: brand text left-aligned at (14, 14),
+ *        with optional right status indicator (Wi-Fi / status dot / wave).
+ */
+void michi_ui_draw_header_bar(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                              uint16_t y_origin, const char *brand,
+                              michi_ui_icon_t right_icon, bool show_icon,
+                              uint16_t icon_color);
+
+/**
+ * @brief Draw the playback footer: speaker icon + volume at left (x=16, y=286),
+ *        format string (e.g. "48/16" or "48 kHz") right-aligned at x=224.
+ */
+void michi_ui_draw_playback_footer(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                                   uint16_t y_origin, uint8_t volume,
+                                   const char *format_str);
+
+/**
+ * @brief Draw a 6-digit pairing PIN visually spaced as "XXX XXX" centered
+ *        at absolute y_center in MICHI_FONT_PIN.
+ */
+void michi_ui_draw_pin(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                       uint16_t y_origin, int y_center, const char *pin,
+                       uint16_t color);
+
+/**
+ * @brief Draw a horizontal row of status/activity dots centered at (cx, cy).
+ */
+void michi_ui_draw_activity_dots(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                                 uint16_t y_origin, int cx, int cy,
+                                 int count, int spacing, uint16_t color);
 
 #ifdef __cplusplus
 }

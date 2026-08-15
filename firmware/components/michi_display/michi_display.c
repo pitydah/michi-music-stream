@@ -16,6 +16,7 @@
 #include "michi_display.h"
 #include "michi_product_profile.h"
 #include "michi_state.h"
+#include "michi_ui.h"
 #include "michi_version.h"
 #include "michi_volume.h"
 
@@ -26,30 +27,6 @@
  * (8 sequential band flushes over a small DMA framebuffer, MS-11) never
  * delays audio; above app_main (1). */
 #define MICHI_DISPLAY_TASK_PRIORITY 4
-
-/* Font metrics: embedded 5x7 font with 6 px pitch (MICHI_TEXT_SPACING in
- * the BSP); the BSP hands the callback one band framebuffer per flush
- * (240 x band RGB565, MS-11). */
-#define MICHI_CHAR_PITCH 6
-#define MICHI_CHAR_H 7
-#define MICHI_HEADER_Y 8
-#define MICHI_FOOTER_Y (320 - MICHI_CHAR_H - 9)
-#define MICHI_BODY_Y0 28
-#define MICHI_BODY_PITCH 26
-
-#define MICHI_COLOR_WHITE 0xFFFF
-#define MICHI_COLOR_DIM 0x8410
-
-/* One body line: 38 chars * 6 px + 6 px margin = 234 px, fits 240. */
-#define MICHI_LINE_CHARS 38
-/* First title line: "Title: " label (7 chars) + up to 31 title chars
- * (29 visible + ".." marker). */
-#define MICHI_TITLE_LINE1_CHARS (MICHI_LINE_CHARS - 7)
-/* Visible chars on the first title line (the marker consumes 2). */
-#define MICHI_TITLE_LINE1_VISIBLE (MICHI_TITLE_LINE1_CHARS - 2)
-/* Second title line (no label): up to 33 chars (31 visible + ".." marker);
- * keeps the label+value+NUL <= 41 invariant with the 34-byte value buffer. */
-#define MICHI_TITLE_LINE2_CHARS (MICHI_TITLE_LINE1_CHARS + 2)
 
 /* Initial applied format (48000/16/2); the session layer (phase 11/12) will
  * drive the real value once negotiated. */
@@ -105,61 +82,9 @@ static void on_state_event(const michi_event_t *ev)
     }
 }
 
-/* A text row [y_abs, y_abs + MICHI_CHAR_H) is drawn only when it
- * intersects the current band [y_origin, y_origin + fb_h). All layout
- * math stays in ABSOLUTE panel rows (identical to the pre-band layout);
- * the single local-y conversion (y_abs - y_origin) and the BSP pixel
- * clipping make the banded frame pixel-identical to a full-frame render.
- * Partially intersecting rows are drawn and clipped per pixel, so a row
- * straddling a band boundary is split correctly across two bands. */
-static bool row_visible(uint16_t y_origin, uint16_t fb_h, int y_abs)
-{
-    return y_abs < (int)y_origin + (int)fb_h &&
-           y_abs + MICHI_CHAR_H > (int)y_origin;
-}
-
-static void draw_centered(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
-                          uint16_t y_origin, int y, const char *str,
-                          uint16_t color)
-{
-    if (!row_visible(y_origin, fb_h, y)) {
-        return;
-    }
-    int x = ((int)fb_w - (int)strlen(str) * MICHI_CHAR_PITCH) / 2;
-    if (x < 0) {
-        x = 0;
-    }
-    michi_board_display_draw_text(fb, fb_w, fb_h, x, y - (int)y_origin, str,
-                                  color, 0x0000);
-}
-
-/* Copy at most max_chars chars from src, appending ".." when truncated.
- * Always NUL-terminates. */
-static void copy_limited(char *dst, size_t dst_cap, const char *src, size_t max_chars)
-{
-    size_t n = strlen(src);
-    bool truncated = n > max_chars;
-    if (truncated) {
-        n = max_chars;
-        if (n >= 2) {
-            n -= 2; /* room for the ".." marker */
-        }
-    }
-    if (n >= dst_cap) {
-        n = dst_cap - 1;
-    }
-    memcpy(dst, src, n);
-    size_t idx = n;
-    if (truncated && idx + 2 < dst_cap) {
-        dst[idx++] = '.';
-        dst[idx++] = '.';
-    }
-    dst[idx] = '\0';
-}
-
 /* Bounded NUL-terminated copy for the now-playing buffers: strnlen + memcpy
  * keeps the critical section at fixed cost (no formatting under the lock).
- * NULL/empty input renders as "--" downstream. */
+ * NULL/empty input renders as empty string downstream. */
 static void copy_bounded(char *dst, size_t dst_cap, const char *src)
 {
     if (src == NULL) {
@@ -171,166 +96,47 @@ static void copy_bounded(char *dst, size_t dst_cap, const char *src)
     dst[n] = '\0';
 }
 
-/* Source/Title/Artist/format/Wi-Fi/Vol block shared by PLAYING (white) and
- * PAUSED (dimmed). y advances in ABSOLUTE panel rows; the band
- * intersection and local-y conversion happen inside draw_centered.
- *
- * Buffer sizes are chosen so snprintf("Label: %s") can never truncate:
- * "Source: "/"Artist: " (8 chars) need a value buffer <= 33 bytes, "Title: "
- * (7 chars) one <= 34 (dest is 41 bytes). */
-static void render_playing_lines(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
-                                 uint16_t y_origin, int y, uint16_t color)
-{
-    const michi_product_profile_t *p = michi_product_profile_get();
-    char line[MICHI_LINE_CHARS + 3];
-    char buf[34];
-    char short_buf[33];
-
-    /* Snapshot the CONTENT under the lock (the writer updates these buffers
-     * under the same lock); all formatting/drawing happens outside with the
-     * local copies - pointers are never dereferenced outside the lock. */
-    char src[MICHI_DISPLAY_SOURCE_MAX + 1];
-    char title[MICHI_DISPLAY_TITLE_MAX + 1];
-    char artist[MICHI_DISPLAY_ARTIST_MAX + 1];
-    portENTER_CRITICAL(&s_info_mux);
-    copy_bounded(src, sizeof(src), s_source);
-    copy_bounded(title, sizeof(title), s_title);
-    copy_bounded(artist, sizeof(artist), s_artist);
-    portEXIT_CRITICAL(&s_info_mux);
-
-    /* Source: 8-char label + up to 30 chars. */
-    copy_limited(short_buf, sizeof(short_buf), src, MICHI_LINE_CHARS - 8);
-    snprintf(line, sizeof(line), "Source: %s",
-             short_buf[0] != '\0' ? short_buf : "--");
-    draw_centered(fb, fb_w, fb_h, y_origin, y, line, color);
-    y += MICHI_BODY_PITCH;
-
-    /* Title: 7-char label + up to 31 chars; wraps to a second line with the
-     * remainder (max 2 lines). The second line continues at the visible
-     * count of line 1 (the ".." marker is not part of the text). */
-    if (title[0] == '\0') {
-        draw_centered(fb, fb_w, fb_h, y_origin, y, "Title: --", color);
-        y += MICHI_BODY_PITCH;
-    } else {
-        copy_limited(buf, sizeof(buf), title, MICHI_TITLE_LINE1_CHARS);
-        snprintf(line, sizeof(line), "Title: %s", buf);
-        draw_centered(fb, fb_w, fb_h, y_origin, y, line, color);
-        y += MICHI_BODY_PITCH;
-        if (strlen(title) > MICHI_TITLE_LINE1_VISIBLE) {
-            copy_limited(buf, sizeof(buf), title + MICHI_TITLE_LINE1_VISIBLE,
-                         MICHI_TITLE_LINE2_CHARS);
-            draw_centered(fb, fb_w, fb_h, y_origin, y, buf, color);
-            y += MICHI_BODY_PITCH;
-        }
-    }
-
-    copy_limited(short_buf, sizeof(short_buf), artist, MICHI_LINE_CHARS - 8);
-    snprintf(line, sizeof(line), "Artist: %s",
-             short_buf[0] != '\0' ? short_buf : "--");
-    draw_centered(fb, fb_w, fb_h, y_origin, y, line, color);
-    y += MICHI_BODY_PITCH;
-
-    /* Format: the REAL validated sample rate from the product profile and
-     * the initial applied bit depth (48000/16/2); the session layer
-     * (phase 11/12) will drive the real value once negotiated. */
-    snprintf(line, sizeof(line), "%" PRIu32 " kHz / %u-bit",
-             p->validated_sample_rate / 1000u,
-             (unsigned)MICHI_DISPLAY_APPLIED_BIT_DEPTH);
-    draw_centered(fb, fb_w, fb_h, y_origin, y, line, color);
-    y += MICHI_BODY_PITCH;
-
-    /* Wi-Fi placeholder: the network phase (9) fills the value; this
-     * subsystem only renders the state. */
-    draw_centered(fb, fb_w, fb_h, y_origin, y, "Wi-Fi: --", color);
-    y += MICHI_BODY_PITCH;
-
-    snprintf(line, sizeof(line), "Vol: %u", (unsigned)michi_volume_get());
-    draw_centered(fb, fb_w, fb_h, y_origin, y, line, color);
-    y += MICHI_BODY_PITCH;
-}
-
-/* Draw callback for michi_board_display_render(): header + footer + the
- * screen of the CURRENT state, for ONE band (see michi_board.h). All
- * layout rows stay absolute; band filtering happens inside draw_centered.
+/* Draw callback for michi_board_display_render(): renders the screen
+ * matching the CURRENT state for ONE band via michi_ui_render_screen().
+ * All layout rows stay absolute; band intersection and per-pixel clipping
+ * happen inside the UI primitives (MS-11 band contract).
  * Runs on the render task only. */
 static void render_frame(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
                          uint16_t y_origin)
 {
     const michi_product_profile_t *p = michi_product_profile_get();
 
-    draw_centered(fb, fb_w, fb_h, y_origin, MICHI_HEADER_Y, p->product_name,
-                  MICHI_COLOR_WHITE);
-    draw_centered(fb, fb_w, fb_h, y_origin, MICHI_FOOTER_Y, "v" MICHI_FW_VERSION_STR,
-                  MICHI_COLOR_DIM);
+    char src[MICHI_DISPLAY_SOURCE_MAX + 1];
+    char title[MICHI_DISPLAY_TITLE_MAX + 1];
+    char artist[MICHI_DISPLAY_ARTIST_MAX + 1];
+    char pin[7];
+    uint32_t last_err;
 
-    switch (michi_state_get()) {
-    case MICHI_STATE_IDLE:
-        draw_centered(fb, fb_w, fb_h, y_origin, 140, "IDLE", MICHI_COLOR_WHITE);
-        draw_centered(fb, fb_w, fb_h, y_origin, 156, "Ready to pair", MICHI_COLOR_WHITE);
-        break;
-    case MICHI_STATE_UNPROVISIONED:
-        draw_centered(fb, fb_w, fb_h, y_origin, 140, "Not configured", MICHI_COLOR_WHITE);
-        draw_centered(fb, fb_w, fb_h, y_origin, 156, "Press pairing button", MICHI_COLOR_WHITE);
-        break;
-    case MICHI_STATE_PROVISIONING:
-    case MICHI_STATE_WIFI_CONNECTING:
-        draw_centered(fb, fb_w, fb_h, y_origin, 148, "Connecting...", MICHI_COLOR_WHITE);
-        break;
-    case MICHI_STATE_PAIRING: {
-        /* Snapshot the PIN under the lock (same contract as the
-         * now-playing buffers); render the PIN when set, else the
-         * waiting hint. */
-        char pin[7];
-        portENTER_CRITICAL(&s_info_mux);
-        copy_bounded(pin, sizeof(pin), s_pairing_pin);
-        portEXIT_CRITICAL(&s_info_mux);
-        if (pin[0] != '\0') {
-            char line[MICHI_LINE_CHARS + 3];
-            snprintf(line, sizeof(line), "Pairing PIN: %s", pin);
-            draw_centered(fb, fb_w, fb_h, y_origin, 140, line, MICHI_COLOR_WHITE);
-        } else {
-            draw_centered(fb, fb_w, fb_h, y_origin, 140, "Pairing...", MICHI_COLOR_WHITE);
-            draw_centered(fb, fb_w, fb_h, y_origin, 156, "Waiting for confirmation",
-                          MICHI_COLOR_WHITE);
-        }
-        break;
-    }
-    case MICHI_STATE_SESSION_PENDING:
-    case MICHI_STATE_BUFFERING:
-        draw_centered(fb, fb_w, fb_h, y_origin, 148, "Buffering...", MICHI_COLOR_WHITE);
-        break;
-    case MICHI_STATE_PLAYING:
-        render_playing_lines(fb, fb_w, fb_h, y_origin, MICHI_BODY_Y0, MICHI_COLOR_WHITE);
-        break;
-    case MICHI_STATE_PAUSED:
-        draw_centered(fb, fb_w, fb_h, y_origin, MICHI_BODY_Y0, "Paused", MICHI_COLOR_WHITE);
-        render_playing_lines(fb, fb_w, fb_h, y_origin,
-                             MICHI_BODY_Y0 + MICHI_BODY_PITCH, MICHI_COLOR_DIM);
-        break;
-    case MICHI_STATE_UPDATING:
-        draw_centered(fb, fb_w, fb_h, y_origin, 148, "Updating firmware...", MICHI_COLOR_WHITE);
-        break;
-    case MICHI_STATE_RECOVERABLE_ERROR:
-        draw_centered(fb, fb_w, fb_h, y_origin, 140, "Recovering...", MICHI_COLOR_WHITE);
-        draw_centered(fb, fb_w, fb_h, y_origin, 156, "Auto retry in progress", MICHI_COLOR_WHITE);
-        break;
-    case MICHI_STATE_FATAL_ERROR:
-        draw_centered(fb, fb_w, fb_h, y_origin, 132, "FATAL ERROR", MICHI_COLOR_WHITE);
-        portENTER_CRITICAL(&s_info_mux);
-        const uint32_t last_err = s_last_error;
-        portEXIT_CRITICAL(&s_info_mux);
-        if (last_err != 0) {
-            draw_centered(fb, fb_w, fb_h, y_origin, 150,
-                          esp_err_to_name((esp_err_t)last_err), MICHI_COLOR_DIM);
-        } else {
-            draw_centered(fb, fb_w, fb_h, y_origin, 150, "See serial log", MICHI_COLOR_DIM);
-        }
-        break;
-    case MICHI_STATE_BOOTING:
-    case MICHI_STATE_SELF_TEST:
-    default:
-        break; /* covered by the BSP boot screen; defensive */
-    }
+    portENTER_CRITICAL(&s_info_mux);
+    copy_bounded(src, sizeof(src), s_source);
+    copy_bounded(title, sizeof(title), s_title);
+    copy_bounded(artist, sizeof(artist), s_artist);
+    copy_bounded(pin, sizeof(pin), s_pairing_pin);
+    last_err = s_last_error;
+    portEXIT_CRITICAL(&s_info_mux);
+
+    michi_ui_screen_ctx_t ctx = {
+        .state = michi_state_get(),
+        .title = title,
+        .artist = artist,
+        .source = src,
+        .pairing_pin = pin,
+        .volume = michi_volume_get(),
+        .sample_rate = p != NULL ? p->validated_sample_rate : 48000u,
+        .bit_depth = MICHI_DISPLAY_APPLIED_BIT_DEPTH,
+        .last_error = last_err,
+        .wifi_connected = true,
+        .server_connected = true,
+        .update_pct = 0,
+        .show_diagnostics = false,
+    };
+
+    michi_ui_render_screen(fb, fb_w, fb_h, y_origin, &ctx);
 }
 
 static void render_current_state(void)

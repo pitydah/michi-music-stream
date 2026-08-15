@@ -368,6 +368,309 @@ static void test_pin_ellipsis(void)
     free(b);
 }
 
+/* --------------------------------------------------------------------------
+ * Screen scenarios (UI-01..UI-15) + Full-frame vs Banded identity
+ * -------------------------------------------------------------------------- */
+
+typedef struct ui_scenario {
+    const char *id;
+    const char *description;
+    michi_ui_screen_ctx_t ctx;
+} ui_scenario_t;
+
+static void check_screen_band_identity(const ui_scenario_t *sc)
+{
+    uint16_t *ref = malloc((size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    uint16_t *band = malloc((size_t)PANEL_W * BAND_H * sizeof(uint16_t));
+    int b;
+    int non_zero_pixels = 0;
+
+    CHECK(ref != NULL && band != NULL, "scenario fb allocation");
+    if (ref == NULL || band == NULL) {
+        free(ref);
+        free(band);
+        return;
+    }
+
+    /* Render full frame (240 x 320) */
+    memset(ref, 0, (size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    michi_ui_render_screen(ref, PANEL_W, PANEL_H, 0, &sc->ctx);
+
+    /* Verify non-empty screen (real graphics rendered) */
+    for (int i = 0; i < PANEL_W * PANEL_H; i++) {
+        if (ref[i] != 0) {
+            non_zero_pixels++;
+        }
+    }
+    if (non_zero_pixels < 50) {
+        printf("  FAIL %s (%s): too few visible pixels (%d)\n",
+               sc->id, sc->description, non_zero_pixels);
+        failures++;
+    }
+
+    /* Render band-by-band and verify exact bitwise identity */
+    for (b = 0; b < N_BANDS; b++) {
+        const uint16_t y_origin = (uint16_t)(b * BAND_H);
+
+        memset(band, 0, (size_t)PANEL_W * BAND_H * sizeof(uint16_t));
+        michi_ui_render_screen(band, PANEL_W, BAND_H, y_origin, &sc->ctx);
+
+        if (memcmp(band, ref + (size_t)y_origin * PANEL_W,
+                   (size_t)PANEL_W * BAND_H * sizeof(uint16_t)) != 0) {
+            printf("  FAIL band identity %s (%s): band %d differs from full-frame\n",
+                   sc->id, sc->description, b);
+            failures++;
+        }
+    }
+
+    free(ref);
+    free(band);
+}
+
+static void test_all_screen_scenarios(void)
+{
+    printf("michi_ui: all 15 screen scenarios + band identity (UI-01..UI-15)\n");
+
+    const ui_scenario_t scenarios[] = {
+        {
+            .id = "UI-01",
+            .description = "boot",
+            .ctx = { .state = MICHI_STATE_BOOTING }
+        },
+        {
+            .id = "UI-02",
+            .description = "unprovisioned",
+            .ctx = { .state = MICHI_STATE_UNPROVISIONED }
+        },
+        {
+            .id = "UI-03",
+            .description = "ready",
+            .ctx = { .state = MICHI_STATE_IDLE, .wifi_connected = true }
+        },
+        {
+            .id = "UI-04",
+            .description = "connecting",
+            .ctx = { .state = MICHI_STATE_WIFI_CONNECTING }
+        },
+        {
+            .id = "UI-05",
+            .description = "pairing no PIN",
+            .ctx = { .state = MICHI_STATE_PAIRING, .pairing_pin = NULL }
+        },
+        {
+            .id = "UI-06",
+            .description = "pairing PIN 123456",
+            .ctx = { .state = MICHI_STATE_PAIRING, .pairing_pin = "123456" }
+        },
+        {
+            .id = "UI-07",
+            .description = "playing short title",
+            .ctx = {
+                .state = MICHI_STATE_PLAYING,
+                .title = "Time",
+                .artist = "Pink Floyd",
+                .source = "Living Room",
+                .volume = 72,
+                .sample_rate = 48000,
+                .bit_depth = 16,
+                .wifi_connected = true,
+                .server_connected = true,
+            }
+        },
+        {
+            .id = "UI-08",
+            .description = "playing long title",
+            .ctx = {
+                .state = MICHI_STATE_PLAYING,
+                .title = "Everybody Wants to Rule the World (Extended Version Remastered)",
+                .artist = "Tears for Fears",
+                .source = "Michi Micro Server",
+                .volume = 72,
+                .sample_rate = 48000,
+                .bit_depth = 16,
+            }
+        },
+        {
+            .id = "UI-09",
+            .description = "playing no metadata",
+            .ctx = {
+                .state = MICHI_STATE_PLAYING,
+                .title = NULL,
+                .artist = NULL,
+                .source = NULL,
+                .volume = 72,
+                .sample_rate = 48000,
+                .bit_depth = 16,
+            }
+        },
+        {
+            .id = "UI-10",
+            .description = "paused",
+            .ctx = {
+                .state = MICHI_STATE_PAUSED,
+                .title = "Time",
+                .artist = "Pink Floyd",
+                .source = "Living Room",
+                .volume = 72,
+                .sample_rate = 48000,
+                .bit_depth = 16,
+            }
+        },
+        {
+            .id = "UI-11",
+            .description = "buffering",
+            .ctx = {
+                .state = MICHI_STATE_BUFFERING,
+                .title = "Time",
+                .artist = "Pink Floyd",
+                .volume = 72,
+            }
+        },
+        {
+            .id = "UI-12",
+            .description = "updating",
+            .ctx = {
+                .state = MICHI_STATE_UPDATING,
+                .update_pct = 68,
+            }
+        },
+        {
+            .id = "UI-13",
+            .description = "recoverable error",
+            .ctx = {
+                .state = MICHI_STATE_RECOVERABLE_ERROR,
+                .last_error = 0x3001,
+            }
+        },
+        {
+            .id = "UI-14",
+            .description = "fatal error",
+            .ctx = {
+                .state = MICHI_STATE_FATAL_ERROR,
+                .last_error = 0x101,
+            }
+        },
+        {
+            .id = "UI-15",
+            .description = "diagnostics",
+            .ctx = {
+                .state = MICHI_STATE_IDLE,
+                .show_diagnostics = true,
+                .wifi_connected = true,
+                .server_connected = true,
+                .volume = 72,
+                .sample_rate = 48000,
+                .bit_depth = 16,
+            }
+        },
+    };
+
+    const size_t count = sizeof(scenarios) / sizeof(scenarios[0]);
+    for (size_t i = 0; i < count; i++) {
+        check_screen_band_identity(&scenarios[i]);
+    }
+}
+
+/* --------------------------------------------------------------------------
+ * Specific PIN specification test (Section 51)
+ * -------------------------------------------------------------------------- */
+
+static void test_pin_specification(void)
+{
+    printf("michi_ui: PIN layout & typography specification\n");
+    const michi_ui_font_t *pin_font = michi_ui_font_get(MICHI_FONT_PIN);
+    const michi_ui_font_t *sm_font = michi_ui_font_get(MICHI_FONT_SM);
+
+    /* PIN logical value: 123456 -> visual: 123 456 */
+    const char *visual_pin = "123 456";
+    int w = ui_text_measure(pin_font, visual_pin);
+    int sm_w = ui_text_measure(sm_font, visual_pin);
+
+    CHECK(w <= 210, "PIN visual width fits within 210 px bounding box");
+    CHECK(w > 100, "PIN visual width is substantial (> 100 px)");
+    CHECK(pin_font->height >= 28, "PIN font height >= 28 px");
+    CHECK(w > sm_w * 2, "PIN font is significantly larger than SM font");
+
+    /* Render PIN and verify vertical center around y ≈ 145 (rows 127..163) */
+    uint16_t *fb = malloc((size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    if (fb != NULL) {
+        memset(fb, 0, (size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+        michi_ui_draw_pin(fb, PANEL_W, PANEL_H, 0, 145, "123456", MICHI_UI_ACCENT);
+
+        int top_row = -1;
+        int bot_row = -1;
+        for (int y = 0; y < PANEL_H; y++) {
+            for (int x = 0; x < PANEL_W; x++) {
+                if (fb[y * PANEL_W + x] != 0) {
+                    if (top_row == -1) top_row = y;
+                    bot_row = y;
+                }
+            }
+        }
+        printf("    PIN bounds: top_row=%d, bot_row=%d, height=%d\n",
+               top_row, bot_row, bot_row - top_row + 1);
+        CHECK(top_row >= 120 && top_row <= 140, "PIN top row near y=127..137");
+        CHECK(bot_row >= 155 && bot_row <= 170, "PIN bottom row near y=163");
+        free(fb);
+    }
+}
+
+/* --------------------------------------------------------------------------
+ * Title & artist wrapping tests (Section 52 & 53)
+ * -------------------------------------------------------------------------- */
+
+static void test_title_and_artist_wrapping(void)
+{
+    printf("michi_ui: title & artist wrapping limits\n");
+    const michi_ui_font_t *font_lg = michi_ui_font_get(MICHI_FONT_LG);
+    const michi_ui_font_t *font_md = michi_ui_font_get(MICHI_FONT_MD);
+
+    char buf[128];
+    const char *lines[8];
+
+    /* Short title: "Time" -> 1 line */
+    strcpy(buf, "Time");
+    int n = ui_wrap_text(font_lg, buf, 208, lines, 3);
+    CHECK(n == 1, "Short title wraps to 1 line");
+
+    /* Medium title: "Shine On You Crazy Diamond" -> 2 lines */
+    strcpy(buf, "Shine On You Crazy Diamond");
+    n = ui_wrap_text(font_lg, buf, 208, lines, 3);
+    CHECK(n == 2, "Medium title wraps to 2 lines");
+
+    /* Long title: "Everybody Wants to Rule the World (Extended Version Remastered)" -> max 3 lines */
+    strcpy(buf, "Everybody Wants to Rule the World (Extended Version Remastered)");
+    n = ui_wrap_text(font_lg, buf, 208, lines, 3);
+    CHECK(n <= 3, "Long title does not exceed 3 lines");
+
+    /* Artists: max 2 lines */
+    strcpy(buf, "Pink Floyd");
+    n = ui_wrap_text(font_md, buf, 208, lines, 2);
+    CHECK(n == 1, "Short artist wraps to 1 line");
+
+    strcpy(buf, "Creedence Clearwater Revival");
+    n = ui_wrap_text(font_md, buf, 208, lines, 2);
+    CHECK(n <= 2, "Medium artist wraps to <= 2 lines");
+
+    strcpy(buf, "Orquesta Sinfonica Nacional de Chile");
+    n = ui_wrap_text(font_md, buf, 208, lines, 2);
+    CHECK(n <= 2, "Long artist wraps to <= 2 lines");
+}
+
+/* --------------------------------------------------------------------------
+ * Prohibited legacy string checks (Section 50 & 56)
+ * -------------------------------------------------------------------------- */
+
+static void test_no_prohibited_strings(void)
+{
+    printf("michi_ui: verify absence of prohibited legacy strings\n");
+
+    /* Ensure strings header does NOT define prohibited labels */
+    CHECK(strcmp(MICHI_UI_STR_READY, "IDLE") != 0, "Ready is not IDLE");
+    CHECK(strcmp(MICHI_UI_STR_READY, "Listo") == 0, "Ready is 'Listo'");
+    CHECK(strcmp(MICHI_UI_STR_BRAND, "Michi") == 0, "Brand is 'Michi'");
+}
+
 int main(void)
 {
     test_wrap();
@@ -375,10 +678,16 @@ int main(void)
     test_band_identity();
     test_smoke();
     test_pin_ellipsis();
+    test_all_screen_scenarios();
+    test_pin_specification();
+    test_title_and_artist_wrapping();
+    test_no_prohibited_strings();
+
     if (failures == 0) {
-        printf("PASS test_michi_ui\n");
+        printf("PASS test_michi_ui (all scenarios & contracts green)\n");
         return 0;
     }
-    printf("FAIL test_michi_ui (%d)\n", failures);
+    printf("FAIL test_michi_ui (%d failures)\n", failures);
     return 1;
 }
+
