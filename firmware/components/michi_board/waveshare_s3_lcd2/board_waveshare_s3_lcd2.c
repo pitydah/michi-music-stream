@@ -27,6 +27,9 @@
 #define MICHI_LCD_CMD_BITS 8
 #define MICHI_LCD_PARAM_BITS 8
 #define MICHI_LCD_TRANS_QUEUE_DEPTH 10
+/* L1 cache line size on ESP32-S3: SPI DMA reads/writes to PSRAM must be
+ * aligned to this boundary or the driver bounces through internal RAM. */
+#define MICHI_LCD_FB_ALIGN 64
 #define MICHI_TEXT_SPACING 6
 
 static const char *TAG = "michi_board";
@@ -228,7 +231,13 @@ esp_err_t michi_board_init(void)
     }
 
     size_t fb_bytes = (size_t)bi->display_width * bi->display_height * sizeof(uint16_t);
-    s_fb = heap_caps_malloc(fb_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    /* H3 (MS-11 on-device): the framebuffer MUST be cache-line aligned (64 B
+     * on ESP32-S3) or the SPI master driver's L1-cache check flags the PSRAM
+     * pointer as DMA-misaligned and copies every color flush through a
+     * 150 KB internal-RAM bounce buffer, which fails with ESP_ERR_NO_MEM -
+     * the panel then renders nothing (black screen) while init reports OK. */
+    s_fb = heap_caps_aligned_alloc(MICHI_LCD_FB_ALIGN, fb_bytes,
+                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (s_fb == NULL) {
         ESP_LOGE(TAG, "PSRAM framebuffer allocation failed (%zu bytes): display disabled", fb_bytes);
         /* Symmetry with the display-init failure path below: no framebuffer,
