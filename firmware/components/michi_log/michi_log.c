@@ -207,7 +207,8 @@ static int log_vprintf(const char *fmt, va_list args)
     va_copy(ap2, args);
     char buf[MICHI_LOG_ENTRY_PAYLOAD_MAX];
     const int n = vsnprintf(buf, sizeof(buf), fmt, args);
-    if (n > 0 && s_tail_ring != NULL) {
+    if (n > 0 && s_tail_ring != NULL &&
+        s_tail_ring->magic == MICHI_LOG_RING_MAGIC) {
         /* vsnprintf returns what it WOULD have written; when the line is
          * truncated (n >= sizeof(buf)) only sizeof(buf)-1 bytes are
          * real - split_rendered must walk the real length, not the
@@ -245,10 +246,10 @@ static int log_vprintf(const char *fmt, va_list args)
     return n;
 }
 
-static void crash_stage(void)
+static void crash_stage(const michi_log_ring_hdr_t *prev)
 {
-    if (s_tail_ring == NULL || s_tail_ring->magic != MICHI_LOG_RING_MAGIC ||
-        s_tail_ring->slot_size != sizeof(michi_log_entry_t)) {
+    if (prev == NULL || prev->magic != MICHI_LOG_RING_MAGIC ||
+        prev->slot_size != sizeof(michi_log_entry_t)) {
         ESP_LOGI(TAG, "crash dump: no valid previous ring at %p (skip)",
                  (void *)s_tail_ring);
         return;
@@ -261,9 +262,9 @@ static void crash_stage(void)
         (uint32_t)(((size_t)CONFIG_MICHI_LOG_TAIL_SIZE_KB * 1024u -
                     sizeof(*s_tail_ring)) /
                    MICHI_LOG_ENTRY_SLOT_BYTES);
-    const uint32_t slots = s_tail_ring->slots;
-    const uint32_t head = s_tail_ring->head;
-    const uint32_t count = s_tail_ring->count;
+    const uint32_t slots = prev->slots;
+    const uint32_t head = prev->head;
+    const uint32_t count = prev->count;
     if (slots < 1 || slots > cur_slots || head >= slots || count > slots ||
         count == 0) {
         ESP_LOGI(TAG, "crash dump: no valid previous ring at %p (skip)",
@@ -283,7 +284,7 @@ static void crash_stage(void)
                                                       sizeof(*s_tail_ring));
     size_t used = 0;
     portENTER_CRITICAL(&s_tail_mux);
-    uint32_t kept = s_tail_ring->count;
+    uint32_t kept = count;
     if ((size_t)kept * MICHI_LOG_ENTRY_SLOT_BYTES > cap) {
         kept = (uint32_t)(cap / MICHI_LOG_ENTRY_SLOT_BYTES);
         if (kept == 0) {
@@ -699,9 +700,15 @@ esp_err_t michi_log_init(void)
         ESP_LOGE(TAG, "tail ring alloc failed (%u KB PSRAM) - tail disabled",
                  CONFIG_MICHI_LOG_TAIL_SIZE_KB);
     } else {
-        if (reset_is_crash()) {
-            crash_stage();
-        }
+        /* H1 (MS-11 on-device fix): the fresh ring header is initialized
+         * BEFORE any log is emitted (crash_stage itself logs). The
+         * PREVIOUS boot's header is snapshotted first so the crash dump
+         * can still validate/read the prior ring contents instead of
+         * trusting PSRAM garbage - which used to fault in log_vprintf
+         * (StoreProhibited) and arm the crash path for the NEXT boot,
+         * producing an infinite boot-crash loop on real hardware. */
+        michi_log_ring_hdr_t prev;
+        memcpy(&prev, s_tail_ring, sizeof(prev));
         const uint32_t slots = (uint32_t)((tail_bytes - sizeof(*s_tail_ring)) /
                                           MICHI_LOG_ENTRY_SLOT_BYTES);
         s_tail_ring->magic = MICHI_LOG_RING_MAGIC;
@@ -709,6 +716,9 @@ esp_err_t michi_log_init(void)
         s_tail_ring->slots = slots;
         s_tail_ring->head = 0;
         s_tail_ring->count = 0;
+        if (reset_is_crash()) {
+            crash_stage(&prev);
+        }
         ESP_LOGI(TAG, "tail ring: %u slots (%u KB PSRAM @%p)",
                  (unsigned)slots, CONFIG_MICHI_LOG_TAIL_SIZE_KB,
                  (void *)s_tail_ring);
