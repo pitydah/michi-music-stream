@@ -231,15 +231,18 @@ esp_err_t michi_board_init(void)
     }
 
     size_t fb_bytes = (size_t)bi->display_width * bi->display_height * sizeof(uint16_t);
-    /* H3 (MS-11 on-device): the framebuffer MUST be cache-line aligned (64 B
-     * on ESP32-S3) or the SPI master driver's L1-cache check flags the PSRAM
-     * pointer as DMA-misaligned and copies every color flush through a
-     * 150 KB internal-RAM bounce buffer, which fails with ESP_ERR_NO_MEM -
-     * the panel then renders nothing (black screen) while init reports OK. */
+    /* H3 (MS-11 on-device, definitive): in this IDF build,
+     * esp_ptr_dma_capable() only covers the INTERNAL DMA region
+     * (SOC_DMA_LOW..HIGH = 0x3FC88000..0x3FD00000); PSRAM pointers are
+     * reported not-DMA-capable and the SPI driver then bounces every
+     * color flush through an internal-RAM buffer of 150 KB, which fails
+     * with ESP_ERR_NO_MEM - black screen. The 240x320 RGB565
+     * framebuffer (150 KB) fits the 218 KB internal DRAM pool when
+     * allocated early in boot, so keep it in DMA-capable internal RAM. */
     s_fb = heap_caps_aligned_alloc(MICHI_LCD_FB_ALIGN, fb_bytes,
-                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                                   MALLOC_CAP_DMA);
     if (s_fb == NULL) {
-        ESP_LOGE(TAG, "PSRAM framebuffer allocation failed (%zu bytes): display disabled", fb_bytes);
+        ESP_LOGE(TAG, "framebuffer allocation failed (%zu bytes, DMA RAM): display disabled", fb_bytes);
         /* Symmetry with the display-init failure path below: no framebuffer,
          * no display, no reason to keep the backlight burning. */
         if (gpio_set_level(bi->backlight_gpio, 0) != ESP_OK) {
@@ -263,7 +266,7 @@ esp_err_t michi_board_init(void)
     }
 
     s_inited = true;
-    ESP_LOGI(TAG, "board init ok: %ux%u %s, framebuffer %zu bytes in PSRAM",
+    ESP_LOGI(TAG, "board init ok: %ux%u %s, framebuffer %zu bytes in DMA RAM",
              bi->display_width, bi->display_height, bi->display_controller, fb_bytes);
     return ESP_OK;
 }
