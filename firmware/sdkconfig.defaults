@@ -22,3 +22,8 @@ CONFIG_LWIP_UDP_RECVMBOX_SIZE=64
 # 5.3 esp_netif_sntp API (esp_netif_sntp_init/start/sync_wait), which
 # drives the lwIP SNTP client - the module must be enabled.
 CONFIG_LWIP_SNTP=y
+
+# MS-11 on-device: the boot path (identity+wifi+discovery+time init chained
+# through log_vprintf 504B frames) overflows the IDF default 3584B main
+# task stack; 8192 leaves ample headroom.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
