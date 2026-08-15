@@ -30,13 +30,15 @@ extern "C" {
 int ui_text_measure(const michi_ui_font_t *font, const char *str);
 
 /**
- * @brief Wrap text to a pixel width, breaking at word boundaries (spaces)
- *        with a hard per-glyph cut as fallback for long words.
+ * @brief Wrap text to a pixel width, breaking at word boundaries (spaces).
  *
- * Mutates str in place: each break point (space or hard cut) is replaced
+ * Mutates str in place: each break point (space or newline) is replaced
  * with '\0'; out_lines receives pointers to the NUL-terminated lines.
- * Newlines ('\n') in the input are honored as explicit breaks. Lines are
- * filled until max_lines is reached; any remaining text is dropped.
+ * A word wider than max_w is NOT cut mid-word: it is kept intact as its
+ * own over-wide line (callers ellipsize long single words via
+ * ui_ellipsize). Empty lines are never emitted. Newlines ('\n') in the
+ * input are honored as explicit breaks. Lines are filled until max_lines
+ * is reached; any remaining text is dropped.
  *
  * @param font      Font used for measuring.
  * @param str       Writable NUL-terminated input (modified).

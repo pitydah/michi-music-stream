@@ -49,7 +49,14 @@ int ui_wrap_text(const michi_ui_font_t *font, char *str, int max_w,
             if (*p == '\0' || *p == '\n') {
                 int is_newline = (*p == '\n');
                 *(char *)p = '\0';
-                out_lines[count++] = line_start;
+                /* H4b (UI-01 successor review): never emit an empty line.
+                 * A trailing space consumed by the overflow-space branch
+                 * (or a newline right after a break) leaves line_start at
+                 * a NUL position; emitting it would waste a max_lines slot
+                 * and could drop the following text. */
+                if (*line_start != '\0') {
+                    out_lines[count++] = line_start;
+                }
                 if (is_newline) {
                     p++;
                 }
