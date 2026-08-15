@@ -27,3 +27,8 @@ CONFIG_LWIP_SNTP=y
 # through log_vprintf 504B frames) overflows the IDF default 3584B main
 # task stack; 8192 leaves ample headroom.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# MS-11 on-device: 13 canonical routes + 404 err handler = 14 handlers
+# exceeds the IDF default of 8 -> michi_http_init failed with
+# ESP_ERR_HTTPD_HANDLERS_FULL and the whole API was down.
+CONFIG_HTTPD_MAX_URI_HANDLERS=16
