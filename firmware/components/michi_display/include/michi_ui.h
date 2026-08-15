@@ -41,6 +41,7 @@ typedef enum michi_ui_align {
 #include "michi_ui_fonts.h"
 #include "michi_ui_text.h"
 #include "michi_ui_icons.h"
+#include "michi_ui_components.h"
 
 #ifdef __cplusplus
 }
