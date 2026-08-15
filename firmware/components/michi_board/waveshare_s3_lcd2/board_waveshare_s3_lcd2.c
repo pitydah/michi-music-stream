@@ -239,8 +239,9 @@ esp_err_t michi_board_init(void)
      * with ESP_ERR_NO_MEM - black screen. The 240x320 RGB565
      * framebuffer (150 KB) fits the 218 KB internal DRAM pool when
      * allocated early in boot, so keep it in DMA-capable internal RAM. */
-    s_fb = heap_caps_aligned_alloc(MICHI_LCD_FB_ALIGN, fb_bytes,
-                                   MALLOC_CAP_DMA);
+    /* Internal DMA RAM needs only 4-byte alignment; a 64-byte aligned
+     * 150 KB allocation fragments the pool and can fail. */
+    s_fb = heap_caps_malloc(fb_bytes, MALLOC_CAP_DMA);
     if (s_fb == NULL) {
         ESP_LOGE(TAG, "framebuffer allocation failed (%zu bytes, DMA RAM): display disabled", fb_bytes);
         /* Symmetry with the display-init failure path below: no framebuffer,
