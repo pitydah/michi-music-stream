@@ -80,6 +80,8 @@ int ui_wrap_text(const michi_ui_font_t *font, char *str, int max_w,
                     }
                     line_start = glyph + 1;
                     line_w = 0;
+                    last_space = NULL; /* stale boundary before the new
+                                        * line start must never fire */
                     continue;
                 }
                 if (last_space != NULL) {
