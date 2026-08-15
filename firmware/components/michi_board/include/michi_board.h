@@ -57,7 +57,8 @@ typedef struct {
 } michi_board_external_pins_t;
 
 /**
- * @brief Initialize the board: backlight, SPI bus, ST7789 panel and PSRAM framebuffer.
+ * @brief Initialize the board: backlight, SPI bus, ST7789 panel and the
+ *        small banded DMA-RAM framebuffer.
  *
  * On display-related failure the board keeps running in degraded mode (self test
  * reports display_ok/backlight_ok = false); the returned error tells the caller
@@ -119,18 +120,39 @@ esp_err_t michi_board_display_boot_screen(const michi_board_info_t *info,
 esp_err_t michi_board_display_clear(void);
 
 /**
- * @brief Draw callback for michi_board_display_render(): draws a full frame
- *        into the framebuffer (already cleared to black by the BSP).
+ * @brief Draw callback for michi_board_display_render(): draws ONE band of
+ *        the frame into the band framebuffer (already cleared to black by
+ *        the BSP before each invocation).
  *
- * @param fb   Framebuffer (PSRAM, fb_w x fb_h RGB565).
- * @param fb_w Framebuffer width in pixels.
- * @param fb_h Framebuffer height in pixels.
+ * The BSP splits the panel into vertical bands (band height = fb_h, the
+ * band size chosen by the BSP, e.g. 40 rows) and invokes this callback
+ * once per band with the band's absolute top row in y_origin. Elements
+ * must keep their ABSOLUTE layout coordinates and draw them at the local
+ * row y_abs - y_origin; out-of-band pixels are clipped by the BSP draw
+ * helpers, so an element may simply be drawn (or skipped when it does not
+ * intersect the band - a pure optimization). The concatenation of all
+ * band flushes is pixel-identical to a single full-frame render.
+ *
+ * @param fb       Band framebuffer (DMA RAM, fb_w x fb_h RGB565).
+ * @param fb_w     Framebuffer width in pixels (== display width).
+ * @param fb_h     Band height in pixels (BSP-defined).
+ * @param y_origin Absolute top row of this band on the panel.
  */
-typedef void (*michi_board_render_fn)(uint16_t *fb, uint16_t fb_w, uint16_t fb_h);
+typedef void (*michi_board_render_fn)(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                                      uint16_t y_origin);
 
 /**
- * @brief Render a full frame: clear the framebuffer to black, invoke the
- *        draw callback, then flush the framebuffer to the panel.
+ * @brief Render a full frame by bands: for each band of BSP-chosen height
+ *        (display_height must be an exact multiple of it), clear the band
+ *        framebuffer, invoke the draw callback for that band, then flush
+ *        the band to the panel (window set + pixel stream in one
+ *        esp_lcd_panel_draw_bitmap call).
+ *
+ * The banded design (MS-11) keeps the framebuffer small (a few tens of
+ * KB) so it always fits internal DMA RAM at boot; a full-frame DMA buffer
+ * cannot be guaranteed there, and PSRAM is not DMA-capable in this IDF
+ * build (the SPI bounce buffer for a 150 KB frame fails with
+ * ESP_ERR_NO_MEM).
  *
  * @note The panel and framebuffer are NOT thread-safe: exactly one consumer
  *       must call this API (the michi_display render task, phase 6). The
@@ -142,7 +164,8 @@ typedef void (*michi_board_render_fn)(uint16_t *fb, uint16_t fb_w, uint16_t fb_h
  *
  * @param fn Draw callback (NULL -> ESP_ERR_INVALID_ARG).
  * @return ESP_OK; ESP_ERR_INVALID_STATE if the display is not available;
- *         ESP_ERR_INVALID_ARG on NULL callback.
+ *         ESP_ERR_INVALID_ARG on NULL callback; the flush error if a band
+ *         flush fails.
  */
 esp_err_t michi_board_display_render(michi_board_render_fn fn);
 
