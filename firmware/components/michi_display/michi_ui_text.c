@@ -64,31 +64,49 @@ int ui_wrap_text(const michi_ui_font_t *font, char *str, int max_w,
 
             if (line_w + gw > max_w && line_w > 0) {
                 /* The glyph does not fit on this line. */
+                if (*glyph == ' ') {
+                    /* H4 (UI-01 review fix): the line is full and the
+                     * overflow glyph is a space. End the current line at
+                     * that space and start the next one right after it.
+                     * Hard-cutting a space was the original bug: it
+                     * emitted an empty next line and dropped the
+                     * following word. */
+                    *(char *)glyph = '\0';
+                    if (line_start != glyph) {
+                        out_lines[count++] = line_start;
+                        if (count >= max_lines) {
+                            return count; /* remaining text dropped */
+                        }
+                    }
+                    line_start = glyph + 1;
+                    line_w = 0;
+                    continue;
+                }
                 if (last_space != NULL) {
                     /* Break at the last word boundary. */
                     *(char *)last_space = '\0';
-                    out_lines[count++] = line_start;
+                    if (line_start != last_space) {
+                        out_lines[count++] = line_start;
+                        if (count >= max_lines) {
+                            return count; /* remaining text dropped */
+                        }
+                    }
                     line_start = last_space + 1;
                     last_space = NULL;
-                } else {
-                    /* Hard cut: the word is wider than the line. */
-                    *(char *)glyph = '\0';
-                    out_lines[count++] = line_start;
-                    line_start = glyph;
-                }
-                if (count >= max_lines) {
-                    return count; /* remaining text dropped */
-                }
-                /* Re-measure the new line from its start (bounded by the
-                 * remaining text). */
-                line_w = 0;
-                {
+                    /* Re-measure the new line from its start (bounded
+                     * by the remaining text). */
+                    line_w = 0;
                     const char *q = line_start;
                     while (q < glyph) {
                         line_w += michi_ui_font_advance(
                             font, michi_ui_font_decode(font, &q));
                     }
                 }
+                /* else: an unbreakable word wider than the line is kept
+                 * intact and breaks at the next space/NUL (the caller
+                 * ellipsizes long words via ui_ellipsize when a hard
+                 * bound is required - cutting mid-word here would lose
+                 * the word entirely). */
             }
 
             line_w += gw;
