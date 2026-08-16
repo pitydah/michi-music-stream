@@ -35,6 +35,7 @@ extern "C" {
 
 /* Pairing */
 #define MICHI_UI_STR_PAIRING_TITLE     "Vincular"
+#define MICHI_UI_STR_PAIRING_LINKING   "Vinculando"
 #define MICHI_UI_STR_PAIRING_WAITING   "Esperando al servidor..."
 #define MICHI_UI_STR_PAIRING_PIN_HINT  "Introduce este código en Michi Micro Server"
 
@@ -50,11 +51,13 @@ extern "C" {
 #define MICHI_UI_STR_UPDATING_HINT     "No desconectes Michi"
 
 /* Errors */
-#define MICHI_UI_STR_RECOVERING_TITLE  "Reconectando"
-#define MICHI_UI_STR_RECOVERING_HINT   "Intentando recuperar la conexión"
-#define MICHI_UI_STR_FATAL_TITLE       "Algo falló"
-#define MICHI_UI_STR_FATAL_HINT        "Reinicia Michi Stream"
-#define MICHI_UI_STR_ERROR_CODE_PREFIX "Código: "
+#define MICHI_UI_STR_RECOVERING_TITLE      "Reconectando"
+#define MICHI_UI_STR_RECOVERING_HINT       "Intentando recuperar la conexión"
+#define MICHI_UI_STR_RECOVERING_AUDIO      "Recuperando audio"
+#define MICHI_UI_STR_RECOVERING_AUDIO_HINT "Intentando recuperar la reproducción"
+#define MICHI_UI_STR_FATAL_TITLE           "Algo falló"
+#define MICHI_UI_STR_FATAL_HINT            "Reinicia Michi Stream"
+#define MICHI_UI_STR_ERROR_CODE_PREFIX     "Código: "
 
 #ifdef __cplusplus
 }

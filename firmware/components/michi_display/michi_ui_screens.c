@@ -8,6 +8,20 @@
 /* Max string length for line copies */
 #define MICHI_UI_LINE_MAX 128
 
+/* Audio / Stream / State error range (UX code E102): ESP_ERR_INVALID_STATE
+ * (0x103) or ESP_ERR_TIMEOUT (0x107). */
+static bool error_is_audio(uint32_t err)
+{
+    return err == 0x103 /* ESP_ERR_INVALID_STATE */ ||
+           err == 0x107 /* ESP_ERR_TIMEOUT */;
+}
+
+/* WiFi / Network error range (UX code E101): 0x3000..0x5FFF. */
+static bool error_is_network(uint32_t err)
+{
+    return err >= 0x3000 && err <= 0x5FFF;
+}
+
 /* Format helper for UX error codes (Section 28) */
 static void format_error_code(uint32_t err_code, char *buf, size_t buf_len)
 {
@@ -15,14 +29,11 @@ static void format_error_code(uint32_t err_code, char *buf, size_t buf_len)
         snprintf(buf, buf_len, "%sE100", MICHI_UI_STR_ERROR_CODE_PREFIX);
         return;
     }
-    /* WiFi / Network range: 0x3000..0x5FFF */
-    if (err_code >= 0x3000 && err_code <= 0x5FFF) {
+    if (error_is_network(err_code)) {
         snprintf(buf, buf_len, "%sE101", MICHI_UI_STR_ERROR_CODE_PREFIX);
         return;
     }
-    /* Audio / Stream / State range */
-    if (err_code == 0x103 /* ESP_ERR_INVALID_STATE */ ||
-        err_code == 0x107 /* ESP_ERR_TIMEOUT */) {
+    if (error_is_audio(err_code)) {
         snprintf(buf, buf_len, "%sE102", MICHI_UI_STR_ERROR_CODE_PREFIX);
         return;
     }
@@ -183,7 +194,7 @@ void michi_ui_draw_screen_pairing(uint16_t *fb, uint16_t fb_w,
                      MICHI_UI_ICON_SIZE_32, MICHI_UI_ACCENT);
 
         ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 125,
-                              MICHI_UI_STR_PAIRING_TITLE,
+                              MICHI_UI_STR_PAIRING_LINKING,
                               michi_ui_font_get(MICHI_FONT_LG),
                               MICHI_UI_TEXT_PRIMARY);
 
@@ -506,7 +517,6 @@ void michi_ui_draw_screen_recoverable_error(uint16_t *fb, uint16_t fb_w,
                                            uint16_t fb_h, uint16_t y_origin,
                                            uint32_t error_code)
 {
-    (void)error_code;
     const michi_ui_rect_t hint_rect = { 20, 160, 200, 40 };
 
     michi_ui_draw_header_bar(fb, fb_w, fb_h, y_origin, MICHI_UI_STR_BRAND,
@@ -516,15 +526,28 @@ void michi_ui_draw_screen_recoverable_error(uint16_t *fb, uint16_t fb_w,
     ui_draw_icon(fb, fb_w, fb_h, y_origin, 120 - 16, 75, MICHI_UI_ICON_WARNING,
                  MICHI_UI_ICON_SIZE_32, MICHI_UI_WARNING);
 
-    /* "Reconectando" */
-    ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 125,
-                          MICHI_UI_STR_RECOVERING_TITLE,
+    /* Contextual copy driven by the error code (Section 27/28): an
+     * audio/stream error says "Recuperando audio" (the stream may be
+     * interrupted and the session is retrying), a network error says
+     * "Reconectando" (the link is being re-established); anything else
+     * keeps the generic title. */
+    const char *title = MICHI_UI_STR_RECOVERING_TITLE;
+    const char *hint = MICHI_UI_STR_RECOVERING_HINT;
+    if (error_is_audio(error_code)) {
+        title = MICHI_UI_STR_RECOVERING_AUDIO;
+        hint = MICHI_UI_STR_RECOVERING_AUDIO_HINT;
+    } else if (error_is_network(error_code)) {
+        title = MICHI_UI_STR_RECOVERING_TITLE;
+        hint = MICHI_UI_STR_RECOVERING_HINT;
+    }
+
+    ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 125, title,
                           michi_ui_font_get(MICHI_FONT_LG),
                           MICHI_UI_TEXT_PRIMARY);
 
     /* Hint multiline */
     (void)michi_ui_draw_multiline(fb, fb_w, fb_h, y_origin, &hint_rect,
-                                  MICHI_FONT_SM, MICHI_UI_STR_RECOVERING_HINT,
+                                  MICHI_FONT_SM, hint,
                                   MICHI_UI_ALIGN_CENTER,
                                   MICHI_UI_TEXT_SECONDARY);
 }

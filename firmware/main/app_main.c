@@ -410,21 +410,24 @@ void app_main(void)
         ESP_LOGI(TAG, "subsystem=http state=ok phase=4");
     }
 
-    /* Boot screen BEFORE the boot events: it covers BOOTING/SELF_TEST and
-     * must never be painted over by the dynamic display screens (phase 6),
-     * which take over as soon as the FSM reaches a stable state. */
+    /* Early redraw of the product boot screen: the render task (still in
+     * state BOOTING, the panel is available after board_init) paints
+     * "michi iniciando" via michi_ui_draw_screen_boot while the rest of
+     * the boot continues; the boot events below then drive BOOTING ->
+     * SELF_TEST -> IDLE through the same task. The BSP legacy boot screen
+     * (michi_board_display_boot_screen) is intentionally NOT called in
+     * the normal flow anymore - its technical content (Board:/Flash:/...
+     * /Result:) lives in the logs and on the diagnostics screen; the
+     * function stays in the BSP for future diagnostics. */
     if (st.display_ok) {
-        err = michi_board_display_boot_screen(info, &st, profile->product_name);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "boot screen render failed: %s (continuing degraded)",
-                     esp_err_to_name(err));
-        }
+        michi_display_request_redraw();
     } else {
         ESP_LOGW(TAG, "display unavailable, boot screen skipped (degraded mode)");
     }
 
     /* Boot events, posted after all boot-critical inits (NVS, board, self
-     * test, DAC, profile, HTTP, boot screen): BOOT_COMPLETE drives
+     * test, DAC, profile, HTTP, early boot-screen redraw): BOOT_COMPLETE
+     * drives
      * BOOTING->SELF_TEST and SELF_TEST_DONE drives SELF_TEST->IDLE with ANY
      * data. The self-test already ran before these events are posted - the
      * SELF_TEST state is modeled retrospectively, so observers must not

@@ -19,8 +19,11 @@ extern "C" {
  * - The render task owns the framebuffer/flush (michi_board is not
  *   thread-safe for the display), coalesces pending requests and draws the
  *   screen for the CURRENT state (michi_state_get()).
- * - BOOTING and SELF_TEST are covered by the BSP boot screen rendered by
- *   app_main; this subsystem skips them (documented division).
+ * - BOOTING and SELF_TEST are covered by the product boot screen drawn by
+ *   this render task (michi_ui_draw_screen_boot via the state dispatcher);
+ *   app_main triggers an early redraw once the panel is available
+ *   (michi_display_request_redraw after board init). The BSP legacy boot
+ *   screen is out of the normal flow (documented division).
  *
  * Producer contract: all producers (the observer, the session layer, the
  * volume/misc callers) MUST run in task context - the render queue uses
@@ -39,7 +42,9 @@ extern "C" {
  *
  * Must be called after michi_state_init(). Safe to call once; repeated
  * calls return ESP_OK (idempotent). On failure app_main continues degraded:
- * no dynamic screens, the BSP boot screen still shows.
+ * no dynamic screens (the panel stays black - the BSP boot screen is no
+ * longer rendered in the normal flow; its technical content lives in the
+ * logs and on the diagnostics screen).
  *
  * @return ESP_OK; ESP_ERR_NO_MEM if the queue/task allocation or the
  *         observer registration fails (observer table full).

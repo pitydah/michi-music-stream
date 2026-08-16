@@ -14,11 +14,13 @@
 
 #include "michi_board.h"
 #include "michi_display.h"
+#include "michi_ota.h"
 #include "michi_product_profile.h"
+#include "michi_session.h"
 #include "michi_state.h"
 #include "michi_ui.h"
-#include "michi_version.h"
 #include "michi_volume.h"
+#include "michi_wifi.h"
 
 #define TAG "michi_display"
 
@@ -111,6 +113,7 @@ static void render_frame(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
     char artist[MICHI_DISPLAY_ARTIST_MAX + 1];
     char pin[7];
     uint32_t last_err;
+    int8_t rssi;
 
     portENTER_CRITICAL(&s_info_mux);
     copy_bounded(src, sizeof(src), s_source);
@@ -130,31 +133,65 @@ static void render_frame(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
         .sample_rate = p != NULL ? p->validated_sample_rate : 48000u,
         .bit_depth = MICHI_DISPLAY_APPLIED_BIT_DEPTH,
         .last_error = last_err,
-        .wifi_connected = true,
-        .server_connected = true,
+        /* Live status reads (phase 12): the header indicators and the
+         * "Actualizando" progress bar show REAL values, never literals.
+         * All four calls are safe pre-init and cheap (no blocking on the
+         * audio pipeline):
+         *  - michi_wifi_is_provisioned(): reads a cached flag under a
+         *    portMUX; before wifi init it returns false (provisioned +
+         *    link up = connected; any error = false).
+         *  - michi_wifi_get_rssi(): one esp_wifi_sta_get_ap_info() driver
+         *    call; ESP_ERR_INVALID_STATE pre-init, ESP_ERR_NOT_FOUND when
+         *    the STA has no AP. The display task (prio 4, below the I2S
+         *    consumer at 8) never blocks the audio pipeline.
+         *  - michi_session_active(): false pre-init; reconciles the lease
+         *    (session alive = server connected - the only honest signal).
+         *  - michi_ota_get_state(): reads state + percent under the OTA
+         *    mutex; pre-init it returns ESP_OK with IDLE/0. Only read
+         *    while the FSM is in UPDATING.
+         * Assumption: the first frame after boot runs while the FSM is in
+         * BOOTING/IDLE (wifi/session/ota already initialized by app_main
+         * before the boot events), so pre-init paths are defensive only. */
+        .wifi_connected = (michi_wifi_is_provisioned() &&
+                           michi_wifi_get_rssi(&rssi) == ESP_OK),
+        .server_connected = michi_session_active(),
         .update_pct = 0,
         .show_diagnostics = false,
     };
+
+    /* Real update progress: only meaningful while the FSM is in UPDATING.
+     * Re-read the state to avoid a stale ctx if the FSM advanced between
+     * the ctx build and here (michi_state_get() is a cheap read). */
+    if (ctx.state == MICHI_STATE_UPDATING) {
+        michi_ota_state_t ota_state;
+        int ota_pct = 0;
+        if (michi_ota_get_state(&ota_state, &ota_pct, NULL, 0) == ESP_OK &&
+            ota_pct >= 0 && ota_pct <= 100) {
+            ctx.update_pct = (uint8_t)ota_pct;
+        }
+    }
 
     michi_ui_render_screen(fb, fb_w, fb_h, y_origin, &ctx);
 }
 
 static void render_current_state(void)
 {
-    const michi_state_t st = michi_state_get();
-
-    /* BOOTING/SELF_TEST are covered by the BSP boot screen (app_main renders
-     * it before the boot events): never draw over it. */
-    if (st == MICHI_STATE_BOOTING || st == MICHI_STATE_SELF_TEST) {
-        return;
-    }
+    /* BOOTING/SELF_TEST are drawn HERE by the render task using the
+     * product boot screen (michi_ui_draw_screen_boot via
+     * michi_ui_render_screen): app_main triggers an early redraw after
+     * board init (michi_display_request_redraw) so the panel shows the
+     * boot screen while the rest of the boot continues. The BSP legacy
+     * boot screen is out of the normal flow (its technical content lives
+     * in the logs and on the diagnostics screen). */
 
     esp_err_t err = michi_board_display_render(render_frame);
     if (err == ESP_ERR_INVALID_STATE) {
         /* First render deferred until board init: the panel is not
-         * available yet (app_main shows the BSP boot screen instead); the
-         * next event re-renders, so a silent skip is correct - no bogus
-         * "display degraded" warning on a healthy boot. */
+         * available yet (before board_init the render task skips
+         * silently - the panel stays black until app_main triggers the
+         * early redraw); the next event re-renders, so a silent skip is
+         * correct - no bogus "display degraded" warning on a healthy
+         * boot. */
         ESP_LOGD(TAG, "display: render_deferred reason=panel_unavailable");
         return;
     }
@@ -168,7 +205,8 @@ static void display_task(void *arg)
     uint32_t msg;
 
     /* Initial render of the current state (covers late init; at boot the
-     * state is BOOTING so this is a no-op). */
+     * state is BOOTING, so this draws the product boot screen as soon as
+     * the panel is available - before that it skips silently). */
     render_current_state();
 
     for (;;) {

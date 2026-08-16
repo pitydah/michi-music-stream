@@ -572,6 +572,155 @@ static void test_all_screen_scenarios(void)
 }
 
 /* --------------------------------------------------------------------------
+ * Recoverable error contextual copy: an AUDIO error (0x103) must draw
+ * "Recuperando audio" while a NETWORK error (0x3001) draws "Reconectando".
+ * The two frames must differ in the title (and hint) zone and be
+ * pixel-identical everywhere else (header, warning icon, chrome).
+ * -------------------------------------------------------------------------- */
+
+/* Row-range comparison helpers over full 240x320 frames. */
+static int rows_equal(const uint16_t *a, const uint16_t *b, int y0, int y1)
+{
+    for (int y = y0; y < y1; y++) {
+        if (memcmp(a + (size_t)y * PANEL_W, b + (size_t)y * PANEL_W,
+                   (size_t)PANEL_W * sizeof(uint16_t)) != 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int rows_any_pixel(const uint16_t *fb, int y0, int y1)
+{
+    for (int y = y0; y < y1; y++) {
+        for (int x = 0; x < PANEL_W; x++) {
+            if (fb[(size_t)y * PANEL_W + x] != 0) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static void test_recoverable_error_contextual(void)
+{
+    printf("michi_ui: recoverable error contextual copy (audio vs network)\n");
+
+    const michi_ui_screen_ctx_t audio_ctx = {
+        .state = MICHI_STATE_RECOVERABLE_ERROR,
+        .last_error = 0x103,
+    };
+    const michi_ui_screen_ctx_t net_ctx = {
+        .state = MICHI_STATE_RECOVERABLE_ERROR,
+        .last_error = 0x3001,
+    };
+
+    uint16_t *audio = malloc((size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    uint16_t *net = malloc((size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    uint16_t *ref = malloc((size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    CHECK(audio != NULL && net != NULL && ref != NULL,
+          "recoverable contextual: fb allocation");
+    if (audio == NULL || net == NULL || ref == NULL) {
+        free(audio);
+        free(net);
+        free(ref);
+        return;
+    }
+
+    memset(audio, 0, (size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    michi_ui_render_screen(audio, PANEL_W, PANEL_H, 0, &audio_ctx);
+    memset(net, 0, (size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    michi_ui_render_screen(net, PANEL_W, PANEL_H, 0, &net_ctx);
+
+    /* Title zone: rows 105..150 (LG text centered at y=125, descenders of
+     * "Recuperando audio" reach row ~148). Hint zone: rows 160..201
+     * (hint_rect y=160 h=40). */
+    CHECK(!rows_equal(audio, net, 105, 150),
+          "recoverable: audio vs network differ in the title zone");
+    CHECK(!rows_equal(audio, net, 160, 201),
+          "recoverable: audio vs network differ in the hint zone");
+    CHECK(rows_equal(audio, net, 0, 105) &&
+              rows_equal(audio, net, 150, 160) &&
+              rows_equal(audio, net, 201, PANEL_H),
+          "recoverable: frames identical outside title+hint zones");
+
+    /* Exact glyph proof: the audio title zone equals a reference render of
+     * "Recuperando audio" alone at the same position. */
+    memset(ref, 0, (size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    ui_draw_text_centered(ref, PANEL_W, PANEL_H, 0, 125,
+                          MICHI_UI_STR_RECOVERING_AUDIO,
+                          michi_ui_font_get(MICHI_FONT_LG),
+                          MICHI_UI_TEXT_PRIMARY);
+    CHECK(rows_equal(audio, ref, 105, 150),
+          "recoverable audio: title is exactly 'Recuperando audio'");
+    CHECK(rows_any_pixel(audio, 105, 150),
+          "recoverable audio: title zone is non-empty");
+
+    /* Same proof for the network title "Reconectando" (UI-13 wording). */
+    memset(ref, 0, (size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    ui_draw_text_centered(ref, PANEL_W, PANEL_H, 0, 125,
+                          MICHI_UI_STR_RECOVERING_TITLE,
+                          michi_ui_font_get(MICHI_FONT_LG),
+                          MICHI_UI_TEXT_PRIMARY);
+    CHECK(rows_equal(net, ref, 105, 150),
+          "recoverable network: title is exactly 'Reconectando'");
+
+    free(audio);
+    free(net);
+    free(ref);
+}
+
+/* --------------------------------------------------------------------------
+ * Pairing no-PIN wording (Section 17): the pre-PIN pairing screen headline
+ * must read "Vinculando", not the legacy "Vincular".
+ * -------------------------------------------------------------------------- */
+
+static void test_pairing_linking_wording(void)
+{
+    printf("michi_ui: pairing no-PIN wording is 'Vinculando'\n");
+
+    const michi_ui_screen_ctx_t pairing_ctx = {
+        .state = MICHI_STATE_PAIRING,
+        .pairing_pin = NULL,
+    };
+
+    uint16_t *pair = malloc((size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    uint16_t *ref = malloc((size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    CHECK(pair != NULL && ref != NULL, "pairing wording: fb allocation");
+    if (pair == NULL || ref == NULL) {
+        free(pair);
+        free(ref);
+        return;
+    }
+
+    memset(pair, 0, (size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    michi_ui_render_screen(pair, PANEL_W, PANEL_H, 0, &pairing_ctx);
+
+    /* Title zone rows 105..145: exactly "Vinculando". */
+    memset(ref, 0, (size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    ui_draw_text_centered(ref, PANEL_W, PANEL_H, 0, 125,
+                          MICHI_UI_STR_PAIRING_LINKING,
+                          michi_ui_font_get(MICHI_FONT_LG),
+                          MICHI_UI_TEXT_PRIMARY);
+    CHECK(rows_equal(pair, ref, 105, 145),
+          "pairing no-PIN: title is exactly 'Vinculando'");
+    CHECK(rows_any_pixel(pair, 105, 145),
+          "pairing no-PIN: title zone is non-empty");
+
+    /* And NOT the legacy "Vincular" (Section 17 wording). */
+    memset(ref, 0, (size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    ui_draw_text_centered(ref, PANEL_W, PANEL_H, 0, 125,
+                          MICHI_UI_STR_PAIRING_TITLE,
+                          michi_ui_font_get(MICHI_FONT_LG),
+                          MICHI_UI_TEXT_PRIMARY);
+    CHECK(!rows_equal(pair, ref, 105, 145),
+          "pairing no-PIN: title is no longer the legacy 'Vincular'");
+
+    free(pair);
+    free(ref);
+}
+
+/* --------------------------------------------------------------------------
  * Specific PIN specification test (Section 51)
  * -------------------------------------------------------------------------- */
 
@@ -679,6 +828,8 @@ int main(void)
     test_smoke();
     test_pin_ellipsis();
     test_all_screen_scenarios();
+    test_recoverable_error_contextual();
+    test_pairing_linking_wording();
     test_pin_specification();
     test_title_and_artist_wrapping();
     test_no_prohibited_strings();
