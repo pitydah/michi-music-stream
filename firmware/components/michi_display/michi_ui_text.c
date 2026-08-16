@@ -19,13 +19,18 @@ int ui_text_measure(const michi_ui_font_t *font, const char *str)
     return w;
 }
 
-int ui_wrap_text(const michi_ui_font_t *font, char *str, int max_w,
-                 const char **out_lines, int max_lines)
+int ui_wrap_text_ex(const michi_ui_font_t *font, char *str, int max_w,
+                    const char **out_lines, int max_lines, bool *was_truncated)
 {
     const char *line_start;
     const char *p;
     int line_w = 0;
     int count = 0;
+    bool truncated = false;
+
+    if (was_truncated != NULL) {
+        *was_truncated = false;
+    }
 
     if (font == NULL || str == NULL || out_lines == NULL || max_lines <= 0 ||
         max_w <= 0) {
@@ -49,13 +54,15 @@ int ui_wrap_text(const michi_ui_font_t *font, char *str, int max_w,
             if (*p == '\0' || *p == '\n') {
                 int is_newline = (*p == '\n');
                 *(char *)p = '\0';
-                /* H4b (UI-01 successor review): never emit an empty line.
-                 * A trailing space consumed by the overflow-space branch
-                 * (or a newline right after a break) leaves line_start at
-                 * a NUL position; emitting it would waste a max_lines slot
-                 * and could drop the following text. */
                 if (*line_start != '\0') {
-                    out_lines[count++] = line_start;
+                    char *end = (char *)p - 1;
+                    while (end >= line_start && *end == ' ') {
+                        *end = '\0';
+                        end--;
+                    }
+                    if (*line_start != '\0') {
+                        out_lines[count++] = line_start;
+                    }
                 }
                 if (is_newline) {
                     p++;
@@ -72,23 +79,22 @@ int ui_wrap_text(const michi_ui_font_t *font, char *str, int max_w,
             if (line_w + gw > max_w && line_w > 0) {
                 /* The glyph does not fit on this line. */
                 if (*glyph == ' ') {
-                    /* H4 (UI-01 review fix): the line is full and the
-                     * overflow glyph is a space. End the current line at
-                     * that space and start the next one right after it.
-                     * Hard-cutting a space was the original bug: it
-                     * emitted an empty next line and dropped the
-                     * following word. */
                     *(char *)glyph = '\0';
                     if (line_start != glyph) {
                         out_lines[count++] = line_start;
                         if (count >= max_lines) {
-                            return count; /* remaining text dropped */
+                            /* Check if there is remaining non-whitespace text */
+                            const char *rem = glyph + 1;
+                            while (*rem == ' ') rem++;
+                            if (*rem != '\0') {
+                                truncated = true;
+                            }
+                            goto finish;
                         }
                     }
                     line_start = glyph + 1;
                     line_w = 0;
-                    last_space = NULL; /* stale boundary before the new
-                                        * line start must never fire */
+                    last_space = NULL;
                     continue;
                 }
                 if (last_space != NULL) {
@@ -97,13 +103,13 @@ int ui_wrap_text(const michi_ui_font_t *font, char *str, int max_w,
                     if (line_start != last_space) {
                         out_lines[count++] = line_start;
                         if (count >= max_lines) {
-                            return count; /* remaining text dropped */
+                            /* Remaining text dropped */
+                            truncated = true;
+                            goto finish;
                         }
                     }
                     line_start = last_space + 1;
                     last_space = NULL;
-                    /* Re-measure the new line from its start (bounded
-                     * by the remaining text). */
                     line_w = 0;
                     const char *q = line_start;
                     while (q < glyph) {
@@ -111,11 +117,6 @@ int ui_wrap_text(const michi_ui_font_t *font, char *str, int max_w,
                             font, michi_ui_font_decode(font, &q));
                     }
                 }
-                /* else: an unbreakable word wider than the line is kept
-                 * intact and breaks at the next space/NUL (the caller
-                 * ellipsizes long words via ui_ellipsize when a hard
-                 * bound is required - cutting mid-word here would lose
-                 * the word entirely). */
             }
 
             line_w += gw;
@@ -125,9 +126,40 @@ int ui_wrap_text(const michi_ui_font_t *font, char *str, int max_w,
         }
 
         if (count >= max_lines || *line_start == '\0') {
-            return count;
+            if (count >= max_lines && *line_start != '\0') {
+                const char *rem = line_start;
+                while (*rem == ' ') rem++;
+                if (*rem != '\0') {
+                    truncated = true;
+                }
+            }
+            break;
         }
     }
+
+finish:
+    if (truncated && count > 0) {
+        char *last = (char *)out_lines[count - 1];
+        const char *ell = MICHI_UI_ELLIPSIS_UTF8;
+        int ell_w = ui_text_measure(font, ell);
+        int last_w = ui_text_measure(font, last);
+        if (last_w + ell_w > max_w) {
+            ui_ellipsize(font, last, max_w);
+        } else {
+            size_t len = strlen(last);
+            memcpy(last + len, ell, 4);
+        }
+    }
+    if (was_truncated != NULL) {
+        *was_truncated = truncated;
+    }
+    return count;
+}
+
+int ui_wrap_text(const michi_ui_font_t *font, char *str, int max_w,
+                 const char **out_lines, int max_lines)
+{
+    return ui_wrap_text_ex(font, str, max_w, out_lines, max_lines, NULL);
 }
 
 char *ui_ellipsize(const michi_ui_font_t *font, char *str, int max_w)

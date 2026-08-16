@@ -27,10 +27,10 @@
 #define MICHI_LCD_CMD_BITS 8
 #define MICHI_LCD_PARAM_BITS 8
 #define MICHI_LCD_TRANS_QUEUE_DEPTH 10
-/* Band height of the banded framebuffer (MS-11): 240 x 40 x 2 = 19.2 KB,
+/* Band height of the banded framebuffer (MS-11): 320 x 40 x 2 = 25.6 KB,
  * which internal DMA RAM can always provide at boot. The full panel is
- * drawn as display_height / MICHI_LCD_BAND sequential band flushes.
- * display_height (320) must stay an exact multiple of this value. */
+ * drawn as display_height / MICHI_LCD_BAND (240 / 40 = 6) sequential band flushes.
+ * display_height (240) must stay an exact multiple of this value. */
 #define MICHI_LCD_BAND 40
 #define MICHI_TEXT_SPACING 6
 
@@ -41,8 +41,8 @@ static const michi_board_info_t s_board_info = {
     .revision = "1.0",
     .flash_bytes_expected = 16U * 1024U * 1024U,
     .psram_bytes_expected = 8U * 1024U * 1024U,
-    .display_width = 240,
-    .display_height = 320,
+    .display_width = 320,
+    .display_height = 240,
     .display_controller = "ST7789T3",
     .lcd_sclk = 39,
     .lcd_mosi = 38,
@@ -207,6 +207,29 @@ static esp_err_t init_display(void)
     err = esp_lcd_panel_invert_color(s_panel, true);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_lcd_panel_invert_color failed: %s", esp_err_to_name(err));
+        esp_lcd_panel_del(s_panel);
+        s_panel = NULL;
+        esp_lcd_panel_io_del(s_panel_io);
+        s_panel_io = NULL;
+        spi_bus_free(MICHI_LCD_HOST);
+        s_spi_bus_inited = false;
+        return err;
+    }
+    // Landscape orientation: swap X/Y coordinates on the ST7789 panel controller
+    err = esp_lcd_panel_swap_xy(s_panel, true);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_lcd_panel_swap_xy failed: %s", esp_err_to_name(err));
+        esp_lcd_panel_del(s_panel);
+        s_panel = NULL;
+        esp_lcd_panel_io_del(s_panel_io);
+        s_panel_io = NULL;
+        spi_bus_free(MICHI_LCD_HOST);
+        s_spi_bus_inited = false;
+        return err;
+    }
+    err = esp_lcd_panel_mirror(s_panel, false, true);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_lcd_panel_mirror failed: %s", esp_err_to_name(err));
         esp_lcd_panel_del(s_panel);
         s_panel = NULL;
         esp_lcd_panel_io_del(s_panel_io);

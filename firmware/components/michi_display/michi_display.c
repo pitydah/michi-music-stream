@@ -98,100 +98,78 @@ static void copy_bounded(char *dst, size_t dst_cap, const char *src)
     dst[n] = '\0';
 }
 
-/* Draw callback for michi_board_display_render(): renders the screen
- * matching the CURRENT state for ONE band via michi_ui_render_screen().
- * All layout rows stay absolute; band intersection and per-pixel clipping
- * happen inside the UI primitives (MS-11 band contract).
- * Runs on the render task only. */
+static michi_ui_screen_ctx_t s_frame_snapshot;
+static char s_snap_src[MICHI_DISPLAY_SOURCE_MAX + 1];
+static char s_snap_title[MICHI_DISPLAY_TITLE_MAX + 1];
+static char s_snap_artist[MICHI_DISPLAY_ARTIST_MAX + 1];
+static char s_snap_pin[7];
+static bool s_show_diagnostics = false;
+static bool s_show_volume_overlay = false;
+
+/* Draw callback for michi_board_display_render(): renders ONE band from the
+ * frozen s_frame_snapshot via michi_ui_render_screen(). */
 static void render_frame(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
                          uint16_t y_origin)
 {
-    const michi_product_profile_t *p = michi_product_profile_get();
-
-    char src[MICHI_DISPLAY_SOURCE_MAX + 1];
-    char title[MICHI_DISPLAY_TITLE_MAX + 1];
-    char artist[MICHI_DISPLAY_ARTIST_MAX + 1];
-    char pin[7];
-    uint32_t last_err;
-    int8_t rssi;
-
-    portENTER_CRITICAL(&s_info_mux);
-    copy_bounded(src, sizeof(src), s_source);
-    copy_bounded(title, sizeof(title), s_title);
-    copy_bounded(artist, sizeof(artist), s_artist);
-    copy_bounded(pin, sizeof(pin), s_pairing_pin);
-    last_err = s_last_error;
-    portEXIT_CRITICAL(&s_info_mux);
-
-    michi_ui_screen_ctx_t ctx = {
-        .state = michi_state_get(),
-        .title = title,
-        .artist = artist,
-        .source = src,
-        .pairing_pin = pin,
-        .volume = michi_volume_get(),
-        .sample_rate = p != NULL ? p->validated_sample_rate : 48000u,
-        .bit_depth = MICHI_DISPLAY_APPLIED_BIT_DEPTH,
-        .last_error = last_err,
-        /* Live status reads (phase 12): the header indicators and the
-         * "Actualizando" progress bar show REAL values, never literals.
-         * All four calls are safe pre-init and cheap (no blocking on the
-         * audio pipeline):
-         *  - michi_wifi_is_provisioned(): reads a cached flag under a
-         *    portMUX; before wifi init it returns false (provisioned +
-         *    link up = connected; any error = false).
-         *  - michi_wifi_get_rssi(): one esp_wifi_sta_get_ap_info() driver
-         *    call; ESP_ERR_INVALID_STATE pre-init, ESP_ERR_NOT_FOUND when
-         *    the STA has no AP. The display task (prio 4, below the I2S
-         *    consumer at 8) never blocks the audio pipeline.
-         *  - michi_session_active(): false pre-init; reconciles the lease
-         *    (session alive = server connected - the only honest signal).
-         *  - michi_ota_get_state(): reads state + percent under the OTA
-         *    mutex; pre-init it returns ESP_OK with IDLE/0. Only read
-         *    while the FSM is in UPDATING.
-         * Assumption: the first frame after boot runs while the FSM is in
-         * BOOTING/IDLE (wifi/session/ota already initialized by app_main
-         * before the boot events), so pre-init paths are defensive only. */
-        .wifi_connected = (michi_wifi_is_provisioned() &&
-                           michi_wifi_get_rssi(&rssi) == ESP_OK),
-        .server_connected = michi_session_active(),
-        .update_pct = 0,
-        .show_diagnostics = false,
-    };
-
-    /* Real update progress: only meaningful while the FSM is in UPDATING.
-     * Re-read the state to avoid a stale ctx if the FSM advanced between
-     * the ctx build and here (michi_state_get() is a cheap read). */
-    if (ctx.state == MICHI_STATE_UPDATING) {
-        michi_ota_state_t ota_state;
-        int ota_pct = 0;
-        if (michi_ota_get_state(&ota_state, &ota_pct, NULL, 0) == ESP_OK &&
-            ota_pct >= 0 && ota_pct <= 100) {
-            ctx.update_pct = (uint8_t)ota_pct;
-        }
-    }
-
-    michi_ui_render_screen(fb, fb_w, fb_h, y_origin, &ctx);
+    michi_ui_render_screen(fb, fb_w, fb_h, y_origin, &s_frame_snapshot);
 }
 
 static void render_current_state(void)
 {
-    /* BOOTING/SELF_TEST are drawn HERE by the render task using the
-     * product boot screen (michi_ui_draw_screen_boot via
-     * michi_ui_render_screen): app_main triggers an early redraw after
-     * board init (michi_display_request_redraw) so the panel shows the
-     * boot screen while the rest of the boot continues. The BSP legacy
-     * boot screen is out of the normal flow (its technical content lives
-     * in the logs and on the diagnostics screen). */
+    const michi_product_profile_t *p = michi_product_profile_get();
+    const michi_board_info_t *binfo = michi_board_get_info();
+    int8_t rssi = 0;
+    uint32_t last_err;
+
+    portENTER_CRITICAL(&s_info_mux);
+    copy_bounded(s_snap_src, sizeof(s_snap_src), s_source);
+    copy_bounded(s_snap_title, sizeof(s_snap_title), s_title);
+    copy_bounded(s_snap_artist, sizeof(s_snap_artist), s_artist);
+    copy_bounded(s_snap_pin, sizeof(s_snap_pin), s_pairing_pin);
+    last_err = s_last_error;
+    portEXIT_CRITICAL(&s_info_mux);
+
+    bool wifi_prov = michi_wifi_is_provisioned();
+    bool wifi_ok = (wifi_prov && (michi_wifi_get_rssi(&rssi) == ESP_OK));
+
+    /* Frame Snapshot: freeze all fields once before rendering bands */
+    s_frame_snapshot = (michi_ui_screen_ctx_t){
+        .state = michi_state_get(),
+        .title = s_snap_title,
+        .artist = s_snap_artist,
+        .source = s_snap_src,
+        .pairing_pin = s_snap_pin,
+        .volume = michi_volume_get(),
+        .sample_rate = (p != NULL && p->validated_sample_rate != 0) ? p->validated_sample_rate : 48000u,
+        .bit_depth = MICHI_DISPLAY_APPLIED_BIT_DEPTH,
+        .last_error = last_err,
+        .wifi_connected = wifi_ok,
+        .wifi_rssi = rssi,
+        .wifi_ssid = NULL,
+        .server_connected = michi_session_active(),
+        .update_pct = 0,
+        .has_update_pct = false,
+        .show_diagnostics = s_show_diagnostics,
+        .dac_detected = false,
+        .dac_model = NULL,
+        .psram_bytes = binfo != NULL ? binfo->psram_bytes_expected : 0,
+        .fw_version = MICHI_FW_VERSION_STR,
+        .board_model = binfo != NULL ? binfo->model : "Waveshare ESP32-S3-LCD-2",
+        .show_volume_overlay = s_show_volume_overlay,
+    };
+
+    if (s_frame_snapshot.state == MICHI_STATE_UPDATING) {
+        michi_ota_state_t ota_state;
+        int ota_pct = 0;
+        if (michi_ota_get_state(&ota_state, &ota_pct, NULL, 0) == ESP_OK &&
+            ota_pct >= 0 && ota_pct <= 100) {
+            s_frame_snapshot.update_pct = (uint8_t)ota_pct;
+            s_frame_snapshot.has_update_pct = true;
+        }
+    }
 
     esp_err_t err = michi_board_display_render(render_frame);
     if (err == ESP_ERR_INVALID_STATE) {
-        /* First render deferred until board init: the panel is not
-         * available yet (before board_init the render task skips
-         * silently - the panel stays black until app_main triggers the
-         * early redraw); the next event re-renders, so a silent skip is
-         * correct - no bogus "display degraded" warning on a healthy
-         * boot. */
         ESP_LOGD(TAG, "display: render_deferred reason=panel_unavailable");
         return;
     }
@@ -204,9 +182,7 @@ static void display_task(void *arg)
 {
     uint32_t msg;
 
-    /* Initial render of the current state (covers late init; at boot the
-     * state is BOOTING, so this draws the product boot screen as soon as
-     * the panel is available - before that it skips silently). */
+    /* Initial render of the current state */
     render_current_state();
 
     for (;;) {
@@ -217,15 +193,12 @@ static void display_task(void *arg)
             ESP_LOGW(TAG, "display: unknown_cmd=%u", (unsigned)msg);
             continue;
         }
-        /* Coalesce: drain pending requests, then render once with the latest
-         * state - a state/redraw storm must not stack ~80 ms flushes. */
+        /* Coalesce pending requests */
         while (xQueueReceive(s_queue, &msg, 0) == pdTRUE) {
             /* discard */
         }
         render_current_state();
 
-        /* A request dropped while the queue was full would leave the screen
-         * stale: re-render once when a producer signalled a drop. */
         if (s_pending) {
             s_pending = false;
             render_current_state();
@@ -345,4 +318,24 @@ esp_err_t michi_display_show_pairing_pin(const char *pin)
 esp_err_t michi_display_clear_pairing_pin(void)
 {
     return michi_display_show_pairing_pin(NULL);
+}
+
+esp_err_t michi_display_set_diagnostics(bool show)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_show_diagnostics = show;
+    queue_render();
+    return ESP_OK;
+}
+
+esp_err_t michi_display_trigger_volume_overlay(void)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_show_volume_overlay = true;
+    queue_render();
+    return ESP_OK;
 }

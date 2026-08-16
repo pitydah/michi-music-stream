@@ -24,6 +24,7 @@ CPPFLAGS = -Ishim \
            -I../../firmware/components/michi_audio/include \
            -I../../firmware/components/michi_volume/include \
            -I../../firmware/components/michi_display/include \
+           -I../../firmware/components/michi_board/include \
            -I../../firmware/components/michi_state/include \
            -I../../firmware/components/michi_product_profile/include \
            -I../../firmware/components/michi_dac/include
@@ -224,6 +225,25 @@ test_michi_ui: test_michi_ui.c $(UI_DIR)/michi_ui_text.c \
 	    $(UI_DIR)/michi_ui_components.c $(UI_DIR)/michi_ui_screens.c \
 	    $(UI_DIR)/michi_ui_icons.c $(UI_DIR)/michi_ui_theme.c
 
+render_ui_previews: render_ui_previews.c $(UI_DIR)/michi_ui_text.c \
+                   $(UI_DIR)/michi_ui_fonts.c $(UI_DIR)/michi_ui_components.c \
+                   $(UI_DIR)/michi_ui_screens.c $(UI_DIR)/michi_ui_icons.c \
+                   $(UI_DIR)/michi_ui_theme.c \
+                   $(UI_DIR)/include/michi_ui.h \
+                   $(UI_DIR)/include/michi_ui_components.h \
+                   $(UI_DIR)/include/michi_ui_screens.h \
+                   $(UI_DIR)/include/michi_ui_strings.h \
+                   $(UI_DIR)/include/michi_ui_text.h \
+                   $(UI_DIR)/include/michi_ui_fonts.h \
+                   $(UI_DIR)/include/michi_ui_theme.h \
+                   $(UI_DIR)/include/michi_ui_icons.h \
+                   $(UI_DIR)/assets/fonts/michi_ui_fonts_data.h \
+                   $(UI_DIR)/assets/icons/michi_ui_icons_data.h $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(UI_INC) -o $@ render_ui_previews.c \
+	    $(UI_DIR)/michi_ui_text.c $(UI_DIR)/michi_ui_fonts.c \
+	    $(UI_DIR)/michi_ui_components.c $(UI_DIR)/michi_ui_screens.c \
+	    $(UI_DIR)/michi_ui_icons.c $(UI_DIR)/michi_ui_theme.c
+
 # rtp_guard: the SAME datagram validation the engine runs (pure C).
 test_rtp_guard: test_rtp_guard.c $(FIRMWARE)/michi_audio/rtp_guard.c \
                 $(FIRMWARE)/michi_audio/rtp_guard.h
@@ -330,4 +350,4 @@ clean:
 	      test_michi_time test_michi_pairing test_pairing_http \
 	      test_michi_session test_rtp_guard test_session_http \
 	      test_capability_parity test_discovery_disc test_michi_button \
-	      test_michi_ui
+	      test_michi_ui render_ui_previews

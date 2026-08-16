@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -120,6 +121,16 @@ esp_err_t michi_display_show_pairing_pin(const char *pin);
  *         initialized.
  */
 esp_err_t michi_display_clear_pairing_pin(void);
+
+/**
+ * @brief Enable or disable the diagnostics override view.
+ */
+esp_err_t michi_display_set_diagnostics(bool show);
+
+/**
+ * @brief Trigger the temporary volume overlay screen.
+ */
+esp_err_t michi_display_trigger_volume_overlay(void);
 
 #ifdef __cplusplus
 }

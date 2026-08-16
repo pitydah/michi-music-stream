@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "michi_ui.h"
@@ -40,12 +41,19 @@ int ui_text_measure(const michi_ui_font_t *font, const char *str);
  * input are honored as explicit breaks. Lines are filled until max_lines
  * is reached; any remaining text is dropped.
  *
- * @param font      Font used for measuring.
- * @param str       Writable NUL-terminated input (modified).
- * @param max_w     Maximum line width in pixels (> 0).
- * @param out_lines Output array of at least max_lines pointers.
- * @param max_lines Maximum number of lines (>= 1).
+ * @param font          Font used for measuring.
+ * @param str           Writable NUL-terminated input (modified).
+ * @param max_w         Maximum line width in pixels (> 0).
+ * @param out_lines     Output array of at least max_lines pointers.
+ * @param max_lines     Maximum number of lines (>= 1).
+ * @param was_truncated Optional output boolean set to true if any text was cut/dropped.
  * @return Number of lines filled (0 for empty input, <= max_lines).
+ */
+int ui_wrap_text_ex(const michi_ui_font_t *font, char *str, int max_w,
+                    const char **out_lines, int max_lines, bool *was_truncated);
+
+/**
+ * @brief Convenience wrapper for ui_wrap_text_ex() ignoring was_truncated.
  */
 int ui_wrap_text(const michi_ui_font_t *font, char *str, int max_w,
                  const char **out_lines, int max_lines);

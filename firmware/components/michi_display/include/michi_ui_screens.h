@@ -25,14 +25,23 @@ typedef struct michi_ui_screen_ctx {
     uint8_t bit_depth;             /*!< Bit depth (e.g. 16) */
     uint32_t last_error;           /*!< Last captured error code */
     bool wifi_connected;           /*!< Wi-Fi connected flag */
+    int8_t wifi_rssi;              /*!< Wi-Fi RSSI in dBm (e.g. -52) */
+    const char *wifi_ssid;         /*!< Connected or target SSID */
     bool server_connected;         /*!< Server connected flag */
     uint8_t update_pct;            /*!< OTA progress percentage (0..100) */
+    bool has_update_pct;           /*!< True if OTA progress is known */
     bool show_diagnostics;         /*!< Force diagnostics view */
+    bool dac_detected;             /*!< True if DAC hardware was detected */
+    const char *dac_model;         /*!< Detected DAC model string or NULL */
+    uint32_t psram_bytes;          /*!< Detected PSRAM size in bytes */
+    const char *fw_version;        /*!< Firmware version string */
+    const char *board_model;       /*!< Board model string */
+    bool show_volume_overlay;      /*!< True if temporary volume overlay is active */
 } michi_ui_screen_ctx_t;
 
 /**
  * @brief Top-level screen dispatcher: draws the screen matching ctx->state
- *        (or diagnostics if ctx->show_diagnostics is true) for the current band.
+ *        (or diagnostics/overlay if requested) for the current band.
  */
 void michi_ui_render_screen(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
                             uint16_t y_origin, const michi_ui_screen_ctx_t *ctx);

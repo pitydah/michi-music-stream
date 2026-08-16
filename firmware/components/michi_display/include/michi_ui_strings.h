@@ -59,6 +59,11 @@ extern "C" {
 #define MICHI_UI_STR_FATAL_HINT            "Reinicia Michi Stream"
 #define MICHI_UI_STR_ERROR_CODE_PREFIX     "Código: "
 
+/* Volume overlay & Diagnostics */
+#define MICHI_UI_STR_VOLUME_TITLE          "Volumen"
+#define MICHI_UI_STR_DAC_NONE              "No detectado"
+#define MICHI_UI_STR_DAC_UNKNOWN           "Desconocido"
+
 #ifdef __cplusplus
 }
 #endif
