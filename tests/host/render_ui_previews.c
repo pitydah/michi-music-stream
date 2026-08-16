@@ -181,41 +181,58 @@ int main(int argc, char **argv)
     };
     render_scenario_to_file("ui-14-paused-nometa.ppm", &s14, out_dir);
 
-    /* 15. Updating progress */
+    /* 15. Updating progress known */
     michi_ui_screen_ctx_t s15 = {
         .state = MICHI_STATE_UPDATING,
         .update_pct = 68,
+        .has_update_pct = true,
+        .wifi_connected = true,
+        .wifi_rssi = -48,
     };
     render_scenario_to_file("ui-15-updating-progress.ppm", &s15, out_dir);
+
+    /* 15b. Updating progress unknown */
+    michi_ui_screen_ctx_t s15b = {
+        .state = MICHI_STATE_UPDATING,
+        .update_pct = 0,
+        .has_update_pct = false,
+        .wifi_connected = true,
+        .wifi_rssi = -48,
+    };
+    render_scenario_to_file("ui-15b-updating-unknown.ppm", &s15b, out_dir);
 
     /* 16. Recoverable error (Audio) */
     michi_ui_screen_ctx_t s16 = {
         .state = MICHI_STATE_RECOVERABLE_ERROR,
-        .last_error = 0x3002,
+        .last_error = 0x103,
+        .wifi_connected = true,
+        .wifi_rssi = -50,
     };
     render_scenario_to_file("ui-16-recoverable-error-audio.ppm", &s16, out_dir);
 
     /* 17. Recoverable error (Network) */
     michi_ui_screen_ctx_t s17 = {
         .state = MICHI_STATE_RECOVERABLE_ERROR,
-        .last_error = 0x1002,
+        .last_error = 0x3001,
+        .wifi_connected = false,
     };
     render_scenario_to_file("ui-17-recoverable-error-network.ppm", &s17, out_dir);
 
     /* 18. Fatal error */
     michi_ui_screen_ctx_t s18 = {
         .state = MICHI_STATE_FATAL_ERROR,
-        .last_error = 0xE104,
+        .last_error = 0x101,
     };
     render_scenario_to_file("ui-18-fatal-error.ppm", &s18, out_dir);
 
-    /* 19. Diagnostics connected */
+    /* 19. Diagnostics connected with DAC PCM5122 */
     michi_ui_screen_ctx_t s19 = {
         .state = MICHI_STATE_IDLE,
         .show_diagnostics = true,
         .wifi_connected = true,
         .wifi_rssi = -52,
         .server_connected = true,
+        .dac_state = MICHI_UI_DAC_PRESENT,
         .dac_detected = true,
         .dac_model = "PCM5122",
         .volume = 72,
@@ -226,6 +243,39 @@ int main(int argc, char **argv)
     };
     render_scenario_to_file("ui-19-diagnostics-connected.ppm", &s19, out_dir);
 
+    /* 19b. Diagnostics DAC absent */
+    michi_ui_screen_ctx_t s19b = {
+        .state = MICHI_STATE_IDLE,
+        .show_diagnostics = true,
+        .wifi_connected = true,
+        .wifi_rssi = -52,
+        .server_connected = true,
+        .dac_state = MICHI_UI_DAC_ABSENT,
+        .dac_detected = false,
+        .volume = 72,
+        .sample_rate = 48000,
+        .bit_depth = 16,
+        .psram_bytes = 8 * 1024 * 1024,
+        .fw_version = "v0.2.0",
+    };
+    render_scenario_to_file("ui-19b-diagnostics-dac-absent.ppm", &s19b, out_dir);
+
+    /* 19c. Diagnostics DAC unknown */
+    michi_ui_screen_ctx_t s19c = {
+        .state = MICHI_STATE_IDLE,
+        .show_diagnostics = true,
+        .wifi_connected = false,
+        .server_connected = false,
+        .dac_state = MICHI_UI_DAC_UNKNOWN,
+        .dac_detected = false,
+        .volume = 72,
+        .sample_rate = 0,
+        .bit_depth = 0,
+        .psram_bytes = 8 * 1024 * 1024,
+        .fw_version = "v0.2.0",
+    };
+    render_scenario_to_file("ui-19c-diagnostics-dac-unknown.ppm", &s19c, out_dir);
+
     /* 20. Volume overlay */
     michi_ui_screen_ctx_t s20 = {
         .state = MICHI_STATE_PLAYING,
@@ -234,6 +284,6 @@ int main(int argc, char **argv)
     };
     render_scenario_to_file("ui-20-volume-overlay.ppm", &s20, out_dir);
 
-    printf("Generated all 20 UI previews in %s/\n", out_dir);
+    printf("Generated all 22 UI previews in %s/\n", out_dir);
     return 0;
 }

@@ -14,7 +14,7 @@ extern "C" {
 /* Brand & Header */
 #define MICHI_UI_STR_BRAND             "Michi"
 #define MICHI_UI_STR_BRAND_LOWER       "michi"
-#define MICHI_UI_STR_DIAGNOSTICS_TITLE "Michi Diagnostics"
+#define MICHI_UI_STR_DIAGNOSTICS_TITLE "Diagnóstico Michi"
 
 /* Boot */
 #define MICHI_UI_STR_STARTING          "iniciando"
@@ -35,8 +35,8 @@ extern "C" {
 
 /* Pairing */
 #define MICHI_UI_STR_PAIRING_TITLE     "Vincular"
-#define MICHI_UI_STR_PAIRING_LINKING   "Vinculando"
-#define MICHI_UI_STR_PAIRING_WAITING   "Esperando al servidor..."
+#define MICHI_UI_STR_PAIRING_WAITING_TITLE "Vinculando"
+#define MICHI_UI_STR_PAIRING_WAITING_HINT  "Esperando servidor"
 #define MICHI_UI_STR_PAIRING_PIN_HINT  "Introduce este código en Michi Micro Server"
 
 /* Playback & Session */
@@ -52,17 +52,22 @@ extern "C" {
 
 /* Errors */
 #define MICHI_UI_STR_RECOVERING_TITLE      "Reconectando"
-#define MICHI_UI_STR_RECOVERING_HINT       "Intentando recuperar la conexión"
+#define MICHI_UI_STR_RECOVERING_HINT       "Recuperando la conexión"
 #define MICHI_UI_STR_RECOVERING_AUDIO      "Recuperando audio"
-#define MICHI_UI_STR_RECOVERING_AUDIO_HINT "Intentando recuperar la reproducción"
-#define MICHI_UI_STR_FATAL_TITLE           "Algo falló"
-#define MICHI_UI_STR_FATAL_HINT            "Reinicia Michi Stream"
-#define MICHI_UI_STR_ERROR_CODE_PREFIX     "Código: "
+#define MICHI_UI_STR_RECOVERING_AUDIO_HINT "Restableciendo reproducción"
+#define MICHI_UI_STR_FATAL_TITLE           "Error del sistema"
+#define MICHI_UI_STR_FATAL_HINT            "Reinicia el dispositivo"
+#define MICHI_UI_STR_ERROR_CODE_PREFIX     "Código "
 
-/* Volume overlay & Diagnostics */
-#define MICHI_UI_STR_VOLUME_TITLE          "Volumen"
-#define MICHI_UI_STR_DAC_NONE              "No detectado"
-#define MICHI_UI_STR_DAC_UNKNOWN           "Desconocido"
+/* Diagnostics & Overlays */
+#define MICHI_UI_STR_VOLUME_LABEL      "Volumen"
+#define MICHI_UI_STR_VOLUME_TITLE      MICHI_UI_STR_VOLUME_LABEL
+#define MICHI_UI_STR_CONNECTED         "Conectado"
+#define MICHI_UI_STR_DISCONNECTED      "Desconectado"
+#define MICHI_UI_STR_UNKNOWN           "Desconocido"
+#define MICHI_UI_STR_DAC_NONE          "No detectado"
+#define MICHI_UI_STR_DAC_UNKNOWN       "Desconocido"
+#define MICHI_UI_STR_DAC_ERROR         "Error"
 
 #ifdef __cplusplus
 }

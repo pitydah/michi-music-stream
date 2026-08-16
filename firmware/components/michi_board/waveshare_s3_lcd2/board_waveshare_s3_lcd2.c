@@ -270,10 +270,10 @@ esp_err_t michi_board_init(void)
      * esp_ptr_dma_capable() only covers the INTERNAL DMA region; PSRAM
      * pointers are reported not-DMA-capable and the SPI driver then
      * bounces every color flush through an internal-RAM buffer sized for
-     * the full 240x320 frame (150 KB contiguous), which internal DMA RAM
+     * the full 320x240 frame (153.6 KB contiguous), which internal DMA RAM
      * cannot provide at boot (measured: heap_caps_malloc fails ~1.4 s
      * in) - ESP_ERR_NO_MEM, black screen. Fix: a SMALL banded
-     * framebuffer (240 x MICHI_LCD_BAND, 19.2 KB) in DMA RAM; the panel
+     * framebuffer (320 x MICHI_LCD_BAND, 25.6 KB) in DMA RAM; the panel
      * is drawn as display_height / MICHI_LCD_BAND sequential band
      * flushes (see michi_board_display_render). No bounce buffer is ever
      * needed because each flush fits well below the internal pool. */

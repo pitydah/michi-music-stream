@@ -32,9 +32,10 @@ typedef enum michi_ui_icon {
     MICHI_UI_ICON_COUNT,
 } michi_ui_icon_t;
 
-/*!< Icon sizes in pixels (indexed 0..4, not raw px). */
+/* Icon sizes in pixels (indexed 0..5, not raw px). */
 typedef enum michi_ui_icon_size {
     MICHI_UI_ICON_SIZE_12 = 0,
+    MICHI_UI_ICON_SIZE_16,
     MICHI_UI_ICON_SIZE_20,
     MICHI_UI_ICON_SIZE_24,
     MICHI_UI_ICON_SIZE_32,
@@ -71,8 +72,9 @@ static inline void michi_ui_draw_icon(uint16_t *fb, uint16_t fb_w, uint16_t fb_h
                                      uint16_t y_origin, int x, int y,
                                      michi_ui_icon_t icon, int px_size, uint16_t color)
 {
-    michi_ui_icon_size_t sz = MICHI_UI_ICON_SIZE_20;
+    michi_ui_icon_size_t sz = MICHI_UI_ICON_SIZE_16;
     if (px_size <= 14) sz = MICHI_UI_ICON_SIZE_12;
+    else if (px_size <= 18) sz = MICHI_UI_ICON_SIZE_16;
     else if (px_size <= 22) sz = MICHI_UI_ICON_SIZE_20;
     else if (px_size <= 28) sz = MICHI_UI_ICON_SIZE_24;
     else if (px_size <= 40) sz = MICHI_UI_ICON_SIZE_32;

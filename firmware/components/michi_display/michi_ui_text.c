@@ -19,6 +19,56 @@ int ui_text_measure(const michi_ui_font_t *font, const char *str)
     return w;
 }
 
+size_t michi_ui_utf8_safe_copy(char *dst, size_t dst_cap, const char *src)
+{
+    if (dst == NULL || dst_cap == 0) {
+        return 0;
+    }
+    if (src == NULL || *src == '\0') {
+        dst[0] = '\0';
+        return 0;
+    }
+
+    size_t src_len = strlen(src);
+    size_t max_copy = dst_cap - 1;
+    if (src_len <= max_copy) {
+        memcpy(dst, src, src_len);
+        dst[src_len] = '\0';
+        return src_len;
+    }
+
+    /* We must truncate to <= max_copy, without splitting a multi-byte UTF-8 codepoint. */
+    size_t len = max_copy;
+    while (len > 0 && ((unsigned char)src[len - 1] & 0xC0) == 0x80) {
+        /* Move before continuation bytes */
+        len--;
+    }
+    if (len > 0 && ((unsigned char)src[len - 1] & 0x80) != 0) {
+        unsigned char lead = (unsigned char)src[len - 1];
+        size_t req = 1;
+        if ((lead & 0xE0) == 0xC0) {
+            req = 2;
+        } else if ((lead & 0xF0) == 0xE0) {
+            req = 3;
+        } else if ((lead & 0xF8) == 0xF0) {
+            req = 4;
+        }
+
+        if (max_copy - (len - 1) < req) {
+            /* Sequence was truncated: drop the incomplete leading byte */
+            len = len - 1;
+        } else {
+            len = max_copy;
+        }
+    } else {
+        len = max_copy;
+    }
+
+    memcpy(dst, src, len);
+    dst[len] = '\0';
+    return len;
+}
+
 int ui_wrap_text_ex(const michi_ui_font_t *font, char *str, int max_w,
                     const char **out_lines, int max_lines, bool *was_truncated)
 {
@@ -143,11 +193,33 @@ finish:
         const char *ell = MICHI_UI_ELLIPSIS_UTF8;
         int ell_w = ui_text_measure(font, ell);
         int last_w = ui_text_measure(font, last);
-        if (last_w + ell_w > max_w) {
-            ui_ellipsize(font, last, max_w);
-        } else {
+        if (last_w + ell_w <= max_w) {
             size_t len = strlen(last);
             memcpy(last + len, ell, 4);
+        } else {
+            int budget = max_w - ell_w;
+            if (budget > 0) {
+                int w = 0;
+                const char *p = last;
+                const char *cut = last;
+                while (*p != '\0') {
+                    const char *next = p;
+                    uint8_t idx = michi_ui_font_decode(font, &next);
+                    int gw = michi_ui_font_advance(font, idx);
+                    if (w + gw > budget) {
+                        break;
+                    }
+                    w += gw;
+                    cut = next;
+                    p = next;
+                }
+                size_t cut_len = (size_t)(cut - last);
+                while (cut_len > 0 && last[cut_len - 1] == ' ') {
+                    cut_len--;
+                }
+                last[cut_len] = '\0';
+                memcpy(last + cut_len, ell, 4);
+            }
         }
     }
     if (was_truncated != NULL) {

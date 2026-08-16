@@ -10,6 +10,26 @@
 extern "C" {
 #endif
 
+typedef enum {
+    MICHI_UI_DAC_UNKNOWN = 0,
+    MICHI_UI_DAC_ABSENT,
+    MICHI_UI_DAC_PRESENT,
+    MICHI_UI_DAC_ERROR
+} michi_ui_dac_state_t;
+
+typedef enum {
+    MICHI_ERR_CLASS_NONE = 0,
+    MICHI_ERR_CLASS_AUDIO,
+    MICHI_ERR_CLASS_NETWORK,
+    MICHI_ERR_CLASS_STORAGE,
+    MICHI_ERR_CLASS_MEMORY,
+    MICHI_ERR_CLASS_UPDATE,
+    MICHI_ERR_CLASS_UNKNOWN
+} michi_error_class_t;
+
+michi_error_class_t michi_ui_classify_error(uint32_t error_code);
+const char *michi_ui_error_code_str(uint32_t error_code);
+
 /**
  * @brief Screen rendering context: holds all live parameters passed to the UI
  *        layer for drawing any given state.
@@ -31,6 +51,7 @@ typedef struct michi_ui_screen_ctx {
     uint8_t update_pct;            /*!< OTA progress percentage (0..100) */
     bool has_update_pct;           /*!< True if OTA progress is known */
     bool show_diagnostics;         /*!< Force diagnostics view */
+    michi_ui_dac_state_t dac_state;/*!< DAC presence state */
     bool dac_detected;             /*!< True if DAC hardware was detected */
     const char *dac_model;         /*!< Detected DAC model string or NULL */
     uint32_t psram_bytes;          /*!< Detected PSRAM size in bytes */
@@ -51,15 +72,15 @@ void michi_ui_draw_screen_boot(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint1
 void michi_ui_draw_screen_ready(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin, const michi_ui_screen_ctx_t *ctx);
 void michi_ui_draw_screen_unprovisioned(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin);
 void michi_ui_draw_screen_provisioning(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin);
-void michi_ui_draw_screen_connecting(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin, const char *ssid);
-void michi_ui_draw_screen_pairing(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin, const char *pin);
-void michi_ui_draw_screen_session_pending(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin);
+void michi_ui_draw_screen_connecting(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin, const char *ssid, const michi_ui_screen_ctx_t *ctx);
+void michi_ui_draw_screen_pairing(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin, const char *pin, const michi_ui_screen_ctx_t *ctx);
+void michi_ui_draw_screen_session_pending(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin, const michi_ui_screen_ctx_t *ctx);
 void michi_ui_draw_screen_buffering(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin, const michi_ui_screen_ctx_t *ctx);
 void michi_ui_draw_screen_playing(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin, const michi_ui_screen_ctx_t *ctx);
 void michi_ui_draw_screen_paused(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin, const michi_ui_screen_ctx_t *ctx);
-void michi_ui_draw_screen_updating(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin, uint8_t pct);
-void michi_ui_draw_screen_recoverable_error(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin, uint32_t error_code);
-void michi_ui_draw_screen_fatal_error(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin, uint32_t error_code);
+void michi_ui_draw_screen_updating(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin, uint8_t pct, bool has_pct, const michi_ui_screen_ctx_t *ctx);
+void michi_ui_draw_screen_recoverable_error(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin, uint32_t error_code, const michi_ui_screen_ctx_t *ctx);
+void michi_ui_draw_screen_fatal_error(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin, uint32_t error_code, const michi_ui_screen_ctx_t *ctx);
 void michi_ui_draw_screen_diagnostics(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin, const michi_ui_screen_ctx_t *ctx);
 
 #ifdef __cplusplus

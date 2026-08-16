@@ -132,6 +132,10 @@ esp_err_t michi_display_set_diagnostics(bool show);
  */
 esp_err_t michi_display_trigger_volume_overlay(void);
 
+#if !defined(ESP_PLATFORM)
+void michi_display_set_mock_time_ms(int64_t now_ms);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

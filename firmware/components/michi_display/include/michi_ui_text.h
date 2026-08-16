@@ -31,6 +31,14 @@ extern "C" {
 int ui_text_measure(const michi_ui_font_t *font, const char *str);
 
 /**
+ * @brief Copy up to dst_cap - 1 bytes from src to dst safely.
+ *        Guarantees dst is NUL-terminated and never cuts in the middle of
+ *        an incomplete multi-byte UTF-8 codepoint.
+ * @return Number of bytes written into dst (excluding NUL).
+ */
+size_t michi_ui_utf8_safe_copy(char *dst, size_t dst_cap, const char *src);
+
+/**
  * @brief Wrap text to a pixel width, breaking at word boundaries (spaces).
  *
  * Mutates str in place: each break point (space or newline) is replaced

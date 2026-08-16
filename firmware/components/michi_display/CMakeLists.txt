@@ -7,6 +7,6 @@ idf_component_register(
          "michi_ui_components.c"
          "michi_ui_screens.c"
     INCLUDE_DIRS "include"
-    REQUIRES michi_board michi_state michi_volume michi_product_profile freertos
+    REQUIRES michi_board michi_state michi_volume michi_product_profile freertos michi_dac
     PRIV_REQUIRES michi_wifi michi_session michi_ota
 )

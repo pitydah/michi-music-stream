@@ -342,7 +342,7 @@ PIN_CHARS = "0123456789 ."
 PIL_FONTS = {
     "sm": (FONT_MEDIUM, 9, 13, 16),     # (font_file, pt_size, height, line_height)
     "md": (FONT_REGULAR, 12, 17, 20),
-    "lg": (FONT_REGULAR, 18, 26, 30),
+    "lg": (FONT_MEDIUM, 18, 26, 30),
     "pin": (FONT_REGULAR, 38, 41, 46),
 }
 

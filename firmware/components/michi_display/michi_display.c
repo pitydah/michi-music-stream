@@ -12,13 +12,19 @@
 #include "esp_err.h"
 #include "esp_log.h"
 
+#if defined(ESP_PLATFORM)
+#include "esp_timer.h"
+#endif
+
 #include "michi_board.h"
+#include "michi_dac.h"
 #include "michi_display.h"
 #include "michi_ota.h"
 #include "michi_product_profile.h"
 #include "michi_session.h"
 #include "michi_state.h"
 #include "michi_ui.h"
+#include "michi_version.h"
 #include "michi_volume.h"
 #include "michi_wifi.h"
 
@@ -40,6 +46,18 @@
 static QueueHandle_t s_queue;
 static TaskHandle_t s_task;
 static volatile bool s_initialized;
+
+#if defined(ESP_PLATFORM)
+static esp_timer_handle_t s_volume_timer = NULL;
+#else
+static int64_t s_mock_time_ms = 0;
+void michi_display_set_mock_time_ms(int64_t now_ms)
+{
+    s_mock_time_ms = now_ms;
+}
+#endif
+
+static int64_t s_volume_overlay_until_ms = 0;
 
 /* Set when a render request is dropped on a full queue; the render task
  * re-renders once after the drain so a dropped request does not leave the
@@ -67,6 +85,14 @@ static void queue_render(void)
         ESP_LOGW(TAG, "display: queue_full dropped=1");
     }
 }
+
+#if defined(ESP_PLATFORM)
+static void on_volume_timer(void *arg)
+{
+    (void)arg;
+    queue_render();
+}
+#endif
 
 /* Observer contract (invoked from the FSM task): queue ONLY, never render,
  * never block. The render task filters and draws. */
@@ -104,7 +130,6 @@ static char s_snap_title[MICHI_DISPLAY_TITLE_MAX + 1];
 static char s_snap_artist[MICHI_DISPLAY_ARTIST_MAX + 1];
 static char s_snap_pin[7];
 static bool s_show_diagnostics = false;
-static bool s_show_volume_overlay = false;
 
 /* Draw callback for michi_board_display_render(): renders ONE band from the
  * frozen s_frame_snapshot via michi_ui_render_screen(). */
@@ -118,6 +143,7 @@ static void render_current_state(void)
 {
     const michi_product_profile_t *p = michi_product_profile_get();
     const michi_board_info_t *binfo = michi_board_get_info();
+    const michi_dac_caps_t *dac_caps = michi_dac_get_caps();
     int8_t rssi = 0;
     uint32_t last_err;
 
@@ -131,6 +157,24 @@ static void render_current_state(void)
 
     bool wifi_prov = michi_wifi_is_provisioned();
     bool wifi_ok = (wifi_prov && (michi_wifi_get_rssi(&rssi) == ESP_OK));
+
+#if defined(ESP_PLATFORM)
+    int64_t now_ms = esp_timer_get_time() / 1000;
+#else
+    int64_t now_ms = s_mock_time_ms;
+#endif
+    bool show_vol = (now_ms < s_volume_overlay_until_ms);
+
+    michi_ui_dac_state_t dac_st = MICHI_UI_DAC_UNKNOWN;
+    const char *dac_name = NULL;
+    if (dac_caps != NULL) {
+        if (dac_caps->detected) {
+            dac_st = MICHI_UI_DAC_PRESENT;
+            dac_name = (dac_caps->model[0] != '\0') ? dac_caps->model : "PCM5122";
+        } else {
+            dac_st = MICHI_UI_DAC_ABSENT;
+        }
+    }
 
     /* Frame Snapshot: freeze all fields once before rendering bands */
     s_frame_snapshot = (michi_ui_screen_ctx_t){
@@ -150,12 +194,13 @@ static void render_current_state(void)
         .update_pct = 0,
         .has_update_pct = false,
         .show_diagnostics = s_show_diagnostics,
-        .dac_detected = false,
-        .dac_model = NULL,
+        .dac_state = dac_st,
+        .dac_detected = (dac_st == MICHI_UI_DAC_PRESENT),
+        .dac_model = dac_name,
         .psram_bytes = binfo != NULL ? binfo->psram_bytes_expected : 0,
         .fw_version = MICHI_FW_VERSION_STR,
         .board_model = binfo != NULL ? binfo->model : "Waveshare ESP32-S3-LCD-2",
-        .show_volume_overlay = s_show_volume_overlay,
+        .show_volume_overlay = show_vol,
     };
 
     if (s_frame_snapshot.state == MICHI_STATE_UPDATING) {
@@ -242,6 +287,13 @@ esp_err_t michi_display_init(void)
     }
 
     s_initialized = true;
+#if defined(ESP_PLATFORM)
+    const esp_timer_create_args_t timer_args = {
+        .callback = on_volume_timer,
+        .name = "michi_vol_ovl",
+    };
+    esp_timer_create(&timer_args, &s_volume_timer);
+#endif
     ESP_LOGI(TAG, "subsystem=display state=ok phase=6");
     return ESP_OK;
 }
@@ -335,7 +387,18 @@ esp_err_t michi_display_trigger_volume_overlay(void)
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
-    s_show_volume_overlay = true;
+#if defined(ESP_PLATFORM)
+    int64_t now_ms = esp_timer_get_time() / 1000;
+#else
+    int64_t now_ms = s_mock_time_ms;
+#endif
+    s_volume_overlay_until_ms = now_ms + 1200;
+#if defined(ESP_PLATFORM)
+    if (s_volume_timer != NULL) {
+        esp_timer_stop(s_volume_timer);
+        esp_timer_start_once(s_volume_timer, 1200 * 1000);
+    }
+#endif
     queue_render();
     return ESP_OK;
 }

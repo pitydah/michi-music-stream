@@ -472,11 +472,125 @@ static void test_pin_landscape(void)
     free(fb);
 }
 
+/* --------------------------------------------------------------------------
+ * Error Taxonomy Tests
+ * -------------------------------------------------------------------------- */
+
+static void test_error_taxonomy(void)
+{
+    printf("michi_ui: recoverable & fatal error taxonomy\n");
+
+    CHECK(michi_ui_classify_error(0x103) == MICHI_ERR_CLASS_AUDIO, "0x103 classified as AUDIO");
+    CHECK(michi_ui_classify_error(0x107) == MICHI_ERR_CLASS_AUDIO, "0x107 classified as AUDIO");
+    CHECK(michi_ui_classify_error(0x7001) == MICHI_ERR_CLASS_AUDIO, "0x7001 classified as AUDIO");
+    CHECK(michi_ui_classify_error(0x3001) == MICHI_ERR_CLASS_NETWORK, "0x3001 classified as NETWORK");
+    CHECK(michi_ui_classify_error(0x4001) == MICHI_ERR_CLASS_NETWORK, "0x4001 classified as NETWORK");
+    CHECK(michi_ui_classify_error(0x101) == MICHI_ERR_CLASS_MEMORY, "0x101 classified as MEMORY");
+    CHECK(michi_ui_classify_error(0x2001) == MICHI_ERR_CLASS_STORAGE, "0x2001 classified as STORAGE");
+    CHECK(michi_ui_classify_error(0x6001) == MICHI_ERR_CLASS_UPDATE, "0x6001 classified as UPDATE");
+
+    CHECK(strcmp(michi_ui_error_code_str(0x103), "E102") == 0, "0x103 product code is E102");
+    CHECK(strcmp(michi_ui_error_code_str(0x3001), "E101") == 0, "0x3001 product code is E101");
+    CHECK(strcmp(michi_ui_error_code_str(0x101), "E104") == 0, "0x101 product code is E104");
+}
+
+/* --------------------------------------------------------------------------
+ * UTF-8 Safe Copy Tests
+ * -------------------------------------------------------------------------- */
+
+static void test_utf8_safe_copy(void)
+{
+    printf("michi_ui: UTF-8 safe copy and boundary clipping\n");
+
+    char dst[16];
+    size_t written;
+
+    /* Safe copy normal */
+    written = michi_ui_utf8_safe_copy(dst, sizeof(dst), "Michi Audio");
+    CHECK(written == 11, "Written 11 bytes");
+    CHECK(strcmp(dst, "Michi Audio") == 0, "Match Michi Audio");
+
+    /* Truncate without splitting multi-byte: 'ó' is 2 bytes 0xC3 0xB3 */
+    /* "Corazón" = 'C','o','r','a','z' (5 bytes) + '\xC3','\xB3' (2 bytes) + 'n' (1 byte) = 8 bytes */
+    /* dst capacity = 7 means max 6 chars. At 6 chars, '\xC3' would be cut! Safe copy must drop '\xC3' -> "Coraz" (5 bytes) */
+    written = michi_ui_utf8_safe_copy(dst, 7, "Corazón");
+    CHECK(written == 5, "Truncated cleanly to 5 bytes before 0xC3");
+    CHECK(strcmp(dst, "Coraz") == 0, "Safe copy dropped incomplete UTF-8 char");
+
+    /* dst capacity = 8 means max 7 chars -> "Corazón" fits in 7 chars */
+    written = michi_ui_utf8_safe_copy(dst, 8, "Corazón");
+    CHECK(written == 7, "Copied full 7 bytes including ó");
+    CHECK(strcmp(dst, "Coraz\xC3\xB3") == 0, "Matched Corazó");
+
+    /* Null and 0-cap safety */
+    CHECK(michi_ui_utf8_safe_copy(NULL, 10, "abc") == 0, "NULL dst returns 0");
+    CHECK(michi_ui_utf8_safe_copy(dst, 0, "abc") == 0, "0 cap returns 0");
+    CHECK(michi_ui_utf8_safe_copy(dst, 10, NULL) == 0 && dst[0] == '\0', "NULL src produces empty string");
+}
+
+/* --------------------------------------------------------------------------
+ * Pairing & OTA Screen Tests
+ * -------------------------------------------------------------------------- */
+
+static void test_pairing_and_ota_screen_logic(void)
+{
+    printf("michi_ui: pairing wording & OTA progress unknown vs percentage\n");
+
+    uint16_t *fb1 = calloc((size_t)PANEL_W * PANEL_H, sizeof(uint16_t));
+    uint16_t *fb2 = calloc((size_t)PANEL_W * PANEL_H, sizeof(uint16_t));
+
+    /* Pairing without PIN vs with PIN */
+    michi_ui_screen_ctx_t ctx_pair_nopin = {
+        .state = MICHI_STATE_PAIRING,
+        .pairing_pin = NULL,
+    };
+    michi_ui_screen_ctx_t ctx_pair_pin = {
+        .state = MICHI_STATE_PAIRING,
+        .pairing_pin = "123456",
+    };
+    michi_ui_render_screen(fb1, PANEL_W, PANEL_H, 0, &ctx_pair_nopin);
+    michi_ui_render_screen(fb2, PANEL_W, PANEL_H, 0, &ctx_pair_pin);
+
+    int diff = 0;
+    for (int i = 0; i < PANEL_W * PANEL_H; i++) {
+        if (fb1[i] != fb2[i]) diff++;
+    }
+    CHECK(diff > 100, "Pairing with PIN is visually distinct from Waiting for PIN");
+
+    /* OTA with pct vs indeterminate */
+    michi_ui_screen_ctx_t ctx_ota_pct = {
+        .state = MICHI_STATE_UPDATING,
+        .update_pct = 68,
+        .has_update_pct = true,
+    };
+    michi_ui_screen_ctx_t ctx_ota_indet = {
+        .state = MICHI_STATE_UPDATING,
+        .update_pct = 0,
+        .has_update_pct = false,
+    };
+    memset(fb1, 0, (size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    memset(fb2, 0, (size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    michi_ui_render_screen(fb1, PANEL_W, PANEL_H, 0, &ctx_ota_pct);
+    michi_ui_render_screen(fb2, PANEL_W, PANEL_H, 0, &ctx_ota_indet);
+
+    diff = 0;
+    for (int i = 0; i < PANEL_W * PANEL_H; i++) {
+        if (fb1[i] != fb2[i]) diff++;
+    }
+    CHECK(diff > 100, "OTA progress percentage is visually distinct from indeterminate OTA rail");
+
+    free(fb1);
+    free(fb2);
+}
+
 int main(void)
 {
     test_wrap();
     test_utf8_decoding();
     test_wrap_truncation_ex();
+    test_error_taxonomy();
+    test_utf8_safe_copy();
+    test_pairing_and_ota_screen_logic();
     test_all_screen_scenarios_band_identity();
     test_buffering_vs_playing_difference();
     test_pin_landscape();

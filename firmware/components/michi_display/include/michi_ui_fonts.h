@@ -96,7 +96,10 @@ void michi_ui_font_draw_glyph(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
 /*!< Line height for multiline paragraph layouts. */
 static inline int michi_ui_font_line_height(const michi_ui_font_t *font)
 {
-    return (font != NULL && font->line_height != 0) ? (int)font->line_height : (int)font->height;
+    if (font == NULL) {
+        return 0;
+    }
+    return (font->line_height != 0) ? (int)font->line_height : (int)font->height;
 }
 
 #ifdef __cplusplus
