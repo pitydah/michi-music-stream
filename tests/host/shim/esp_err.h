@@ -42,6 +42,20 @@ static inline const char *esp_err_to_name(esp_err_t err)
     }
 }
 
+#if !defined(__APPLE__) && !defined(__FreeBSD__) && !defined(__OpenBSD__) && !defined(ESP_PLATFORM)
+#include <string.h>
+static inline size_t strlcpy(char *dst, const char *src, size_t size)
+{
+    size_t srclen = strlen(src);
+    if (size > 0) {
+        size_t copylen = (srclen >= size) ? size - 1 : srclen;
+        memcpy(dst, src, copylen);
+        dst[copylen] = '\0';
+    }
+    return srclen;
+}
+#endif
+
 #ifdef __cplusplus
 }
 #endif
