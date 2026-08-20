@@ -4,7 +4,7 @@ menu "Michi Music Stream Pairing"
 
     config MICHI_PAIRING_WINDOW_SECONDS
         int "Pairing window duration (s)"
-        default 5
+        default 120
         range 5 3600
         help
           How long a pairing window (opened by the physical button)

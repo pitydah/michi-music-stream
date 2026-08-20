@@ -25,4 +25,40 @@ menu "Michi Music Stream Display"
           stale (a drop racing that re-render is covered by the next state
           change).
 
+    choice MICHI_DISPLAY_FONT_FAMILY
+        prompt "UI font family"
+        default MICHI_DISPLAY_FONT_INTER
+        help
+          Select the bitmap font family for all on-screen text. Both fonts
+          cover the same 192-glyph charset (ASCII + Latin-1 + ellipsis)
+          and share the same five size variants (XS / SM / MD / LG / PIN).
+          The bitmaps are pre-rendered and committed; changing this option
+          requires re-running tools/gen_michi_ui_assets.py with the
+          appropriate --font flag.
+
+        config MICHI_DISPLAY_FONT_INTER
+            bool "Inter"
+            help
+              Inter (SIL Open Font License) - tight metrics, excellent
+              legibility at small sizes on 320x240 landscape panels.
+
+        config MICHI_DISPLAY_FONT_NOTO_SANS
+            bool "Noto Sans"
+            help
+              Noto Sans (SIL Open Font License) - wide Unicode coverage,
+              good for multilingual content.
+
+    endchoice
+
+    config MICHI_DISPLAY_RASTER_2BIT
+        bool "Enable 2-bit anti-aliased raster mode"
+        default y
+        help
+          When enabled the font bitmaps use 2-bit coverage values (0-3)
+          instead of 1-bit on/off. Each coverage level is alpha-blended
+          against the background at render time, producing smoother glyph
+          edges at small point sizes on the RGB565 panel.
+          Requires regenerating assets with --raster 2bit flag.
+          Enabled by default for production builds.
+
 endmenu

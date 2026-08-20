@@ -40,6 +40,31 @@ jobs:
           make -C tests/host clean
           make -C tests/host test
 
+  ui-preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Pillow and Noto Sans fonts
+        run: |
+          pip install Pillow
+          sudo apt-get update && sudo apt-get install -y fonts-noto
+      - name: Regenerate UI assets (Noto Sans, 1-bit – baseline)
+        working-directory: firmware/components/michi_display
+        run: |
+          python3 tools/gen_michi_ui_assets.py --font notosans --raster 1bit
+      - name: Verify no uncommitted diff in assets (baseline)
+        run: |
+          git diff --exit-code firmware/components/michi_display/assets/fonts/michi_ui_fonts_data.h \
+                               firmware/components/michi_display/assets/icons/michi_ui_icons_data.h
+      - name: Host UI render test (landscape screens pixel-identical)
+        run: |
+          make -C tests/host clean
+          make -C tests/host test_michi_ui
+          ./tests/host/test_michi_ui
+
   e2e:
     runs-on: ubuntu-latest
     steps:
@@ -131,3 +156,57 @@ jobs:
             firmware/build/bootloader/bootloader.bin
             firmware/build/partition_table/partition-table.bin
             firmware/build/ota_data_initial.bin
+
+  auto-release:
+    # Runs only when CI passes on main; creates a tag + GitHub Release.
+    runs-on: ubuntu-latest
+    needs: [test, host-tests, ui-preview, e2e, static-analysis, firmware]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Determine next version tag
+        id: version
+        run: |
+          LAST=$(git tag --sort=-version:refname | grep -E '^v[0-9]' | head -1 || echo "")
+          if [ -z "$LAST" ]; then
+            NEXT="v0.1.0"
+          else
+            # Increment patch version automatically.
+            BASE="${LAST#v}"
+            MAJOR=$(echo "$BASE" | cut -d. -f1)
+            MINOR=$(echo "$BASE" | cut -d. -f2)
+            PATCH=$(echo "$BASE" | cut -d. -f3)
+            NEXT="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+          fi
+          echo "tag=${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "Tagging as ${NEXT}"
+      - name: Create annotated tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.version.outputs.tag }}" \
+            -m "Automated release ${{ steps.version.outputs.tag }} from CI (landscape UI, pairing 120s)"
+          git push origin "${{ steps.version.outputs.tag }}"
+      - name: Download firmware artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: firmware-esp32s3
+          path: release-artifacts/
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "Michi Music Stream ${{ steps.version.outputs.tag }}"
+          body: |
+            Automated release from CI.
+
+            ### Changes
+            - Landscape UI (320×240 px, premium Hi-Fi theme)
+            - Pairing window: 120 s
+            - Font: Inter, 2-bit antialiased raster
+            - Button debounce: time-based single authority
+          files: release-artifacts/**
