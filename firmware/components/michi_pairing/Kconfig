@@ -4,15 +4,19 @@ menu "Michi Music Stream Pairing"
 
     config MICHI_PAIRING_WINDOW_SECONDS
         int "Pairing window duration (s)"
-        default 120
-        range 10 3600
+        default 5
+        range 5 3600
         help
           How long a pairing window (opened by the physical button)
           stays open before it expires and closes itself (one-shot
           esp_timer -> MICHI_EVENT_PAIRING_WINDOW_CLOSED, PAIRING -> IDLE
-          in the FSM). Monotonic clock. A reboot always closes the
-          window; re-opening replaces the previous window and drops
-          pending pairing sessions.
+          in the FSM). Monotonic clock. A reboot always closes it (the
+          window is not persisted); re-opening replaces the previous
+          window and drops pending pairing sessions. The default is 5 s:
+          the physical button is the only window opener (no network-visible
+          trigger), so a short window is a safe default - a press not
+          followed by a controller pairing expires quickly instead of
+          leaving the device discoverable for minutes.
 
     config MICHI_PAIRING_MAX_CONTROLLERS
         int "Maximum paired controllers"

@@ -12,7 +12,7 @@
  *    default (the esp_netif_sntp shim struct needs it).
  * TEST-ONLY: never compiled into firmware. */
 
-#define CONFIG_MICHI_PAIRING_WINDOW_SECONDS 120
+#define CONFIG_MICHI_PAIRING_WINDOW_SECONDS 5
 #define CONFIG_MICHI_PAIRING_MAX_CONTROLLERS 8
 
 #define CONFIG_MICHI_TIME_SNTP_SERVER "pool.ntp.org"
