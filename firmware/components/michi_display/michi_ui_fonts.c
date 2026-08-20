@@ -13,27 +13,27 @@ static const michi_ui_font_t s_fonts[MICHI_FONT_COUNT] = {
     [MICHI_FONT_XS] = {
         "xs", 8, 6, 10, MICHI_UI_FONT_GLYPH_COUNT,
         michi_ui_xs_bitmap, michi_ui_xs_width, michi_ui_xs_advance,
-        michi_ui_xs_offset, NULL,
+        michi_ui_xs_offset, 1, 1, NULL,
     },
     [MICHI_FONT_SM] = {
         "sm", 13, 10, 16, MICHI_UI_FONT_GLYPH_COUNT,
         michi_ui_sm_bitmap, michi_ui_sm_width, michi_ui_sm_advance,
-        michi_ui_sm_offset, NULL,
+        michi_ui_sm_offset, 1, 2, NULL,
     },
     [MICHI_FONT_MD] = {
         "md", 17, 13, 20, MICHI_UI_FONT_GLYPH_COUNT,
         michi_ui_md_bitmap, michi_ui_md_width, michi_ui_md_advance,
-        michi_ui_md_offset, NULL,
+        michi_ui_md_offset, 1, 3, NULL,
     },
     [MICHI_FONT_LG] = {
         "lg", 26, 20, 30, MICHI_UI_FONT_GLYPH_COUNT,
         michi_ui_lg_bitmap, michi_ui_lg_width, michi_ui_lg_advance,
-        michi_ui_lg_offset, NULL,
+        michi_ui_lg_offset, 1, 4, NULL,
     },
     [MICHI_FONT_PIN] = {
         "pin", 41, 41, 46, MICHI_UI_FONT_GLYPH_COUNT,
         michi_ui_pin_bitmap, michi_ui_pin_width, michi_ui_pin_advance,
-        michi_ui_pin_offset, michi_ui_pin_map,
+        michi_ui_pin_offset, 1, 6, michi_ui_pin_map,
     },
 };
 
@@ -122,6 +122,22 @@ int michi_ui_font_advance(const michi_ui_font_t *font, uint8_t full_idx)
     return font->advance[idx];
 }
 
+static inline uint16_t rgb565_blend_2bit(uint16_t bg, uint16_t fg, uint8_t level)
+{
+    if (level == 0) return bg;
+    if (level >= 3) return fg;
+    uint16_t br = (bg >> 11) & 0x1Fu;
+    uint16_t bg6 = (bg >> 5) & 0x3Fu;
+    uint16_t bb = bg & 0x1Fu;
+    uint16_t fr = (fg >> 11) & 0x1Fu;
+    uint16_t fg6 = (fg >> 5) & 0x3Fu;
+    uint16_t fb = fg & 0x1Fu;
+    uint16_t r = (uint16_t)((br * (3u - level) + fr * level + 1u) / 3u);
+    uint16_t g = (uint16_t)((bg6 * (3u - level) + fg6 * level + 1u) / 3u);
+    uint16_t b = (uint16_t)((bb * (3u - level) + fb * level + 1u) / 3u);
+    return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
 void michi_ui_font_draw_glyph(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
                               int x, int y, const michi_ui_font_t *font,
                               uint8_t full_idx, uint16_t color)
@@ -138,7 +154,7 @@ void michi_ui_font_draw_glyph(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
         return; /* glyph rows do not intersect this band */
     }
 
-    bpc = (uint8_t)((font->height + 7u) / 8u);
+    bpc = font->bytes_per_col;
     w = font->width[idx];
 
     for (col = 0; col < w; col++) {
@@ -149,24 +165,48 @@ void michi_ui_font_draw_glyph(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
         if (px < 0 || px >= (int)fb_w) {
             continue;
         }
-        for (b = 0; b < bpc; b++) {
-            uint8_t bits = font->bitmap[base + b];
-            uint8_t bit;
 
-            for (bit = 0; bit < 8; bit++) {
-                int py;
-                int row;
+        if (font->raster_bits == 2) {
+            for (b = 0; b < bpc; b++) {
+                uint8_t bits = font->bitmap[base + b];
+                uint8_t pair;
+                for (pair = 0; pair < 4; pair++) {
+                    uint8_t level = (bits >> (pair * 2)) & 0x03u;
+                    int row = (int)b * 4 + (int)pair;
+                    int py;
+                    if (level == 0) {
+                        continue;
+                    }
+                    if (row >= (int)font->height) {
+                        break;
+                    }
+                    py = y + row;
+                    if (py >= 0 && py < (int)fb_h) {
+                        size_t p_idx = (size_t)py * fb_w + (size_t)px;
+                        fb[p_idx] = rgb565_blend_2bit(fb[p_idx], color, level);
+                    }
+                }
+            }
+        } else {
+            for (b = 0; b < bpc; b++) {
+                uint8_t bits = font->bitmap[base + b];
+                uint8_t bit;
 
-                if ((bits & (uint8_t)(1u << bit)) == 0) {
-                    continue;
-                }
-                row = (int)b * 8 + (int)bit;
-                if (row >= (int)font->height) {
-                    break; /* higher bits are also out of the em box */
-                }
-                py = y + row;
-                if (py >= 0 && py < (int)fb_h) {
-                    fb[(size_t)py * fb_w + (size_t)px] = color;
+                for (bit = 0; bit < 8; bit++) {
+                    int py;
+                    int row;
+
+                    if ((bits & (uint8_t)(1u << bit)) == 0) {
+                        continue;
+                    }
+                    row = (int)b * 8 + (int)bit;
+                    if (row >= (int)font->height) {
+                        break; /* higher bits are also out of the em box */
+                    }
+                    py = y + row;
+                    if (py >= 0 && py < (int)fb_h) {
+                        fb[(size_t)py * fb_w + (size_t)px] = color;
+                    }
                 }
             }
         }

@@ -60,6 +60,8 @@ typedef struct michi_ui_font {
     const uint8_t *width;   /*!< Per-glyph bitmap width. */
     const uint8_t *advance; /*!< Per-glyph advance in pixels. */
     const uint16_t *offset; /*!< Per-glyph byte offset into bitmap. */
+    uint8_t raster_bits;    /* 1 = on/off, 2 = 4-level coverage */
+    uint8_t bytes_per_col;  /* ceil(height * raster_bits / 8) */
     const uint8_t *pin_map; /*!< NULL, or full-index -> glyph remap (PIN). */
 } michi_ui_font_t;
 
