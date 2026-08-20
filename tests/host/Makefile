@@ -61,7 +61,7 @@ IDENTITY_INC = -I$(IDENTITY_DIR)/include -I$(IDENTITY_DIR)/monocypher \
 
 TESTS := test_semver test_pairing_validators test_michi_identity \
          test_michi_pairing test_michi_session test_rtp_guard test_michi_button \
-         test_michi_ui \
+         test_michi_button_debounce test_michi_ui \
          $(if $(filter yes,$(HAS_CJSON)),test_json_helpers test_http_canonical test_michi_discovery test_michi_time test_capability_parity test_pairing_http test_session_http test_discovery_disc)
 
 .PHONY: all test clean
@@ -70,7 +70,7 @@ all: $(TESTS)
 
 test: all
 	@set -e; \
-	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard test_michi_button test_michi_ui; do ./$$t; done; \
+	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard test_michi_button test_michi_button_debounce test_michi_ui; do ./$$t; done; \
 	if [ "$(HAS_CJSON)" = "yes" ]; then \
 	    ./test_json_helpers; \
 	    ./test_http_canonical; \
@@ -175,6 +175,16 @@ test_michi_button: test_michi_button.c $(BUTTON_SRC) \
 	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(BUTTON_DIR) $(PAIRING_INC) \
 	    $(IDENTITY_INC) -I$(IDENTITY_DIR) $(IDENTITY_DEFS) \
 	    -o $@ test_michi_button.c $(BUTTON_SRC)
+
+# michi_button_debounce: compiles the PURE debouncer (the single-authority
+# state machine) with NO ESP/FreeRTOS/NVS/identity deps - only stdint, so it
+# links with no shim ESP headers. Proves the release-bounce P0 fix and the
+# single-PRESS/single-RELEASE-per-tap contract on the host, no hardware.
+test_michi_button_debounce: test_michi_button_debounce.c \
+                            $(BUTTON_DIR)/michi_button_debounce.c \
+                            $(BUTTON_DIR)/michi_button_debounce.h $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(BUTTON_DIR) -o $@ \
+	    test_michi_button_debounce.c $(BUTTON_DIR)/michi_button_debounce.c
 
 test_michi_identity: test_michi_identity.c $(IDENTITY_SRC) \
                      $(IDENTITY_DIR)/include/michi_identity.h $(SHIMS)
@@ -350,4 +360,4 @@ clean:
 	      test_michi_time test_michi_pairing test_pairing_http \
 	      test_michi_session test_rtp_guard test_session_http \
 	      test_capability_parity test_discovery_disc test_michi_button \
-	      test_michi_ui render_ui_previews
+	      test_michi_button_debounce test_michi_ui render_ui_previews
