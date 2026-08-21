@@ -583,6 +583,134 @@ static void test_pairing_and_ota_screen_logic(void)
     free(fb2);
 }
 
+/* --------------------------------------------------------------------------
+ * Pairing Overlay Priority & Orthogonality
+ * -------------------------------------------------------------------------- */
+
+static void test_pairing_overlay_priority_and_orthogonality(void)
+{
+    printf("michi_ui: pairing overlay priority and orthogonality\n");
+
+    /* Test A: PLAYING + PAIRING_OVERLAY_PIN renders PIN screen */
+    michi_ui_screen_ctx_t ctx_play_overlay_pin = {
+        .state = MICHI_STATE_PLAYING,
+        .title = "Test Song",
+        .pairing_overlay = MICHI_UI_PAIRING_OVERLAY_PIN,
+        .pairing_pin = "739412"
+    };
+    michi_ui_screen_ctx_t ctx_pair_pin = {
+        .state = MICHI_STATE_PAIRING,
+        .pairing_pin = "739412"
+    };
+    michi_ui_screen_ctx_t ctx_play_no_overlay = {
+        .state = MICHI_STATE_PLAYING,
+        .title = "Test Song"
+    };
+    
+    uint16_t *fb1 = calloc((size_t)PANEL_W * PANEL_H, sizeof(uint16_t));
+    uint16_t *fb2 = calloc((size_t)PANEL_W * PANEL_H, sizeof(uint16_t));
+    
+    michi_ui_render_screen(fb1, PANEL_W, PANEL_H, 0, &ctx_play_overlay_pin);
+    michi_ui_render_screen(fb2, PANEL_W, PANEL_H, 0, &ctx_pair_pin);
+    
+    int diff = 0;
+    for (int i = 0; i < PANEL_W * PANEL_H; i++) {
+        if (fb1[i] != fb2[i]) diff++;
+    }
+    CHECK(diff == 0, "PLAYING with PIN overlay is identical to PAIRING with PIN");
+
+    michi_ui_render_screen(fb2, PANEL_W, PANEL_H, 0, &ctx_play_no_overlay);
+    diff = 0;
+    for (int i = 0; i < PANEL_W * PANEL_H; i++) {
+        if (fb1[i] != fb2[i]) diff++;
+    }
+    CHECK(diff > 0, "PLAYING with PIN overlay differs from PLAYING without overlay");
+
+    /* Test B: PLAYING + PAIRING_OVERLAY_WAITING renders waiting screen */
+    michi_ui_screen_ctx_t ctx_play_overlay_waiting = {
+        .state = MICHI_STATE_PLAYING,
+        .title = "Test Song",
+        .pairing_overlay = MICHI_UI_PAIRING_OVERLAY_WAITING
+    };
+    michi_ui_render_screen(fb1, PANEL_W, PANEL_H, 0, &ctx_play_overlay_waiting);
+    diff = 0;
+    for (int i = 0; i < PANEL_W * PANEL_H; i++) {
+        if (fb1[i] != fb2[i]) diff++;
+    }
+    CHECK(diff > 0, "PLAYING with WAITING overlay differs from plain PLAYING");
+
+    /* Test C: Volume overlay cannot cover pairing PIN overlay */
+    michi_ui_screen_ctx_t ctx_vol_overlay = {
+        .state = MICHI_STATE_PLAYING,
+        .pairing_overlay = MICHI_UI_PAIRING_OVERLAY_PIN,
+        .pairing_pin = "739412",
+        .show_volume_overlay = true
+    };
+    michi_ui_screen_ctx_t ctx_no_vol_overlay = {
+        .state = MICHI_STATE_PLAYING,
+        .pairing_overlay = MICHI_UI_PAIRING_OVERLAY_PIN,
+        .pairing_pin = "739412",
+        .show_volume_overlay = false
+    };
+    
+    michi_ui_render_screen(fb1, PANEL_W, PANEL_H, 0, &ctx_vol_overlay);
+    michi_ui_render_screen(fb2, PANEL_W, PANEL_H, 0, &ctx_no_vol_overlay);
+    
+    diff = 0;
+    for (int i = 0; i < PANEL_W * PANEL_H; i++) {
+        if (fb1[i] != fb2[i]) diff++;
+    }
+    CHECK(diff == 0, "PIN overlay beats volume overlay");
+
+    /* Test D: PLAYING with unknown source renders without invented name */
+    michi_ui_screen_ctx_t ctx_unknown_source = {
+        .state = MICHI_STATE_PLAYING,
+        .title = "Diamond",
+        .artist = "Pink Floyd",
+        .source = NULL
+    };
+    /* Render band 5 (y_origin=200, captures footer area) */
+    uint16_t band_buf[PANEL_W * BAND_H];
+    michi_ui_render_screen(band_buf, PANEL_W, BAND_H, 200, &ctx_unknown_source);
+    CHECK(1, "Renders unknown source without crash");
+
+    free(fb1);
+    free(fb2);
+
+    /* Test E: Band identity for button press feedback and pairing overlays */
+    static const screen_scenario_t scenarios[] = {
+        {
+            .id = "OVERLAY-1",
+            .description = "PLAYING + BTN_PRESS",
+            .ctx = {
+                .state = MICHI_STATE_PLAYING,
+                .pairing_overlay = MICHI_UI_PAIRING_OVERLAY_BUTTON_PRESS,
+            }
+        },
+        {
+            .id = "OVERLAY-2",
+            .description = "PLAYING + WAITING",
+            .ctx = {
+                .state = MICHI_STATE_PLAYING,
+                .pairing_overlay = MICHI_UI_PAIRING_OVERLAY_WAITING,
+            }
+        },
+        {
+            .id = "OVERLAY-3",
+            .description = "PLAYING + PIN",
+            .ctx = {
+                .state = MICHI_STATE_PLAYING,
+                .pairing_overlay = MICHI_UI_PAIRING_OVERLAY_PIN,
+                .pairing_pin = "123456",
+            }
+        }
+    };
+    
+    for (size_t i = 0; i < sizeof(scenarios) / sizeof(scenarios[0]); i++) {
+        check_screen_band_identity(&scenarios[i]);
+    }
+}
+
 int main(void)
 {
     test_wrap();
@@ -594,6 +722,7 @@ int main(void)
     test_all_screen_scenarios_band_identity();
     test_buffering_vs_playing_difference();
     test_pin_landscape();
+    test_pairing_overlay_priority_and_orthogonality();
 
     if (failures == 0) {
         printf("PASS test_michi_ui (all landscape scenarios & contracts green)\n");
