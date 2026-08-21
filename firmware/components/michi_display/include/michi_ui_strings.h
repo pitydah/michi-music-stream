@@ -41,6 +41,8 @@ extern "C" {
 #define MICHI_UI_STR_PAIRING_WAITING_TITLE "Vinculando"
 #define MICHI_UI_STR_PAIRING_WAITING_HINT  "Esperando servidor"
 #define MICHI_UI_STR_PAIRING_PIN_HINT  "Introduce este código en Michi Micro Server"
+#define MICHI_UI_STR_BTN_RELEASE_HINT  "Suelta para vincular"
+#define MICHI_UI_STR_BTN_RELEASE_SUB   "Vinculando al soltar"
 
 /* Playback & Session */
 #define MICHI_UI_STR_SESSION_PREP      "Preparando reproducción"

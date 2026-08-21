@@ -17,6 +17,22 @@ typedef enum {
     MICHI_UI_DAC_ERROR
 } michi_ui_dac_state_t;
 
+/**
+ * @brief Auxiliary display overlay for pairing UX.
+ *
+ * The primary FSM state remains authoritative (PLAYING stays PLAYING).
+ * The overlay is rendered on top of the primary screen when set.
+ * Priority (highest first): PAIRING_PIN > PAIRING_WAITING > BUTTON_PRESS_FEEDBACK
+ * Volume overlay is handled separately via show_volume_overlay (lower priority
+ * than pairing overlays).
+ */
+typedef enum {
+    MICHI_UI_PAIRING_OVERLAY_NONE = 0,      /*!< No pairing overlay active */
+    MICHI_UI_PAIRING_OVERLAY_BUTTON_PRESS,  /*!< Button confirmed, show release hint */
+    MICHI_UI_PAIRING_OVERLAY_WAITING,       /*!< Pairing window open, waiting for app */
+    MICHI_UI_PAIRING_OVERLAY_PIN,           /*!< PIN available, show PIN screen */
+} michi_ui_pairing_overlay_t;
+
 typedef enum {
     MICHI_ERR_CLASS_NONE = 0,
     MICHI_ERR_CLASS_AUDIO,
@@ -58,6 +74,7 @@ typedef struct michi_ui_screen_ctx {
     const char *fw_version;        /*!< Firmware version string */
     const char *board_model;       /*!< Board model string */
     bool show_volume_overlay;      /*!< True if temporary volume overlay is active */
+    michi_ui_pairing_overlay_t pairing_overlay; /*!< Active pairing UI overlay (NONE = no overlay) */
 } michi_ui_screen_ctx_t;
 
 /**
@@ -82,6 +99,7 @@ void michi_ui_draw_screen_updating(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, u
 void michi_ui_draw_screen_recoverable_error(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin, uint32_t error_code, const michi_ui_screen_ctx_t *ctx);
 void michi_ui_draw_screen_fatal_error(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin, uint32_t error_code, const michi_ui_screen_ctx_t *ctx);
 void michi_ui_draw_screen_diagnostics(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin, const michi_ui_screen_ctx_t *ctx);
+void michi_ui_draw_screen_button_press_feedback(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin);
 
 #ifdef __cplusplus
 }

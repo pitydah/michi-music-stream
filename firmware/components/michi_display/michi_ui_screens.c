@@ -167,7 +167,6 @@ void michi_ui_draw_screen_session_pending(uint16_t *fb, uint16_t fb_w, uint16_t 
 
     michi_ui_draw_icon(fb, fb_w, fb_h, y_origin, 144, 85, MICHI_ICON_WAVE, 32, MICHI_UI_ACCENT);
     ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 130, MICHI_UI_STR_CONNECTING_TITLE, font_lg, MICHI_UI_TEXT_PRIMARY);
-    ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 162, MICHI_UI_STR_DEFAULT_SERVER, font_sm, MICHI_UI_TEXT_SECONDARY);
 }
 
 void michi_ui_draw_screen_buffering(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin,
@@ -253,7 +252,7 @@ void michi_ui_draw_screen_playing(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, ui
     char fmt[32];
     format_audio_spec(fmt, sizeof(fmt), (ctx != NULL) ? ctx->sample_rate : 48000, (ctx != NULL) ? ctx->bit_depth : 16);
     const char *source = (ctx != NULL && ctx->source != NULL && ctx->source[0] != '\0')
-                         ? ctx->source : MICHI_UI_STR_DEFAULT_SERVER;
+                         ? ctx->source : NULL;
     michi_ui_draw_audio_footer_landscape(fb, fb_w, fb_h, y_origin, source, fmt);
 }
 
@@ -297,7 +296,7 @@ void michi_ui_draw_screen_paused(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uin
     char fmt[32];
     format_audio_spec(fmt, sizeof(fmt), (ctx != NULL) ? ctx->sample_rate : 48000, (ctx != NULL) ? ctx->bit_depth : 16);
     const char *source = (ctx != NULL && ctx->source != NULL && ctx->source[0] != '\0')
-                         ? ctx->source : MICHI_UI_STR_DEFAULT_SERVER;
+                         ? ctx->source : NULL;
     michi_ui_draw_audio_footer_landscape(fb, fb_w, fb_h, y_origin, source, fmt);
 }
 
@@ -495,6 +494,25 @@ void michi_ui_draw_screen_diagnostics(uint16_t *fb, uint16_t fb_w, uint16_t fb_h
     }
 }
 
+void michi_ui_draw_screen_button_press_feedback(uint16_t *fb, uint16_t fb_w,
+                                                uint16_t fb_h, uint16_t y_origin)
+{
+    const michi_ui_font_t *font_lg = michi_ui_font_get(MICHI_FONT_LG);
+    const michi_ui_font_t *font_sm = michi_ui_font_get(MICHI_FONT_SM);
+
+    /* Physical button icon 48x48 centered at cx=160, y=65 */
+    michi_ui_draw_icon(fb, fb_w, fb_h, y_origin, (320 - 48) / 2, 65, MICHI_ICON_BUTTON, 48,
+                       MICHI_UI_ACCENT);
+
+    /* Primary instruction centered at y=130 */
+    ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 130,
+                          MICHI_UI_STR_BTN_RELEASE_HINT, font_lg, MICHI_UI_TEXT_PRIMARY);
+
+    /* Subtext centered at y=158 in SM */
+    ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 158,
+                          MICHI_UI_STR_BTN_RELEASE_SUB, font_sm, MICHI_UI_TEXT_SECONDARY);
+}
+
 void michi_ui_render_screen(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
                             uint16_t y_origin, const michi_ui_screen_ctx_t *ctx)
 {
@@ -510,9 +528,25 @@ void michi_ui_render_screen(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
         return;
     }
 
-    /* Diagnostics priority view */
+    /* Diagnostics: always beats all overlays */
     if (ctx->show_diagnostics) {
         michi_ui_draw_screen_diagnostics(fb, fb_w, fb_h, y_origin, ctx);
+        return;
+    }
+
+    /* Pairing overlays: beat volume; primary FSM state is preserved */
+    if (ctx->pairing_overlay == MICHI_UI_PAIRING_OVERLAY_PIN) {
+        /* PIN available: render pairing PIN screen using primary PIN */
+        michi_ui_draw_screen_pairing(fb, fb_w, fb_h, y_origin, ctx->pairing_pin, ctx);
+        return;
+    }
+    if (ctx->pairing_overlay == MICHI_UI_PAIRING_OVERLAY_WAITING) {
+        /* Pairing window open, no PIN yet */
+        michi_ui_draw_screen_pairing(fb, fb_w, fb_h, y_origin, NULL, ctx);
+        return;
+    }
+    if (ctx->pairing_overlay == MICHI_UI_PAIRING_OVERLAY_BUTTON_PRESS) {
+        michi_ui_draw_screen_button_press_feedback(fb, fb_w, fb_h, y_origin);
         return;
     }
 

@@ -76,6 +76,7 @@ static uint32_t s_last_error;
 /* Pairing PIN (MS-06): 6 digits, shown ONLY on the local panel, never
  * returned by HTTP. Empty when no active PIN. */
 static char s_pairing_pin[7];
+static int s_pairing_overlay = 0;
 
 static void queue_render(void)
 {
@@ -115,11 +116,29 @@ static void on_state_event(const michi_event_t *ev)
  * NULL/empty input renders as empty string downstream. */
 static void copy_bounded(char *dst, size_t dst_cap, const char *src)
 {
-    if (src == NULL) {
-        dst[0] = '\0';
+    if (src == NULL || dst_cap == 0) {
+        if (dst_cap > 0) dst[0] = '\0';
         return;
     }
-    size_t n = strnlen(src, dst_cap - 1);
+    /* Copy at most dst_cap-1 bytes but never break a UTF-8 sequence.
+     * Walk back from the hard limit to find a safe truncation point. */
+    size_t max = dst_cap - 1;
+    size_t n = strnlen(src, max);
+    /* If truncated (src[n] != '\0'), walk back to the last ASCII byte or
+     * the first byte of the last complete multi-byte sequence. */
+    if (n == max && (unsigned char)src[n] != '\0') {
+        /* Walk back: a byte is a UTF-8 continuation byte if (b & 0xC0) == 0x80.
+         * Keep removing bytes from the end until we are at an ASCII byte or
+         * a leading multi-byte byte. */
+        while (n > 0 && ((unsigned char)src[n - 1] & 0xC0u) == 0x80u) {
+            n--;
+        }
+        /* If the previous byte is now a multi-byte leading byte (>= 0xC0),
+         * drop it too — we have lost its continuations. */
+        if (n > 0 && ((unsigned char)src[n - 1] & 0xC0u) == 0xC0u) {
+            n--;
+        }
+    }
     memcpy(dst, src, n);
     dst[n] = '\0';
 }
@@ -146,6 +165,7 @@ static void render_current_state(void)
     const michi_dac_caps_t *dac_caps = michi_dac_get_caps();
     int8_t rssi = 0;
     uint32_t last_err;
+    int pairing_overlay_snap;
 
     portENTER_CRITICAL(&s_info_mux);
     copy_bounded(s_snap_src, sizeof(s_snap_src), s_source);
@@ -153,6 +173,7 @@ static void render_current_state(void)
     copy_bounded(s_snap_artist, sizeof(s_snap_artist), s_artist);
     copy_bounded(s_snap_pin, sizeof(s_snap_pin), s_pairing_pin);
     last_err = s_last_error;
+    pairing_overlay_snap = s_pairing_overlay;
     portEXIT_CRITICAL(&s_info_mux);
 
     bool wifi_prov = michi_wifi_is_provisioned();
@@ -170,7 +191,10 @@ static void render_current_state(void)
     if (dac_caps != NULL) {
         if (dac_caps->detected) {
             dac_st = MICHI_UI_DAC_PRESENT;
-            dac_name = (dac_caps->model[0] != '\0') ? dac_caps->model : "PCM5122";
+            /* Device Truth: only show model if actually identified; do NOT
+             * fabricate "PCM5122" — the product may have a different DAC or
+             * the model may not have been read yet. */
+            dac_name = (dac_caps->model[0] != '\0') ? dac_caps->model : NULL;
         } else {
             dac_st = MICHI_UI_DAC_ABSENT;
         }
@@ -197,10 +221,15 @@ static void render_current_state(void)
         .dac_state = dac_st,
         .dac_detected = (dac_st == MICHI_UI_DAC_PRESENT),
         .dac_model = dac_name,
-        .psram_bytes = binfo != NULL ? binfo->psram_bytes_expected : 0,
+        /* PSRAM Device Truth: psram_bytes_expected is a board config constant,
+         * NOT a hardware measurement. Until a michi_board_get_caps() API
+         * exists to expose the ACTUALLY detected size, pass 0 so the
+         * diagnostics screen shows "Desconocido" rather than an assumed value. */
+        .psram_bytes = 0,
         .fw_version = MICHI_FW_VERSION_STR,
         .board_model = binfo != NULL ? binfo->model : "Waveshare ESP32-S3-LCD-2",
         .show_volume_overlay = show_vol,
+        .pairing_overlay = (michi_ui_pairing_overlay_t)pairing_overlay_snap,
     };
 
     if (s_frame_snapshot.state == MICHI_STATE_UPDATING) {
@@ -370,6 +399,18 @@ esp_err_t michi_display_show_pairing_pin(const char *pin)
 esp_err_t michi_display_clear_pairing_pin(void)
 {
     return michi_display_show_pairing_pin(NULL);
+}
+
+esp_err_t michi_display_set_pairing_overlay(int overlay)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    portENTER_CRITICAL(&s_info_mux);
+    s_pairing_overlay = overlay;
+    portEXIT_CRITICAL(&s_info_mux);
+    queue_render();
+    return ESP_OK;
 }
 
 esp_err_t michi_display_set_diagnostics(bool show)

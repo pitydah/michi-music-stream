@@ -132,6 +132,22 @@ esp_err_t michi_display_set_diagnostics(bool show);
  */
 esp_err_t michi_display_trigger_volume_overlay(void);
 
+/**
+ * @brief Pairing UI overlay type. Mirrors michi_ui_pairing_overlay_t.
+ * Use these constants to avoid including the full UI header.
+ */
+#define MICHI_DISPLAY_PAIRING_OVERLAY_NONE     0
+#define MICHI_DISPLAY_PAIRING_OVERLAY_BTN_PRESS 1
+#define MICHI_DISPLAY_PAIRING_OVERLAY_WAITING   2
+#define MICHI_DISPLAY_PAIRING_OVERLAY_PIN       3
+
+/**
+ * @brief Set the active pairing UI overlay. Pass MICHI_DISPLAY_PAIRING_OVERLAY_NONE to clear.
+ * TASK context only; never blocks; triggers re-render.
+ * @return ESP_OK; ESP_ERR_INVALID_STATE if not initialized.
+ */
+esp_err_t michi_display_set_pairing_overlay(int overlay);
+
 #if !defined(ESP_PLATFORM)
 void michi_display_set_mock_time_ms(int64_t now_ms);
 #endif
