@@ -21,7 +21,7 @@ BUNDLE_DIR = REPO_ROOT / "contracts/michi-link"
 
 MICHI_LINK_TAG = "michi-link-v1.0.0-alpha.1"
 MICHI_LINK_TAG_COMMIT = "84b72029e00dcb66915acc0805df0c7f50b026bc"
-STREAM_TESTED_COMMIT = "61e812e6d1297d9690b072c92c8e32b1a1e51f90"
+STREAM_TESTED_COMMIT = "0e27a086c9ecb6abe8b56237aef2813646c3be8d"
 
 CASES = [
     {"id": "E2E-01", "name": "signed discovery announce vector (schema + Ed25519 + michi_id; altered signature rejected)", "result": "pass"},
