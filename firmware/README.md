@@ -675,7 +675,7 @@ renderer (`michi_board_display_draw_text`).
 
 | State | Screen |
 |-------|--------|
-| BOOTING, SELF_TEST | none — covered by the BSP boot screen (division below) |
+| BOOTING, SELF_TEST | product boot screen — cat icon, `michi`, `iniciando` (division below) |
 | IDLE | `IDLE` / `Ready to pair` |
 | UNPROVISIONED | `Not configured` / `Press pairing button` |
 | PROVISIONING, WIFI_CONNECTING | `Connecting...` |
@@ -710,14 +710,21 @@ image pipeline is not planned.
 
 ### Division with the BSP boot screen
 
-`app_main` renders the boot screen (board self-test results) **before**
-posting the boot events, and the render task skips BOOTING/SELF_TEST: the
-boot screen covers that window and is never painted over. The dynamic
-screens take over as soon as the FSM reaches a stable state (IDLE at boot
-with the current phase-5 routing; UNPROVISIONED once phase 9 routes it).
+The render task paints the product boot screen (cat icon, `michi`,
+`iniciando` — `michi_ui_draw_screen_boot` via the state dispatcher) for
+BOOTING/SELF_TEST. `app_main` triggers an early redraw
+(`michi_display_request_redraw`) once the panel is available after
+`michi_board_init`, so the screen shows while the rest of the boot
+continues; the boot events then drive BOOTING → SELF_TEST → IDLE through
+the same task. The BSP legacy boot screen (`michi_board_display_boot_screen`)
+is **not** called in the normal flow anymore — its technical content
+(`Board:`/`Flash:`/.../`Result:`) lives in the logs and on the diagnostics
+screen. The dynamic screens take over as soon as the FSM reaches a stable
+state (IDLE at boot with the current phase-5 routing; UNPROVISIONED once
+phase 9 routes it).
 
 Init: `michi_display_init()` right after `michi_state_init()`; a failure
-continues degraded (no dynamic screens, boot screen still shows,
+continues degraded (no dynamic screens, the panel stays black,
 `subsystem=display state=failed phase=6`). Success logs
 `subsystem=display state=ok phase=6`. Kconfig: render task stack
 (`MICHI_DISPLAY_TASK_STACK_BYTES`, 4096) and render queue length

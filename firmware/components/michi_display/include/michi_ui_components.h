@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "michi_ui.h"
@@ -9,87 +10,110 @@ extern "C" {
 #endif
 
 /**
- * @brief Reusable screen components (UI redesign, phase UI-02).
+ * @brief Reusable screen components for Landscape 320x240 UI.
  *
- * Composite building blocks over the UI-01 primitives: header/footer
- * chrome, the status dot, wrapped multiline text, progress bars and
- * centered messages. Purely presentational and INERT in this phase: no
- * existing screen migrates yet (later phases replace the ad-hoc drawing
- * in michi_display.c with these components).
- *
- * Band contract (MS-11, inherited from michi_board): every component
- * receives the band framebuffer (fb_w x fb_h RGB565) plus y_origin, the
- * absolute top row of the band. Layout coordinates stay ABSOLUTE panel
- * rows (240 x 320); the underlying UI-01 primitives convert to the local
- * band row and clip per pixel, so an element straddling a band boundary
- * is split correctly across two flushes. Components never write outside
- * the band; host tests prove banded rendering is pixel-identical to a
- * full-frame render.
+ * Band contract (MS-11): every component receives the band framebuffer
+ * (fb_w x fb_h RGB565) plus y_origin, the absolute top row of the band.
+ * Layout coordinates stay ABSOLUTE panel rows (320 x 240); the underlying
+ * primitives convert to local band coordinates and clip per pixel.
  */
 
-/*!< Panel width in pixels (x spans [0, 240)). */
-#define MICHI_UI_PANEL_W 240
-
-/*!< Header title row in absolute panel rows. */
-#define MICHI_UI_HEADER_Y 8
-
-/*!< Footer row in absolute panel rows. */
-#define MICHI_UI_FOOTER_Y 304
-
-/*!< Status dot radius in pixels. */
-#define MICHI_UI_STATUS_DOT_R 3
-
-/*!< Longest input string the components copy into their internal buffer
- *   (128 bytes total: the remaining 4 bytes are reserved for the 3-byte
- *   '…' appended by ui_ellipsize plus the NUL, so a full-length input can
- *   never overflow). Longer inputs are truncated. */
+/*!< Longest input string the components copy into their internal buffer */
 #define MICHI_UI_COMPONENT_MAX_STR 124
 
-/**
- * @brief Draw the screen header: title centered at MICHI_UI_HEADER_Y in
- *        MICHI_UI_FONT_MD, MICHI_UI_TEXT_PRIMARY.
- *
- * Band contract: absolute rows, per-pixel clipping (a title em box is
- * small enough to fit one band, but the text primitive clips anyway).
- */
-void michi_ui_draw_header(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
-                          uint16_t y_origin, const char *title);
+/*!< Status dot radius in pixels */
+#define MICHI_UI_STATUS_DOT_R 3
 
 /**
- * @brief Draw the screen footer: text centered at MICHI_UI_FOOTER_Y in
- *        MICHI_UI_FONT_SM, MICHI_UI_MUTED.
- *
- * Band contract: absolute rows, per-pixel clipping (same as the header).
+ * @brief Clear a band framebuffer to a background color (fast 32-bit word fill).
  */
-void michi_ui_draw_footer(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
-                          uint16_t y_origin, const char *text);
+void ui_clear_band(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t color);
 
 /**
- * @brief Draw a filled circle of MICHI_UI_STATUS_DOT_R px centered at
- *        absolute (cx, cy). Palette colors come from the caller.
- *
- * Band contract: clipped per pixel, so a dot straddling a band boundary
- * is split correctly across two flushes. Background untouched elsewhere.
+ * @brief Draw a filled circle of radius @p r centered at absolute (cx, cy).
+ */
+void michi_ui_draw_circle_filled(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                                 uint16_t y_origin, int cx, int cy, int r,
+                                 uint16_t color);
+
+/**
+ * @brief Draw the standard status dot (radius 3).
  */
 void michi_ui_draw_status_dot(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
                               uint16_t y_origin, int cx, int cy,
                               uint16_t color);
 
 /**
- * @brief Wrap and draw str inside rect: wraps to rect.w via ui_wrap_text
- *        and draws up to floor(rect.h / line_height) lines, aligned
- *        LEFT/CENTER/RIGHT inside rect, top-down from rect.y.
- *
- * Text color is @p color; background untouched outside the glyph pixels.
- * Returns the number of lines drawn (0 when rect or str is invalid).
- *
- * ui_wrap_text MUTATES the buffer it processes (NUL line breaks), so the
- * component copies str into an internal buffer first: callers keep their
- * string intact and do NOT need to pass a mutable copy. Inputs longer
- * than MICHI_UI_COMPONENT_MAX_STR bytes are truncated.
- *
- * Band contract: absolute rows; lines straddling a band boundary are
- * clipped per pixel by the text primitive.
+ * @brief Draw a horizontal line from x to x+w-1 at absolute row y.
+ */
+void michi_ui_draw_hline(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                         uint16_t y_origin, int x, int y, int w,
+                         uint16_t color);
+
+/**
+ * @brief Draw the landscape header: Brand "Michi" at (16, 14),
+ *        Wi-Fi icon at x=265, Server icon at x=290.
+ */
+void michi_ui_draw_header_landscape(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                                    uint16_t y_origin, const char *brand,
+                                    bool wifi_connected, int8_t wifi_rssi,
+                                    bool server_connected);
+
+/**
+ * @brief Draw the header divider line at y=42 (w=288, x=16..304).
+ *        If is_playing is true, the first 28 px are highlighted in ACCENT.
+ */
+void michi_ui_draw_divider(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                           uint16_t y_origin, bool is_playing);
+
+/**
+ * @brief Draw the playback footer at y=211: Speaker icon + volume at left,
+ *        format string (e.g. "48 · 16") right-aligned at x=304.
+ */
+void michi_ui_draw_playback_footer_landscape(uint16_t *fb, uint16_t fb_w,
+                                             uint16_t fb_h, uint16_t y_origin,
+                                             uint8_t volume,
+                                             const char *format_str);
+
+/**
+ * @brief Draw the minimal audio footer at y=212: source left, format right-aligned.
+ *        No speaker icon, no volume.
+ */
+void michi_ui_draw_audio_footer_landscape(uint16_t *fb, uint16_t fb_w,
+                                          uint16_t fb_h, uint16_t y_origin,
+                                          const char *source,
+                                          const char *format_str);
+
+/**
+ * @brief Draw a 6-digit pairing PIN visually spaced as "XXX XXX" centered
+ *        at absolute (x_center, y_center) in MICHI_FONT_PIN (41 px height).
+ */
+void michi_ui_draw_pin_landscape(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                                 uint16_t y_origin, int x_center, int y_center,
+                                 const char *pin, uint16_t color);
+
+/**
+ * @brief Draw a horizontal row of activity dots centered at (cx, cy).
+ */
+void michi_ui_draw_activity_dots(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                                 uint16_t y_origin, int cx, int cy,
+                                 int count, int spacing, uint16_t color);
+
+/**
+ * @brief Draw a fine progress bar (h=3..4 px) without heavy outline.
+ */
+void michi_ui_draw_progress_landscape(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                                      uint16_t y_origin, int x, int y,
+                                      int w, int h, uint8_t pct);
+
+/**
+ * @brief Draw the temporary volume overlay screen.
+ */
+void michi_ui_draw_volume_overlay(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                                  uint16_t y_origin, uint8_t volume);
+
+/**
+ * @brief Wrap and draw str inside rect.
  */
 int michi_ui_draw_multiline(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
                             uint16_t y_origin, const michi_ui_rect_t *rect,
@@ -97,34 +121,31 @@ int michi_ui_draw_multiline(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
                             michi_ui_align_t align, uint16_t color);
 
 /**
- * @brief Draw an outlined progress bar with its top-left at absolute
- *        (x, y): 1 px MICHI_UI_MUTED outline, MICHI_UI_ACCENT fill from
- *        the left. pct is clamped to 0..100.
- *
- * Band contract: clipped per pixel, so a bar straddling a band boundary
- * is split correctly across two flushes.
- */
-void michi_ui_draw_progress(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
-                            uint16_t y_origin, int x, int y, int w, int h,
-                            uint8_t pct);
-
-/**
- * @brief Draw a message horizontally centered on the panel and
- *        vertically centered on absolute y_center (the em box top is
- *        y_center - line_height / 2), ellipsized to MICHI_UI_PANEL_W.
- *
- * ui_ellipsize MUTATES the buffer it processes (in-place '…' tail), so
- * the component copies str into an internal buffer first: callers keep
- * their string intact and do NOT need to pass a mutable copy. Inputs
- * longer than MICHI_UI_COMPONENT_MAX_STR bytes are truncated.
- *
- * Band contract: absolute rows, per-pixel clipping by the text
- * primitive; a message straddling a band boundary splits correctly.
+ * @brief Draw a message centered horizontally and vertically at y_center.
  */
 void michi_ui_draw_centered_message(uint16_t *fb, uint16_t fb_w,
                                     uint16_t fb_h, uint16_t y_origin,
                                     int y_center, michi_ui_font_id_t font,
                                     const char *str, uint16_t color);
+
+/* Backward-compatible wrappers */
+void michi_ui_draw_header(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                          uint16_t y_origin, const char *title);
+void michi_ui_draw_footer(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                          uint16_t y_origin, const char *text);
+void michi_ui_draw_header_bar(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                              uint16_t y_origin, const char *brand,
+                              michi_ui_icon_t right_icon, bool show_icon,
+                              uint16_t icon_color);
+void michi_ui_draw_playback_footer(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                                   uint16_t y_origin, uint8_t volume,
+                                   const char *format_str);
+void michi_ui_draw_pin(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                       uint16_t y_origin, int y_center, const char *pin,
+                       uint16_t color);
+void michi_ui_draw_progress(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                            uint16_t y_origin, int x, int y, int w, int h,
+                            uint8_t pct);
 
 #ifdef __cplusplus
 }

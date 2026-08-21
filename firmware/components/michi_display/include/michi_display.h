@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -19,8 +20,11 @@ extern "C" {
  * - The render task owns the framebuffer/flush (michi_board is not
  *   thread-safe for the display), coalesces pending requests and draws the
  *   screen for the CURRENT state (michi_state_get()).
- * - BOOTING and SELF_TEST are covered by the BSP boot screen rendered by
- *   app_main; this subsystem skips them (documented division).
+ * - BOOTING and SELF_TEST are covered by the product boot screen drawn by
+ *   this render task (michi_ui_draw_screen_boot via the state dispatcher);
+ *   app_main triggers an early redraw once the panel is available
+ *   (michi_display_request_redraw after board init). The BSP legacy boot
+ *   screen is out of the normal flow (documented division).
  *
  * Producer contract: all producers (the observer, the session layer, the
  * volume/misc callers) MUST run in task context - the render queue uses
@@ -39,7 +43,9 @@ extern "C" {
  *
  * Must be called after michi_state_init(). Safe to call once; repeated
  * calls return ESP_OK (idempotent). On failure app_main continues degraded:
- * no dynamic screens, the BSP boot screen still shows.
+ * no dynamic screens (the panel stays black - the BSP boot screen is no
+ * longer rendered in the normal flow; its technical content lives in the
+ * logs and on the diagnostics screen).
  *
  * @return ESP_OK; ESP_ERR_NO_MEM if the queue/task allocation or the
  *         observer registration fails (observer table full).
@@ -115,6 +121,36 @@ esp_err_t michi_display_show_pairing_pin(const char *pin);
  *         initialized.
  */
 esp_err_t michi_display_clear_pairing_pin(void);
+
+/**
+ * @brief Enable or disable the diagnostics override view.
+ */
+esp_err_t michi_display_set_diagnostics(bool show);
+
+/**
+ * @brief Trigger the temporary volume overlay screen.
+ */
+esp_err_t michi_display_trigger_volume_overlay(void);
+
+/**
+ * @brief Pairing UI overlay type. Mirrors michi_ui_pairing_overlay_t.
+ * Use these constants to avoid including the full UI header.
+ */
+#define MICHI_DISPLAY_PAIRING_OVERLAY_NONE     0
+#define MICHI_DISPLAY_PAIRING_OVERLAY_BTN_PRESS 1
+#define MICHI_DISPLAY_PAIRING_OVERLAY_WAITING   2
+#define MICHI_DISPLAY_PAIRING_OVERLAY_PIN       3
+
+/**
+ * @brief Set the active pairing UI overlay. Pass MICHI_DISPLAY_PAIRING_OVERLAY_NONE to clear.
+ * TASK context only; never blocks; triggers re-render.
+ * @return ESP_OK; ESP_ERR_INVALID_STATE if not initialized.
+ */
+esp_err_t michi_display_set_pairing_overlay(int overlay);
+
+#if !defined(ESP_PLATFORM)
+void michi_display_set_mock_time_ms(int64_t now_ms);
+#endif
 
 #ifdef __cplusplus
 }

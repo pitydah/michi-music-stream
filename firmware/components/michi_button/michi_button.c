@@ -13,11 +13,15 @@
 #include "esp_timer.h"
 
 #include "michi_button.h"
+#include "michi_button_debounce.h"
 #include "michi_button_gesture.h"
 #include "michi_pairing.h"
 #include "michi_state.h"
+#include "michi_display.h"
 
 #define TAG "michi_button"
+
+#define MICHI_BUTTON_MIN_PRESS_MS CONFIG_MICHI_BUTTON_MIN_PRESS_MS
 
 /* Gesture contract (P1-07): the factory-reset band must sit strictly
  * above the recovery band - otherwise every recovery hold would become a
@@ -31,17 +35,11 @@ _Static_assert(CONFIG_MICHI_BUTTON_FACTORY_RESET_PRESS_MS >
  * delayed by button work; the task only polls a GPIO and posts events. */
 #define MICHI_BUTTON_TASK_PRIORITY 2
 
-/* Consecutive stable samples required to confirm an edge: N = DEBOUNCE/POLL
- * rounded up. The stable window is (N-1) poll periods (first-to-last
- * sample). Honest guarantee: a glitch shorter than ONE POLL PERIOD appears
- * in at most one sample and can never confirm an edge (N >= 2); a bounce
- * longer than the poll period but shorter than the debounce window CAN
- * fill N consecutive samples - the rejection guarantee is poll-period
- * granularity, not the full debounce window. POLL >= DEBOUNCE would make
- * N = 1 (debounce disabled): init clamps N to 2 and logs a warning. */
-#define MICHI_BUTTON_DEBOUNCE_SAMPLES \
-    ((CONFIG_MICHI_BUTTON_DEBOUNCE_MS + CONFIG_MICHI_BUTTON_POLL_MS - 1) / \
-     CONFIG_MICHI_BUTTON_POLL_MS)
+/* Confirmed-edge debounce window (ms) - the time-based single-authority
+ * debouncer (michi_button_debounce.c). The poll period no longer gates the
+ * accuracy: the debouncer measures a stable window on the monotonic clock,
+ * so POLL >= DEBOUNCE no longer silently disables it. */
+#define MICHI_BUTTON_DEBOUNCE_MS CONFIG_MICHI_BUTTON_DEBOUNCE_MS
 
 /* Join timeout: the task ticks every POLL_MS, so 200 ms covers a full tick
  * plus the shutdown exit. */
@@ -80,9 +78,6 @@ static volatile michi_state_t s_press_state = MICHI_STATE_BOOTING;
  * int64_t: esp_timer_get_time() is int64_t, and a uint32_t cast would wrap
  * at 49.7 days of uptime (F8 follow-up). */
 static int64_t s_press_boot_elapsed;
-/* Consecutive samples required to confirm an edge; 2 when the Kconfig
- * values make the debounce impossible (POLL >= DEBOUNCE, see init). */
-static int s_debounce_samples = MICHI_BUTTON_DEBOUNCE_SAMPLES;
 
 static void IRAM_ATTR button_isr(void *arg)
 {
@@ -128,8 +123,16 @@ static esp_err_t post_with_retry(michi_event_id_t id, uint32_t data)
 
 static void handle_short_press(uint32_t press_ms, michi_state_t st)
 {
+    /* Short press opens pairing from any non-protected state.
+     * Note: when primary_state is PLAYING/PAUSED/BUFFERING, the FSM must
+     * implement auxiliary pairing (pairing window + no audio teardown).
+     * If the FSM performs a hard PLAYING->PAIRING transition, only
+     * IDLE/UNPROVISIONED/PAIRING are safe. Update this list once the FSM
+     * supports auxiliary pairing. */
     if (st == MICHI_STATE_IDLE || st == MICHI_STATE_UNPROVISIONED ||
-        st == MICHI_STATE_PAIRING) {
+        st == MICHI_STATE_PAIRING || st == MICHI_STATE_SESSION_PENDING ||
+        st == MICHI_STATE_BUFFERING || st == MICHI_STATE_PLAYING ||
+        st == MICHI_STATE_PAUSED) {
         ESP_LOGI(TAG, "button: press_ms=%u action=pairing", (unsigned)press_ms);
         /* The physical press is the ONLY authority that opens the pairing
          * window. From IDLE/UNPROVISIONED, PAIRING_STARTED is posted ONLY
@@ -145,9 +148,17 @@ static void handle_short_press(uint32_t press_ms, michi_state_t st)
                      esp_err_to_name(err));
             return;
         }
-        if (st != MICHI_STATE_PAIRING) {
+        /* Post PAIRING_STARTED only from states where the FSM safely
+         * transitions to PAIRING without tearing down an active session.
+         * From SESSION_PENDING/BUFFERING/PLAYING/PAUSED the pairing window
+         * is orthogonal: primary FSM state is preserved; the display overlay
+         * communicates pairing status without a state transition. */
+        if (st == MICHI_STATE_IDLE || st == MICHI_STATE_UNPROVISIONED) {
             post_with_retry(MICHI_EVENT_PAIRING_STARTED, 0);
         }
+        /* Set pairing waiting overlay for ALL states. The display task reads
+         * this at the next render, independent of primary FSM state. */
+        michi_display_set_pairing_overlay(MICHI_DISPLAY_PAIRING_OVERLAY_WAITING);
         return;
     }
     ESP_LOGW(TAG, "button: press_ms=%u action=pairing state=%s "
@@ -167,6 +178,18 @@ static void handle_short_press(uint32_t press_ms, michi_state_t st)
  * tested); this file executes the chosen action. */
 static void handle_release(uint32_t press_ms)
 {
+    /* Always clear button-press feedback overlay on any release (the button
+     * is physically up; handle_short_press re-sets to WAITING if pairing
+     * window opens successfully). */
+    michi_display_set_pairing_overlay(MICHI_DISPLAY_PAIRING_OVERLAY_NONE);
+
+    /* Discard noise pulses shorter than the minimum valid press. */
+    if (press_ms < MICHI_BUTTON_MIN_PRESS_MS) {
+        ESP_LOGD(TAG, "button: press %u ms < MIN_PRESS %u ms, discarded as noise",
+                 (unsigned)press_ms, (unsigned)MICHI_BUTTON_MIN_PRESS_MS);
+        return;
+    }
+
     const michi_state_t st = michi_state_get();
 
     const michi_button_action_t action = michi_button_gesture_classify(
@@ -208,12 +231,16 @@ static void handle_release(uint32_t press_ms)
 
 static void button_task(void *arg)
 {
-    /* Debounce state (task-owned, no lock needed): s_stable is the last
-     * confirmed level; s_candidate accumulates consecutive identical
-     * samples until it reaches s_debounce_samples, then becomes stable. */
-    int stable = 1;
-    int candidate = 1;
-    uint32_t candidate_count = 0;
+    /* The debouncer is the SINGLE AUTHORITY for edge confirmation: it owns
+     * the raw-level -> stable-level state machine and emits exactly one
+     * event per confirmed transition. GPIO, time and the FSM never bypass it.
+     * The ISR (button_isr) records the edge timestamp that anchors the
+     * duration; the task only reads it AFTER the debouncer has confirmed a
+     * stable transition - never as a validity re-check (the old raw
+     * gpio_get_level() abort on release was a TOCTOU that dropped valid
+     * releases, PAIR-BTN-01 P0). */
+    michi_button_debounce_t deb;
+    michi_button_debounce_init(&deb, MICHI_BUTTON_DEBOUNCE_MS);
     /* ISR timestamp of the confirmed press edge (0 = no confirmed press). */
     int64_t press_t_us = 0;
 
@@ -235,64 +262,40 @@ static void button_task(void *arg)
         portEXIT_CRITICAL(&s_edge_mux);
 
         const int level = gpio_get_level(CONFIG_MICHI_BUTTON_GPIO);
-        if (level == candidate) {
-            candidate_count++;
-        } else {
-            candidate = level;
-            candidate_count = 1;
-        }
+        const int64_t now_us = esp_timer_get_time();
+        const michi_button_debounce_evt_t evt =
+            michi_button_debounce_feed(&deb, level, now_us);
 
-        if (candidate_count >= s_debounce_samples && candidate != stable) {
+        if (evt == MICHI_BTN_DEBOUNCE_PRESS) {
+            /* Debouncer is the single authority: record press time unconditionally.
+             * The ISR snapshot is used only for diagnostics, not as a veto. */
+            press_t_us = now_us;   /* now_us is already computed above */
+            portENTER_CRITICAL(&s_edge_mux);
+            s_press_state = michi_state_get();
+            s_press_boot_elapsed = (now_us - s_boot_time) / 1000;
+            portEXIT_CRITICAL(&s_edge_mux);
+            /* Diagnostic: log if ISR record appears stale */
             michi_button_edge_t edge;
             take_edge_snapshot(&edge);
-
-            stable = candidate;
-            if (stable == 0) {
-                /* Stable press (active low): keep the ISR edge timestamp;
-                 * the duration is measured edge-to-edge on the release.
-                 * The ISR record must still say "pressed": a stale or
-                 * coalesced record (edge.level != 0) cannot anchor the
-                 * duration - discard it (the release then does nothing,
-                 * safer than a bogus long press). */
-                if (edge.level == 0) {
-                    press_t_us = edge.t_us;
-                    /* Snapshot the FSM state and the boot elapsed under the
-                     * mux: the release gates on both (F1: the press must
-                     * not have STARTED in a protected state; F4: factory
-                     * reset needs the arm window). */
-                    portENTER_CRITICAL(&s_edge_mux);
-                    s_press_state = michi_state_get();
-                    s_press_boot_elapsed =
-                        (esp_timer_get_time() - s_boot_time) / 1000;
-                    portEXIT_CRITICAL(&s_edge_mux);
-                } else {
-                    ESP_LOGD(TAG, "button: press anchor discarded (edge "
-                             "level=%d, stale or coalesced record)",
-                             edge.level);
-                }
-            } else {
-                /* Stable release: duration between the two confirmed edges,
-                 * both ISR-timestamped (sub-tick accuracy, debounce window
-                 * excluded). Symmetric gate (F8 follow-up): the release
-                 * requires the ISR record to be a REAL release edge
-                 * (edge.level == 1), mirroring the press path's
-                 * edge.level == 0 anchor check - a stale or coalesced
-                 * record cannot fire an action. */
-                if (press_t_us != 0 && edge.level == 1 &&
-                    edge.t_us > press_t_us) {
-                    const uint32_t press_ms =
-                        (uint32_t)((edge.t_us - press_t_us) / 1000);
-                    /* Re-check the pin right before firing: if it bounced
-                     * back to the pressed level (active low = 0), the
-                     * release is a mid-window rebound - abort the action
-                     * and wait for the next stable release. */
-                    if (gpio_get_level(CONFIG_MICHI_BUTTON_GPIO) == 0) {
-                        ESP_LOGW(TAG, "button: action=aborted bounce");
-                    } else {
-                        handle_release(press_ms);
-                    }
-                }
-                press_t_us = 0;
+            if (edge.level != 0) {
+                ESP_LOGD(TAG, "button: press confirmed by debouncer; ISR record level=%d (stale)",
+                         edge.level);
+            }
+            /* Immediate visual feedback on confirmed press: <100 ms perceptual
+             * latency target. Cleared unconditionally in handle_release(). */
+            michi_display_set_pairing_overlay(MICHI_DISPLAY_PAIRING_OVERLAY_BTN_PRESS);
+        } else if (evt == MICHI_BTN_DEBOUNCE_RELEASE) {
+            /* Debouncer is the single authority: use debounce-confirmed timestamps only. */
+            if (press_t_us != 0) {
+                const uint32_t press_ms = (uint32_t)((now_us - press_t_us) / 1000);
+                handle_release(press_ms);
+            }
+            press_t_us = 0;
+            /* Diagnostic only */
+            michi_button_edge_t edge;
+            take_edge_snapshot(&edge);
+            if (edge.level != 1) {
+                ESP_LOGD(TAG, "button: release confirmed by debouncer; ISR record level=%d (stale)", edge.level);
             }
         }
 
@@ -308,18 +311,11 @@ esp_err_t michi_button_init(void)
         return ESP_OK;
     }
 
-    /* Debounce sanity: with POLL >= DEBOUNCE, N = ceil(DEBOUNCE/POLL) would
-     * be 1 and every sample would confirm an edge - the debounce would be
-     * a no-op. Clamp N to 2 (minimal stable window) and warn instead of
-     * running unguarded. */
-    if (CONFIG_MICHI_BUTTON_POLL_MS >= CONFIG_MICHI_BUTTON_DEBOUNCE_MS) {
-        ESP_LOGW(TAG, "debounce disabled: poll >= debounce (poll_ms=%d "
-                 "debounce_ms=%d, N forced to 2)",
-                 CONFIG_MICHI_BUTTON_POLL_MS, CONFIG_MICHI_BUTTON_DEBOUNCE_MS);
-        s_debounce_samples = 2;
-    } else {
-        s_debounce_samples = MICHI_BUTTON_DEBOUNCE_SAMPLES;
-    }
+    /* The debounce is a pure, time-based single-authority state machine
+     * (michi_button_debounce.c, MICHI_BUTTON_DEBOUNCE_MS passed in at init).
+     * The poll period no longer gates the debounce accuracy, so the
+     * POLL >= DEBOUNCE clamping that used to live here is gone - the
+     * window is enforced on the wall clock. */
 
     /* GPIO input with internal pull-up: the button shorts the pin to GND
      * (active low); the pull-up guarantees a defined idle level. The

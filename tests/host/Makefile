@@ -24,6 +24,8 @@ CPPFLAGS = -Ishim \
            -I../../firmware/components/michi_audio/include \
            -I../../firmware/components/michi_volume/include \
            -I../../firmware/components/michi_display/include \
+           -I../../firmware/components/michi_board/include \
+           -I../../firmware/components/michi_state/include \
            -I../../firmware/components/michi_product_profile/include \
            -I../../firmware/components/michi_dac/include
 
@@ -59,7 +61,7 @@ IDENTITY_INC = -I$(IDENTITY_DIR)/include -I$(IDENTITY_DIR)/monocypher \
 
 TESTS := test_semver test_pairing_validators test_michi_identity \
          test_michi_pairing test_michi_session test_rtp_guard test_michi_button \
-         test_michi_ui \
+         test_michi_button_debounce test_michi_ui \
          $(if $(filter yes,$(HAS_CJSON)),test_json_helpers test_http_canonical test_michi_discovery test_michi_time test_capability_parity test_pairing_http test_session_http test_discovery_disc)
 
 .PHONY: all test clean
@@ -68,7 +70,7 @@ all: $(TESTS)
 
 test: all
 	@set -e; \
-	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard test_michi_button test_michi_ui; do ./$$t; done; \
+	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard test_michi_button test_michi_button_debounce test_michi_ui; do ./$$t; done; \
 	if [ "$(HAS_CJSON)" = "yes" ]; then \
 	    ./test_json_helpers; \
 	    ./test_http_canonical; \
@@ -156,7 +158,7 @@ test_michi_pairing: test_michi_pairing.c $(PAIRING_SRC) \
 BUTTON_DIR = $(FIRMWARE)/michi_button
 BUTTON_SRC = $(BUTTON_DIR)/michi_button_gesture.c \
              shim/michi_pairing_fake.c shim/nvs_flash.c shim/esp_system.c \
-             shim/michi_state.c \
+             shim/michi_state.c shim/michi_display_fake.c \
              $(IDENTITY_DIR)/michi_identity.c $(IDENTITY_DIR)/identity_nvs.c \
              shim/nvs_fake.c \
              $(IDENTITY_DIR)/monocypher/monocypher.c \
@@ -173,6 +175,16 @@ test_michi_button: test_michi_button.c $(BUTTON_SRC) \
 	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(BUTTON_DIR) $(PAIRING_INC) \
 	    $(IDENTITY_INC) -I$(IDENTITY_DIR) $(IDENTITY_DEFS) \
 	    -o $@ test_michi_button.c $(BUTTON_SRC)
+
+# michi_button_debounce: compiles the PURE debouncer (the single-authority
+# state machine) with NO ESP/FreeRTOS/NVS/identity deps - only stdint, so it
+# links with no shim ESP headers. Proves the release-bounce P0 fix and the
+# single-PRESS/single-RELEASE-per-tap contract on the host, no hardware.
+test_michi_button_debounce: test_michi_button_debounce.c \
+                            $(BUTTON_DIR)/michi_button_debounce.c \
+                            $(BUTTON_DIR)/michi_button_debounce.h $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(BUTTON_DIR) -o $@ \
+	    test_michi_button_debounce.c $(BUTTON_DIR)/michi_button_debounce.c
 
 test_michi_identity: test_michi_identity.c $(IDENTITY_SRC) \
                      $(IDENTITY_DIR)/include/michi_identity.h $(SHIMS)
@@ -206,16 +218,41 @@ UI_INC = -I$(UI_DIR)/include
 
 test_michi_ui: test_michi_ui.c $(UI_DIR)/michi_ui_text.c \
                $(UI_DIR)/michi_ui_fonts.c $(UI_DIR)/michi_ui_components.c \
+               $(UI_DIR)/michi_ui_screens.c $(UI_DIR)/michi_ui_icons.c \
+               $(UI_DIR)/michi_ui_theme.c \
                $(UI_DIR)/include/michi_ui.h \
                $(UI_DIR)/include/michi_ui_components.h \
+               $(UI_DIR)/include/michi_ui_screens.h \
+               $(UI_DIR)/include/michi_ui_strings.h \
                $(UI_DIR)/include/michi_ui_text.h \
                $(UI_DIR)/include/michi_ui_fonts.h \
                $(UI_DIR)/include/michi_ui_theme.h \
                $(UI_DIR)/include/michi_ui_icons.h \
-               $(UI_DIR)/assets/fonts/michi_ui_fonts_data.h $(SHIMS)
+               $(UI_DIR)/assets/fonts/michi_ui_fonts_data.h \
+               $(UI_DIR)/assets/icons/michi_ui_icons_data.h $(SHIMS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(UI_INC) -o $@ test_michi_ui.c \
 	    $(UI_DIR)/michi_ui_text.c $(UI_DIR)/michi_ui_fonts.c \
-	    $(UI_DIR)/michi_ui_components.c
+	    $(UI_DIR)/michi_ui_components.c $(UI_DIR)/michi_ui_screens.c \
+	    $(UI_DIR)/michi_ui_icons.c $(UI_DIR)/michi_ui_theme.c
+
+render_ui_previews: render_ui_previews.c $(UI_DIR)/michi_ui_text.c \
+                   $(UI_DIR)/michi_ui_fonts.c $(UI_DIR)/michi_ui_components.c \
+                   $(UI_DIR)/michi_ui_screens.c $(UI_DIR)/michi_ui_icons.c \
+                   $(UI_DIR)/michi_ui_theme.c \
+                   $(UI_DIR)/include/michi_ui.h \
+                   $(UI_DIR)/include/michi_ui_components.h \
+                   $(UI_DIR)/include/michi_ui_screens.h \
+                   $(UI_DIR)/include/michi_ui_strings.h \
+                   $(UI_DIR)/include/michi_ui_text.h \
+                   $(UI_DIR)/include/michi_ui_fonts.h \
+                   $(UI_DIR)/include/michi_ui_theme.h \
+                   $(UI_DIR)/include/michi_ui_icons.h \
+                   $(UI_DIR)/assets/fonts/michi_ui_fonts_data.h \
+                   $(UI_DIR)/assets/icons/michi_ui_icons_data.h $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(UI_INC) -o $@ render_ui_previews.c \
+	    $(UI_DIR)/michi_ui_text.c $(UI_DIR)/michi_ui_fonts.c \
+	    $(UI_DIR)/michi_ui_components.c $(UI_DIR)/michi_ui_screens.c \
+	    $(UI_DIR)/michi_ui_icons.c $(UI_DIR)/michi_ui_theme.c
 
 # rtp_guard: the SAME datagram validation the engine runs (pure C).
 test_rtp_guard: test_rtp_guard.c $(FIRMWARE)/michi_audio/rtp_guard.c \
@@ -323,4 +360,4 @@ clean:
 	      test_michi_time test_michi_pairing test_pairing_http \
 	      test_michi_session test_rtp_guard test_session_http \
 	      test_capability_parity test_discovery_disc test_michi_button \
-	      test_michi_ui
+	      test_michi_button_debounce test_michi_ui render_ui_previews

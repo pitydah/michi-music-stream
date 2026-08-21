@@ -27,10 +27,10 @@
 #define MICHI_LCD_CMD_BITS 8
 #define MICHI_LCD_PARAM_BITS 8
 #define MICHI_LCD_TRANS_QUEUE_DEPTH 10
-/* Band height of the banded framebuffer (MS-11): 240 x 40 x 2 = 19.2 KB,
+/* Band height of the banded framebuffer (MS-11): 320 x 40 x 2 = 25.6 KB,
  * which internal DMA RAM can always provide at boot. The full panel is
- * drawn as display_height / MICHI_LCD_BAND sequential band flushes.
- * display_height (320) must stay an exact multiple of this value. */
+ * drawn as display_height / MICHI_LCD_BAND (240 / 40 = 6) sequential band flushes.
+ * display_height (240) must stay an exact multiple of this value. */
 #define MICHI_LCD_BAND 40
 #define MICHI_TEXT_SPACING 6
 
@@ -41,8 +41,8 @@ static const michi_board_info_t s_board_info = {
     .revision = "1.0",
     .flash_bytes_expected = 16U * 1024U * 1024U,
     .psram_bytes_expected = 8U * 1024U * 1024U,
-    .display_width = 240,
-    .display_height = 320,
+    .display_width = 320,
+    .display_height = 240,
     .display_controller = "ST7789T3",
     .lcd_sclk = 39,
     .lcd_mosi = 38,
@@ -215,6 +215,29 @@ static esp_err_t init_display(void)
         s_spi_bus_inited = false;
         return err;
     }
+    // Landscape orientation: swap X/Y coordinates on the ST7789 panel controller
+    err = esp_lcd_panel_swap_xy(s_panel, true);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_lcd_panel_swap_xy failed: %s", esp_err_to_name(err));
+        esp_lcd_panel_del(s_panel);
+        s_panel = NULL;
+        esp_lcd_panel_io_del(s_panel_io);
+        s_panel_io = NULL;
+        spi_bus_free(MICHI_LCD_HOST);
+        s_spi_bus_inited = false;
+        return err;
+    }
+    err = esp_lcd_panel_mirror(s_panel, false, true);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_lcd_panel_mirror failed: %s", esp_err_to_name(err));
+        esp_lcd_panel_del(s_panel);
+        s_panel = NULL;
+        esp_lcd_panel_io_del(s_panel_io);
+        s_panel_io = NULL;
+        spi_bus_free(MICHI_LCD_HOST);
+        s_spi_bus_inited = false;
+        return err;
+    }
     err = esp_lcd_panel_disp_on_off(s_panel, true);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_lcd_panel_disp_on_off failed: %s", esp_err_to_name(err));
@@ -247,10 +270,10 @@ esp_err_t michi_board_init(void)
      * esp_ptr_dma_capable() only covers the INTERNAL DMA region; PSRAM
      * pointers are reported not-DMA-capable and the SPI driver then
      * bounces every color flush through an internal-RAM buffer sized for
-     * the full 240x320 frame (150 KB contiguous), which internal DMA RAM
+     * the full 320x240 frame (153.6 KB contiguous), which internal DMA RAM
      * cannot provide at boot (measured: heap_caps_malloc fails ~1.4 s
      * in) - ESP_ERR_NO_MEM, black screen. Fix: a SMALL banded
-     * framebuffer (240 x MICHI_LCD_BAND, 19.2 KB) in DMA RAM; the panel
+     * framebuffer (320 x MICHI_LCD_BAND, 25.6 KB) in DMA RAM; the panel
      * is drawn as display_height / MICHI_LCD_BAND sequential band
      * flushes (see michi_board_display_render). No bounce buffer is ever
      * needed because each flush fits well below the internal pool. */

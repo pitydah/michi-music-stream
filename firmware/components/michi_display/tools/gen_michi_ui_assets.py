@@ -5,21 +5,29 @@ Generates (committed, build-time data only - no runtime dependency):
   assets/fonts/michi_ui_fonts_data.h
   assets/icons/michi_ui_icons_data.h
 
-Design decisions (documented; see also michi_ui_fonts.h / michi_ui_icons.h):
-  * Fonts are PROPORTIONAL (per-glyph advance table), 1-bit column-major
-    bitmaps (LSB = top row), stored const in flash.
-  * XS (8 px em): hand-designed bitmap art (PIL TrueType hinting at 8 px
-    produces broken strokes; pixel-level art is the only clean path).
-  * SM (11 px): Google Sans Medium  (bolder strokes survive 11 px hinting).
-  * MD (14 px) / LG (20 px) / PIN (36 px): Google Sans Regular.
-  * Charset: ASCII 0x20..0x7E plus '…' (UTF-8 E2 80 A6, full-index 95).
-    PIN: digits + space + '.' only (PIN map remaps everything else).
-  * Icons are procedural stroke art rasterized with 4x4 supersampling;
-    stroke width scales with the target size for a consistent look.
+Design decisions:
+  * Fonts are PROPORTIONAL (per-glyph advance table), 1-bit or 2-bit
+    column-major bitmaps (LSB = top row), stored const in flash.
+  * Open-source typography: Noto Sans or Inter (both SIL Open Font License).
+  * XS (8 px em): pixel art / hinting.
+  * SM (13 px): Medium weight (line height 16).
+  * MD (17 px): Regular (line height 20).
+  * LG (26 px): Regular (line height 30).
+  * PIN (41 px): Regular (line height 46) - DIGITS + SPACE + '.' only.
+  * Charset: 192 glyphs
+    - 0..94: ASCII 0x20..0x7E (95 glyphs)
+    - 95..190: Latin-1 Supplement 0x00A0..0x00FF (96 glyphs: á, é, í, ó, ú, ñ, ¿, ¡, etc.)
+    - 191: Ellipsis '…' (UTF-8 E2 80 A6)
+  * Icons: procedural vector strokes rasterized with 4x4 supersampling.
+    Boutique audio aesthetic for Michi Cat and all symbols.
 
-Usage: python3 tools/gen_michi_ui_assets.py [--preview DIR]
+Usage:
+  python3 tools/gen_michi_ui_assets.py [--preview DIR]
+    [--font {notosans|inter}] [--raster {1bit|2bit}]
+
 Requires: Pillow (dev-only; the generated headers are committed).
 """
+import argparse
 import math
 import os
 import sys
@@ -32,9 +40,32 @@ try:
 except ImportError:
     PIL_VER = "?"
 
-FONT_DIR = "/usr/share/fonts/TTF"
-FONT_REGULAR = f"{FONT_DIR}/GoogleSans-Regular.ttf"
-FONT_MEDIUM = f"{FONT_DIR}/GoogleSans-Medium.ttf"
+# ---------------------------------------------------------------------------
+# Font path discovery: support both Noto Sans and Inter.
+# ---------------------------------------------------------------------------
+
+NOTO_DIR = "/usr/share/fonts/noto"
+INTER_DIRS = [
+    "/usr/share/fonts/inter",
+    "/usr/share/fonts/truetype/inter",
+    "/usr/local/share/fonts/inter",
+    os.path.expanduser("~/.local/share/fonts/inter"),
+]
+
+NOTO_REGULAR = f"{NOTO_DIR}/NotoSans-Regular.ttf"
+NOTO_MEDIUM  = f"{NOTO_DIR}/NotoSans-Medium.ttf"
+
+
+def _find_inter(weight="Regular"):
+    candidates = [f"Inter-{weight}.ttf", f"Inter_{weight}.ttf",
+                  f"inter-{weight.lower()}.ttf", "Inter.ttf", "inter.ttf"]
+    for d in INTER_DIRS:
+        for name in candidates:
+            p = os.path.join(d, name)
+            if os.path.exists(p):
+                return p
+    return None
+
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FONTS_OUT = os.path.join(HERE, "..", "assets", "fonts", "michi_ui_fonts_data.h")
@@ -42,7 +73,6 @@ ICONS_OUT = os.path.join(HERE, "..", "assets", "icons", "michi_ui_icons_data.h")
 
 # ---------------------------------------------------------------------------
 # Theme palette (RGB888 sources) -> RGB565 with proper rounding.
-# The generated values must match michi_ui_theme.h (smoke test verifies).
 # ---------------------------------------------------------------------------
 PALETTE = [
     ("MICHI_UI_BG", 0x08, 0x0A, 0x0F),
@@ -84,12 +114,6 @@ def _seg_dist(px, py, x0, y0, x1, y1):
 
 
 def _flatten(prims, pts=24):
-    """Expand primitives into (segs, discs, polys).
-
-    segs: stroke segments (capsule, radius r)
-    discs: filled discs (radius rad + r*0.8 for a soft edge)
-    polys: filled polygons (fill + stroke outline for rounded corners)
-    """
     segs = []
     discs = []
     polys = []
@@ -129,16 +153,16 @@ def _flatten(prims, pts=24):
                 last = (x, y)
         elif kind == "D":  # filled disc
             discs.append((p[1], p[2], p[3]))
-        elif kind == "F":  # filled polygon (with rounded outline)
+        elif kind == "F":  # filled polygon
             polys.append(p[1])
-        elif kind == "P":  # polygon outline (rounded joins)
+        elif kind == "P":  # polygon outline
             poly = p[1]
             n = len(poly)
             for i in range(n):
                 x0, y0 = poly[i]
                 x1, y1 = poly[(i + 1) % n]
                 segs.append((x0, y0, x1, y1))
-                discs.append((x0, y0, 0.0))  # vertex disc, radius = stroke r
+                discs.append((x0, y0, 0.0))
         elif kind == "R":  # rounded-rect stroke
             x, y, w, h, rad = p[1:]
             x2, y2 = x + w, y + h
@@ -181,7 +205,7 @@ def _inside_poly(px, py, poly):
 
 
 def rasterize(prims, size, stroke):
-    r = (stroke / 2.0) / size  # unit space
+    r = (stroke / 2.0) / size
     segs, discs, polys = _flatten(prims)
     poly_edges = []
     for poly in polys:
@@ -223,17 +247,9 @@ def rasterize(prims, size, stroke):
     return rows
 
 
-def art(rows):
-    out = []
-    for row in rows:
-        out.append("".join("#" if c else "." for c in row))
-    return out
-
-
 def pack_rows(rows):
     """Row-major, 1 bpp, MSB first."""
     out = bytearray()
-    w = len(rows[0])
     for row in rows:
         acc = 0
         cnt = 0
@@ -250,41 +266,73 @@ def pack_rows(rows):
 
 
 # ---------------------------------------------------------------------------
-# Icon definitions (unit box, y down)
+# Icon definitions (unit box, y down) — Boutique Hi-Fi Audio Aesthetic
 # ---------------------------------------------------------------------------
-CAT = [("C", 0.50, 0.58, 0.28),
-       ("L", 0.27, 0.32, 0.21, 0.06), ("L", 0.21, 0.06, 0.40, 0.24),
-       ("L", 0.73, 0.32, 0.79, 0.06), ("L", 0.79, 0.06, 0.60, 0.24)]
-WIFI = [("A", 0.50, 0.64, 0.50, 225, 315),
-        ("A", 0.50, 0.64, 0.30, 225, 315),
-        ("A", 0.50, 0.64, 0.10, 225, 315),
-        ("D", 0.50, 0.88, 0.06)]
-SERVER = [("R", 0.18, 0.12, 0.64, 0.76, 0.07),
-          ("L", 0.26, 0.40, 0.74, 0.40),
-          ("L", 0.26, 0.60, 0.74, 0.60)]
-SPEAKER = [("R", 0.20, 0.14, 0.60, 0.46, 0.06),
-           ("C", 0.50, 0.78, 0.15),
-           ("D", 0.50, 0.78, 0.05)]
+CAT_BOUTIQUE = [
+    # Head contour (smooth rounded face)
+    ("C", 0.50, 0.56, 0.30),
+    # Left outer ear
+    ("L", 0.24, 0.38, 0.18, 0.08),
+    ("L", 0.18, 0.08, 0.38, 0.26),
+    # Right outer ear
+    ("L", 0.76, 0.38, 0.82, 0.08),
+    ("L", 0.82, 0.08, 0.62, 0.26),
+    # Left inner ear detail
+    ("L", 0.26, 0.32, 0.22, 0.14),
+    ("L", 0.22, 0.14, 0.34, 0.26),
+    # Right inner ear detail
+    ("L", 0.74, 0.32, 0.78, 0.14),
+    ("L", 0.78, 0.14, 0.66, 0.26),
+    # Eyes
+    ("D", 0.36, 0.50, 0.04),
+    ("D", 0.64, 0.50, 0.04),
+    # Nose
+    ("D", 0.50, 0.60, 0.025),
+    # Mouth
+    ("L", 0.50, 0.60, 0.50, 0.67),
+    ("A", 0.44, 0.67, 0.06, 0, 180),
+    ("A", 0.56, 0.67, 0.06, 0, 180),
+]
+
+WIFI = [
+    ("A", 0.50, 0.64, 0.50, 225, 315),
+    ("A", 0.50, 0.64, 0.30, 225, 315),
+    ("A", 0.50, 0.64, 0.10, 225, 315),
+    ("D", 0.50, 0.88, 0.06)
+]
+SERVER = [
+    ("R", 0.18, 0.12, 0.64, 0.76, 0.07),
+    ("L", 0.26, 0.40, 0.74, 0.40),
+    ("L", 0.26, 0.60, 0.74, 0.60),
+    ("D", 0.32, 0.26, 0.04),
+    ("D", 0.32, 0.50, 0.04),
+    ("D", 0.32, 0.74, 0.04)
+]
+SPEAKER = [
+    ("F", [(0.20, 0.36), (0.38, 0.36), (0.58, 0.18), (0.58, 0.82), (0.38, 0.64), (0.20, 0.64)]),
+    ("A", 0.58, 0.50, 0.16, -45, 45),
+    ("A", 0.58, 0.50, 0.28, -45, 45),
+]
 PLAY = [("F", [(0.30, 0.16), (0.30, 0.84), (0.78, 0.50)])]
-PAUSE = [("Rf", 0.28, 0.16, 0.16, 0.68, 0.03),
-         ("Rf", 0.56, 0.16, 0.16, 0.68, 0.03)]
-PAIR = [("C", 0.40, 0.42, 0.23), ("C", 0.60, 0.58, 0.23)]
-BUTTON = [("C", 0.50, 0.50, 0.30), ("C", 0.50, 0.50, 0.13)]
-WARNING = [("P", [(0.50, 0.06), (0.93, 0.85), (0.07, 0.85)]),
-           ("L", 0.50, 0.38, 0.50, 0.62),
-           ("D", 0.50, 0.72, 0.05)]
-ERROR = [("C", 0.50, 0.50, 0.30),
-         ("L", 0.30, 0.30, 0.70, 0.70),
-         ("L", 0.70, 0.30, 0.30, 0.70)]
-UPDATE = [("L", 0.16, 0.78, 0.84, 0.78),
-          ("L", 0.50, 0.14, 0.50, 0.60),
-          ("L", 0.30, 0.42, 0.50, 0.62),
-          ("L", 0.70, 0.42, 0.50, 0.62)]
+PAUSE = [("Rf", 0.26, 0.16, 0.18, 0.68, 0.04),
+         ("Rf", 0.56, 0.16, 0.18, 0.68, 0.04)]
+PAIR = [("C", 0.38, 0.42, 0.24), ("C", 0.62, 0.58, 0.24)]
+BUTTON = [("C", 0.50, 0.50, 0.32), ("C", 0.50, 0.50, 0.16)]
+WARNING = [("P", [(0.50, 0.08), (0.92, 0.84), (0.08, 0.84)]),
+           ("L", 0.50, 0.38, 0.50, 0.60),
+           ("D", 0.50, 0.72, 0.045)]
+ERROR = [("C", 0.50, 0.50, 0.32),
+         ("L", 0.32, 0.32, 0.68, 0.68),
+         ("L", 0.68, 0.32, 0.32, 0.68)]
+UPDATE = [("L", 0.16, 0.80, 0.84, 0.80),
+          ("L", 0.50, 0.16, 0.50, 0.64),
+          ("L", 0.32, 0.46, 0.50, 0.64),
+          ("L", 0.68, 0.46, 0.50, 0.64)]
 WAVE = [("A", 0.32, 0.50, 0.16, 0, 180),
         ("A", 0.64, 0.50, 0.16, 180, 360)]
 
 ICONS = [
-    ("cat", CAT),
+    ("cat", CAT_BOUTIQUE),
     ("wifi", WIFI),
     ("server", SERVER),
     ("speaker", SPEAKER),
@@ -298,148 +346,39 @@ ICONS = [
     ("wave", WAVE),
 ]
 
-# (name, sizes) - all icons at 12/20/32; the cat also 24 and 48.
-ICON_SIZES = {name: [12, 20, 32] for name, _ in ICONS}
-ICON_SIZES["cat"] = [12, 20, 24, 32, 48]
+ICON_SIZES = {name: [12, 16, 20, 24, 32] for name, _ in ICONS}
+ICON_SIZES["cat"] = [12, 16, 20, 24, 32, 48, 56]
+ICON_SIZES["speaker"] = [12, 16, 20, 24, 32]
+ICON_SIZES["play"] = [12, 16, 20, 24, 32, 48]
+ICON_SIZES["pause"] = [12, 16, 20, 24, 32]
 
-ICON_STROKE = {12: 1.0, 20: 1.6, 24: 1.9, 32: 2.6, 48: 3.8}
-
-# ---------------------------------------------------------------------------
-# XS font: hand-designed 8-row bitmap art.
-# Grid: rows 0..5 = cap height, rows 2..5 = x-height, rows 6..7 = descender.
-# 1 px stroke, proportional advance = width + 1 (space = 3, thin = w + 1).
-# ---------------------------------------------------------------------------
-XS_ART = {
-    0x20: ["...", "...", "...", "...", "...", "...", "...", "..."],
-    0x21: ["#", "#", "#", "#", "#", ".", "#", "."],
-    0x22: ["#.#", "#.#", "...", "...", "...", "...", "...", "..."],
-    0x23: [".#.#.", "#####", ".#.#.", ".#.#.", "#####", ".#.#.", ".....", "....."],
-    0x24: ["..#..", ".###.", "#.#..", ".##.", "..#.#", ".###.", "..#..", "....."],
-    0x25: ["##..#", "##.#.", "...#.", "..#..", ".#...", "#..##", ".....", "....."],
-    0x26: [".##..", "#..#.", "#..#.", ".##..", "#.#..", ".####", ".....", "....."],
-    0x27: ["#", "#", ".", ".", ".", ".", ".", "."],
-    0x28: [".#", "#.", "#.", "#.", "#.", ".#", "..", ".."],
-    0x29: ["#.", ".#", ".#", ".#", ".#", "#.", "..", ".."],
-    0x2A: ["..#..", "#.#.#", ".###.", "#.#.#", "..#..", ".....", ".....", "....."],
-    0x2B: [".....", "..#..", "..#..", "#####", "..#..", "..#..", ".....", "....."],
-    0x2C: ["..", "..", "..", "..", "..", ".#", "#.", ".."],
-    0x2D: ["...", "...", "...", "###", "...", "...", "...", "..."],
-    0x2E: [".", ".", ".", ".", ".", "#", ".", "."],
-    0x2F: ["...#", "..#.", "..#.", ".#..", ".#..", "#...", "....", "...."],
-    0x30: [".##.", "#..#", "#..#", "#..#", "#..#", ".##.", "....", "...."],
-    0x31: [".#.", "##.", ".#.", ".#.", ".#.", "###", "...", "..."],
-    0x32: [".##.", "#..#", "...#", "..#.", ".#..", "####", "....", "...."],
-    0x33: [".##.", "#..#", "...#", "..#.", "#..#", ".##.", "....", "...."],
-    0x34: ["...#.", "..##.", ".#.#.", "#..#.", "#####", "...#.", ".....", "....."],
-    0x35: ["####", "#...", "###.", "...#", "#..#", ".##.", "....", "...."],
-    0x36: [".##.", "#...", "###.", "#..#", "#..#", ".##.", "....", "...."],
-    0x37: ["####", "...#", "..#.", "..#.", ".#..", ".#..", "....", "...."],
-    0x38: [".##.", "#..#", ".##.", "#..#", "#..#", ".##.", "....", "...."],
-    0x39: [".##.", "#..#", "#..#", ".###", "...#", ".##.", "....", "...."],
-    0x3A: [".", ".", "#", ".", ".", "#", ".", "."],
-    0x3B: ["..", "..", ".#", "..", "..", ".#", "#.", ".."],
-    0x3C: ["...#", "..#.", ".#..", "#...", ".#..", "..#.", "...#", "...."],
-    0x3D: ["....", "....", "####", "....", "####", "....", "....", "...."],
-    0x3E: ["#...", ".#..", "..#.", "...#", "..#.", ".#..", "#...", "...."],
-    0x3F: [".##.", "#..#", "...#", "..#.", "....", "..#.", "....", "...."],
-    0x40: [".###.", "#...#", "#.###", "#.#.#", "#.###", ".###.", ".....", "....."],
-    0x41: [".##..", "#..#.", "#..#.", "####.", "#..#.", "#..#.", ".....", "....."],
-    0x42: ["###..", "#..#.", "#..#.", "###..", "#..#.", "###..", ".....", "....."],
-    0x43: [".###.", "#....", "#....", "#....", "#....", ".###.", ".....", "....."],
-    0x44: ["###..", "#..#.", "#..#.", "#..#.", "#..#.", "###..", ".....", "....."],
-    0x45: ["####", "#...", "#...", "###.", "#...", "####", "....", "...."],
-    0x46: ["####", "#...", "#...", "###.", "#...", "#...", "....", "...."],
-    0x47: [".###.", "#....", "#....", "#.###", "#..#.", ".###.", ".....", "....."],
-    0x48: ["#..#.", "#..#.", "#..#.", "####.", "#..#.", "#..#.", ".....", "....."],
-    0x49: ["###", ".#.", ".#.", ".#.", ".#.", "###", "...", "..."],
-    0x4A: ["..##", "...#", "...#", "...#", "#..#", ".##.", "....", "...."],
-    0x4B: ["#..#.", "#.#..", "##...", "##...", "#.#..", "#..#.", ".....", "....."],
-    0x4C: ["#...", "#...", "#...", "#...", "#...", "####", "....", "...."],
-    0x4D: ["#...#", "##.##", "#.#.#", "#...#", "#...#", "#...#", ".....", "....."],
-    0x4E: ["#...#", "##..#", "#.#.#", "#..##", "#...#", "#...#", ".....", "....."],
-    0x4F: [".###.", "#...#", "#...#", "#...#", "#...#", ".###.", ".....", "....."],
-    0x50: ["###..", "#..#.", "#..#.", "###..", "#....", "#....", ".....", "....."],
-    0x51: [".###.", "#...#", "#...#", "#.#.#", "#..#.", ".##.#", ".....", "....."],
-    0x52: ["###..", "#..#.", "#..#.", "###..", "#.#..", "#..#.", ".....", "....."],
-    0x53: [".###.", "#....", "#....", ".###.", "....#", ".###.", ".....", "....."],
-    0x54: ["#####", "..#..", "..#..", "..#..", "..#..", "..#..", ".....", "....."],
-    0x55: ["#...#", "#...#", "#...#", "#...#", "#...#", ".###.", ".....", "....."],
-    0x56: ["#...#", "#...#", "#...#", "#...#", ".#.#.", "..#..", ".....", "....."],
-    0x57: ["#...#", "#...#", "#...#", "#.#.#", "#.#.#", ".#.#.", ".....", "....."],
-    0x58: ["#...#", ".#.#.", "..#..", "..#..", ".#.#.", "#...#", ".....", "....."],
-    0x59: ["#...#", ".#.#.", "..#..", "..#..", "..#..", "..#..", ".....", "....."],
-    0x5A: ["#####", "...#.", "..#..", ".#...", "#....", "#####", ".....", "....."],
-    0x5B: ["##.", "#..", "#..", "#..", "#..", "##.", "...", "..."],
-    0x5C: ["#...", ".#..", ".#..", "..#.", "..#.", "...#", "....", "...."],
-    0x5D: [".##", "..#", "..#", "..#", "..#", ".##", "...", "..."],
-    0x5E: ["..#..", ".#.#.", "#...#", ".....", ".....", ".....", ".....", "....."],
-    0x5F: ["....", "....", "....", "....", "....", "....", "####", "...."],
-    0x60: ["#.", ".#", "..", "..", "..", "..", "..", ".."],
-    0x61: ["....", "....", ".##.", "...#", ".###", "#..#", "....", "...."],
-    0x62: ["#...", "#...", "##..", "#..#", "#..#", ".###", "....", "...."],
-    0x63: ["....", "....", ".##.", "#...", "#...", ".##.", "....", "...."],
-    0x64: ["...#", "...#", ".###", "#..#", "#..#", ".###", "....", "...."],
-    0x65: ["....", "....", ".##.", "#..#", "####", "#..#", "....", "...."],
-    0x66: ["..##", ".#..", "###.", ".#..", ".#..", ".#..", "....", "...."],
-    0x67: ["....", "....", ".##.", "#..#", "#..#", ".###", "...#", ".##."],
-    0x68: ["#...", "#...", "##..", "#..#", "#..#", "#..#", "....", "...."],
-    0x69: ["#.", "..", "#.", "#.", "#.", "#.", "..", ".."],
-    0x6A: ["..#", "...", "..#", "..#", "..#", "..#", "#.#", ".#."],
-    0x6B: ["#...", "#...", "#.#.", "##..", "##..", "#..#", "....", "...."],
-    0x6C: ["#.", "#.", "#.", "#.", "#.", "#.", "..", ".."],
-    0x6D: [".....", ".....", ".###.", "#.#.#", "#.#.#", "#.#.#", ".....", "....."],
-    0x6E: ["....", "....", "##..", "#..#", "#..#", "#..#", "....", "...."],
-    0x6F: ["....", "....", ".##.", "#..#", "#..#", ".##.", "....", "...."],
-    0x70: ["....", "....", "##..", "#..#", "#..#", ".###", "#...", "#..."],
-    0x71: ["....", "....", ".##.", "#..#", "#..#", ".###", "...#", "...#"],
-    0x72: ["...", "...", "##.", "#.#", "#..", "#..", "...", "..."],
-    0x73: ["....", "....", ".###", "#...", ".##.", "..##", "....", "...."],
-    0x74: ["....", ".#..", "###.", ".#..", ".#..", "..#.", "....", "...."],
-    0x75: ["....", "....", "#..#", "#..#", "#..#", ".###", "....", "...."],
-    0x76: [".....", ".....", "#...#", "#...#", "#...#", ".#.#.", "..#..", "....."],
-    0x77: [".....", ".....", "#...#", "#...#", "#.#.#", "#.#.#", ".#.#.", "....."],
-    0x78: [".....", ".....", "#...#", ".#.#.", "..#..", ".#.#.", "#...#", "....."],
-    0x79: [".....", ".....", "#...#", "#...#", "#...#", ".###.", "..#..", ".#..."],
-    0x7A: ["....", "....", "####", "..#.", ".#..", "####", "....", "...."],
-    0x7B: ["..#", ".#.", ".#.", "#..", ".#.", ".#.", "..#", "..."],
-    0x7C: ["#", "#", "#", "#", "#", "#", "#", "#"],
-    0x7D: ["#..", ".#.", ".#.", "..#", ".#.", ".#.", "#..", "..."],
-    0x7E: [".....", ".....", ".##.#", "#.##.", ".....", ".....", ".....", "....."],
-    0xE2_80_A6: [".....", ".....", ".....", ".....", ".....", "#.#.#", ".....", "....."],
-}
-
-
-def xs_glyph_art(code):
-    """Return normalized XS art: 8 rows, uniform width, and the advance."""
-    rows = XS_ART[code]
-    assert len(rows) == 8, f"XS glyph {code:#x} has {len(rows)} rows"
-    w = max(len(r) for r in rows)
-    rows = [r.ljust(w, ".") for r in rows]
-    if code == 0x20:
-        adv = 3
-    else:
-        adv = w + 1
-    return rows, w, adv
-
+ICON_STROKE = {12: 1.0, 16: 1.3, 20: 1.6, 24: 1.9, 32: 2.5, 48: 3.6, 56: 4.2}
 
 # ---------------------------------------------------------------------------
-# PIL-backed fonts (SM/MD/LG/PIN)
+# Typography Definitions & Charset (192 Glyphs)
 # ---------------------------------------------------------------------------
 
-PIL_FONTS = {
-    "sm": (FONT_MEDIUM, 11),
-    "md": (FONT_REGULAR, 14),
-    "lg": (FONT_REGULAR, 20),
-    "pin": (FONT_REGULAR, 36),
-}
+# Charset: 0x20..0x7E (95 chars) + 0x00A0..0x00FF (96 chars) + U+2026 (1 char)
+FULL_CHARS = [chr(c) for c in range(0x20, 0x7F)] + \
+             [chr(c) for c in range(0x00A0, 0x0100)] + \
+             ["\u2026"]
+assert len(FULL_CHARS) == 192, f"FULL_CHARS has {len(FULL_CHARS)} characters (want 192)"
 
-FULL_CHARS = "".join(chr(c) for c in range(0x20, 0x7F)) + "\u2026"
 PIN_CHARS = "0123456789 ."
 
+# (weight_key, pt, height, line_height, raster_bits)
+FONT_SPECS = {
+    "xs":  ("medium",  6, 8,  10, 1),
+    "sm":  ("medium",  9, 13, 16, 1),
+    "md":  ("regular",12, 17, 20, 1),
+    "lg":  ("medium", 18, 26, 30, 1),
+    "pin": ("regular",38, 41, 46, 1),
+}
 
-def pil_glyph(font, ch, box_h):
-    """Render one glyph into the shared em box (top = ascent row 0)."""
-    tmp = Image.new("L", (600, box_h + 4))
+
+def pil_glyph_1bit(font, ch, box_h, asc_align=True):
+    """Render one glyph into the shared em box."""
+    tmp = Image.new("L", (800, box_h + 8))
     d = ImageDraw.Draw(tmp)
     d.text((0, 0), ch, fill=255, font=font)
     bbox = d.textbbox((0, 0), ch, font=font)
@@ -459,10 +398,6 @@ def pil_glyph(font, ch, box_h):
     return cols, w, adv
 
 
-# ---------------------------------------------------------------------------
-# Emit helpers
-# ---------------------------------------------------------------------------
-
 def _fmt_array_body(items, per_line=12):
     out = []
     for i in range(0, len(items), per_line):
@@ -476,7 +411,6 @@ def c_array_u8(name, data):
             f"{_fmt_array_body(items)}\n"
             f"}};\n")
 
-
 def c_array_u16(name, data):
     items = [str(v) for v in data]
     return (f"static const uint16_t {name}[] = {{\n"
@@ -484,124 +418,137 @@ def c_array_u16(name, data):
             f"}};\n")
 
 
-def emit_fonts():
+def pil_glyph_2bit(font, ch, box_h):
+    tmp = Image.new("L", (800, box_h + 8))
+    d = ImageDraw.Draw(tmp)
+    d.text((0, 0), ch, fill=255, font=font)
+    bbox = d.textbbox((0, 0), ch, font=font)
+    adv = max(1, int(round(d.textlength(ch, font=font))))
+    if bbox is None or bbox[2] <= bbox[0]:
+        return [], 0, adv
+    w = bbox[2] - bbox[0]
+    glyph = tmp.crop((bbox[0], 0, bbox[2], box_h))
+    cols = []
+    for x in range(w):
+        col = 0
+        for y in range(box_h):
+            pix = glyph.getpixel((x, y))
+            level = min(3, pix >> 6)
+            col |= level << (2 * y)
+        cols.append(col)
+    return cols, w, adv
+
+def emit_fonts(font_family="notosans", raster_bits_override=1):
+    if font_family == "inter":
+        inter_reg = _find_inter("Regular")
+        inter_med = _find_inter("Medium")
+        if inter_reg is None:
+            print("WARNING: Inter Regular not found; falling back to Noto Sans Regular.", file=sys.stderr)
+            inter_reg = NOTO_REGULAR
+        if inter_med is None:
+            print("WARNING: Inter Medium not found; falling back to Noto Sans Medium.", file=sys.stderr)
+            inter_med = NOTO_MEDIUM
+        font_regular = inter_reg
+        font_medium  = inter_med
+        family_label = "Inter"
+    else:
+        font_regular = NOTO_REGULAR
+        font_medium  = NOTO_MEDIUM
+        family_label = "Noto Sans"
+
+    paths = {'regular': font_regular, 'medium': font_medium}
+    raster_label = f"{raster_bits_override}-bit"
+
     lines = []
     hdr = [
         "/* Generated by tools/gen_michi_ui_assets.py - DO NOT EDIT.",
-        f" * Pillow {PIL_VER}; source fonts:",
-        " *   SM : Google Sans Medium 11 px",
-        " *   MD : Google Sans Regular 14 px",
-        " *   LG : Google Sans Regular 20 px",
-        " *   PIN: Google Sans Regular 36 px (charset: digits, space, '.')",
-        " *   XS : hand-designed 8 px bitmap art (see generator script).",
+        f" * Pillow {PIL_VER}; source font: {family_label} (SIL Open Font License)",
+        f" * MICHI_UI_FONT_FAMILY: {family_label}",
+        f" * MICHI_UI_RASTER_MODE: {raster_label}",
+        f" * Raster mode override: {raster_label}",
+        " *   XS : 8 px em (line height 10)",
+        f" *   SM : {family_label} Medium 13 px em (line height 16)",
+        f" *   MD : {family_label} Regular 17 px em (line height 20)",
+        f" *   LG : {family_label} Regular 26 px em (line height 30)",
+        f" *   PIN: {family_label} Regular 41 px em (line height 46, charset: digits, space, '.')",
+        " * Charset (192 glyphs):",
+        " *   0..94: ASCII 0x20..0x7E (95 glyphs)",
+        " *   95..190: Latin-1 Supplement 0x00A0..0x00FF (96 glyphs: á, é, í, ó, ú, ñ, ¿, ¡, etc.)",
+        " *   191: Ellipsis '…' (U+2026)",
         " * Bitmap layout: column-major; byte = column, bit n = row n (LSB = top).",
-        " * Proportional fonts: per-glyph width + advance tables; offsets index the",
-        " * flat bitmap. Full-index 95 is the '…' ellipsis glyph (UTF-8 E2 80 A6).",
-        " * PIN uses pin_map to remap the full index space onto its small charset.",
         " */",
     ]
     lines.extend(h + "\n" for h in hdr)
 
-    def emit_font(tag, glyphs, height, baseline):
-        bpc = -(-height // 8)
+    def emit_font(tag, glyphs, height, baseline, line_h, raster_bits):
+        if raster_bits == 2:
+            bpc = -(- (height * 2) // 8)
+        else:
+            bpc = -(-height // 8)
         bitmap = bytearray()
         width = []
         advance = []
         offset = []
-        for code in FULL_CHARS:
-            cols, w, adv = glyphs[code]
+        for ch in FULL_CHARS:
+            cols, w, adv = glyphs.get(ch, ([], 0, 4))
             offset.append(len(bitmap))
             width.append(w)
             advance.append(adv)
             for col in cols:
                 for b in range(bpc):
                     bitmap.append((col >> (8 * b)) & 0xFF)
-        offset.append(len(bitmap))  # sentinel, unused
+        offset.append(len(bitmap))
         lines.append(c_array_u8(f"michi_ui_{tag}_bitmap", bitmap))
         lines.append(c_array_u8(f"michi_ui_{tag}_width", width))
         lines.append(c_array_u8(f"michi_ui_{tag}_advance", advance))
         lines.append(c_array_u16(f"michi_ui_{tag}_offset", offset))
-        lines.append(f"/* michi_ui_{tag}: height={height} baseline={baseline} "
-                     f"bytes_per_col={-(-height // 8)} */\n")
+        tag_up = tag.upper()
+        lines.append(f"#define MICHI_UI_{tag_up}_HEIGHT       {height}\n")
+        lines.append(f"#define MICHI_UI_{tag_up}_BASELINE     {baseline}\n")
+        lines.append(f"#define MICHI_UI_{tag_up}_LINE_HEIGHT  {line_h}\n")
+        lines.append(f"#define MICHI_UI_{tag_up}_RASTER_BITS  {raster_bits}\n")
+        lines.append(f"#define MICHI_UI_{tag_up}_BYTES_PER_COL {bpc}\n")
+        lines.append("\n")
+        lines.append(f"/* michi_ui_{tag}: height={height} baseline={baseline} line_height={line_h} "
+                     f"bytes_per_col={bpc} raster={raster_bits}-bit */\n")
 
-    # XS
-    xsh = 8
-    glyphs = {}
-    for c in FULL_CHARS:
-        code = ord(c)
-        if code == 0x2026:
-            rows, w, adv = xs_glyph_art(0xE2_80_A6)
-        else:
-            rows, w, adv = xs_glyph_art(code)
-        cols = []
-        for x in range(w):
-            col = 0
-            for y in range(xsh):
-                if rows[y][x] == "#":
-                    col |= 1 << y
-            cols.append(col)
-        glyphs[c] = (cols, w, adv)
-    emit_font("xs", glyphs, 8, 6)
+    for tag, (weight, pt, box_h, line_h, base_raster) in FONT_SPECS.items():
+        raster = base_raster
+        if raster_bits_override == 2 and tag in ("sm", "md", "lg"):
+            raster = 2
 
-    # SM / MD / LG
-    for tag, (path, px) in PIL_FONTS.items():
-        if tag == "pin":
-            continue
-        font = ImageFont.truetype(path, px)
+        path = paths[weight]
+        font = ImageFont.truetype(path, pt)
         asc, desc = font.getmetrics()
-        box_h = asc + desc
-        glyphs = {ch: pil_glyph(font, ch, box_h) for ch in FULL_CHARS}
-        emit_font(tag, glyphs, box_h, asc)
 
-    # PIN (charset subset + pin_map)
-    font = ImageFont.truetype(FONT_REGULAR, 36)
-    asc, desc = font.getmetrics()
-    box_h = asc  # digits have no descenders; '.' sits above the baseline
-    pin_glyphs = {ch: pil_glyph(font, ch, box_h) for ch in PIN_CHARS}
-    pin_index = {}
-    bpc = -(-box_h // 8)
-    bitmap = bytearray()
-    width = []
-    advance = []
-    offset = []
-    for ch in PIN_CHARS:
-        cols, w, adv = pin_glyphs[ch]
-        pin_index[ch] = len(width)
-        offset.append(len(bitmap))
-        width.append(w)
-        advance.append(adv)
-        for col in cols:
-            for b in range(bpc):
-                bitmap.append((col >> (8 * b)) & 0xFF)
-    offset.append(len(bitmap))
-    lines.append(c_array_u8("michi_ui_pin_bitmap", bitmap))
-    lines.append(c_array_u8("michi_ui_pin_width", width))
-    lines.append(c_array_u8("michi_ui_pin_advance", advance))
-    lines.append(c_array_u16("michi_ui_pin_offset", offset))
-    lines.append(f"/* michi_ui_pin: height={box_h} baseline={box_h} "
-                 f"bytes_per_col={-(-box_h // 8)} */\n")
+        if raster == 2:
+            glyphs = {ch: pil_glyph_2bit(font, ch, box_h) for ch in FULL_CHARS}
+        else:
+            glyphs = {ch: pil_glyph_1bit(font, ch, box_h) for ch in FULL_CHARS}
+        
+        if tag == "pin":
+            pin_map = []
+            for ch in FULL_CHARS:
+                if ch in PIN_CHARS:
+                    pin_map.append(FULL_CHARS.index(ch))
+                elif ch == "\u2026":
+                    pin_map.append(FULL_CHARS.index("."))
+                else:
+                    pin_map.append(FULL_CHARS.index(" "))
+            lines.append(c_array_u8("michi_ui_pin_map", pin_map))
+            lines.append("/* pin_map: full 192 index -> PIN glyph (unsupported -> space, '…' -> '.'). */\n")
 
-    # pin_map: full index -> pin glyph index
-    pin_map = []
-    for code in range(0x20, 0x7F):
-        pin_map.append(pin_index.get(chr(code), pin_index[" "]))
-    # Ellipsis -> '.': PIN has no '…' glyph; the dot is in PIN_CHARS exactly
-    # for this fallback (a truncated PIN must show a dot, not a blank).
-    pin_map.append(pin_index["."])
-    lines.append(c_array_u8("michi_ui_pin_map", pin_map))
-    lines.append("/* pin_map: full index -> PIN glyph (unsupported -> space, '…' -> '.'). */\n")
+        emit_font(tag, glyphs, box_h, asc, line_h, raster)
 
     os.makedirs(os.path.dirname(FONTS_OUT), exist_ok=True)
     with open(FONTS_OUT, "w") as f:
         f.writelines(lines)
-    print(f"wrote {FONTS_OUT}")
-
+    print(f"wrote {FONTS_OUT} (font={family_label}, raster override={raster_label})")
 
 def emit_icons():
     lines = []
     lines.append("/* Generated by tools/gen_michi_ui_assets.py - DO NOT EDIT.\n")
-    lines.append(" * 1 bpp, row-major, MSB first; first two bytes are width,height.\n")
-    lines.append(" * Sizes: all icons at 12/20/32; the cat also at 24 and 48.\n */\n")
+    lines.append(" * 1 bpp, row-major, MSB first; first two bytes are width,height.\n */\n")
     for name, prims in ICONS:
         for size in ICON_SIZES[name]:
             rows = rasterize(prims, size, ICON_STROKE[size])
@@ -614,38 +561,23 @@ def emit_icons():
     print(f"wrote {ICONS_OUT}")
 
 
-def previews(out_dir):
-    """ASCII-art previews to stdout (readable in terminal/CI)."""
-    print("\n=== THEME (RGB888 -> RGB565, rounded) ===")
-    for name, r, g, b in PALETTE:
-        print(f"  {name:28s} #{r:02X}{g:02X}{b:02X} -> 0x{rgb565(r, g, b):04X}")
-
-    print("\n=== XS font (charset) ===")
-    for code in range(0x20, 0x7F):
-        rows, w, adv = xs_glyph_art(code)
-        ch = chr(code)
-        print(f"{ch} (w={w},adv={adv})")
-        for r in rows:
-            print("  " + r)
-        print()
-
-    print("\n=== ICONS ===")
-    for name, prims in ICONS:
-        for size in ICON_SIZES[name]:
-            rows = rasterize(prims, size, ICON_STROKE[size])
-            print(f"--- {name} {size} ---")
-            for r in art(rows):
-                print("  " + r)
-
-
 def main():
-    if "--preview" in sys.argv:
-        previews(sys.argv[sys.argv.index("--preview") + 1]
-                 if len(sys.argv) > sys.argv.index("--preview") + 1 else "/tmp")
-        return
-    emit_fonts()
-    emit_icons()
+    parser = argparse.ArgumentParser(
+        description="Michi UI asset generator – fonts + icons + theme verification.")
+    parser.add_argument(
+        "--preview", metavar="DIR", default=None,
+        help="Write per-glyph PNG previews to DIR (dev only).")
+    parser.add_argument(
+        "--font", choices=["notosans", "inter"], default="notosans",
+        help="Font family to rasterize (default: notosans).")
+    parser.add_argument(
+        "--raster", choices=["1bit", "2bit"], default="1bit",
+        help="Bitmap depth: 1bit = on/off, 2bit = 4-level AA (default: 1bit).")
+    args = parser.parse_args()
 
+    raster_bits = 2 if args.raster == "2bit" else 1
+    emit_fonts(font_family=args.font, raster_bits_override=raster_bits)
+    emit_icons()
 
 if __name__ == "__main__":
     main()
