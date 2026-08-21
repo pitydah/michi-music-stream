@@ -41,24 +41,21 @@ jobs:
           make -C tests/host test
 
   ui-preview:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Install Pillow and Noto Sans fonts
-        run: |
-          pip install Pillow
-          sudo apt-get update && sudo apt-get install -y fonts-noto
-      - name: Regenerate UI assets (Noto Sans, 1-bit – baseline)
+      - name: Install Python deps
+        run: pip install Pillow
+      - name: Install Noto Sans fonts
+        run: sudo apt-get install -y fonts-noto
+      - name: Verify generator reproducibility (Noto Sans 1-bit)
         working-directory: firmware/components/michi_display
         run: |
           python3 tools/gen_michi_ui_assets.py --font notosans --raster 1bit
-      - name: Restore original assets to prevent rendering diffs breaking UI tests
+      - name: Check for asset drift
         run: |
-          git checkout -- firmware/components/michi_display/assets/
-      - name: Host UI render test (landscape screens pixel-identical)
+          git diff --exit-code firmware/components/michi_display/assets/
+      - name: Build and run host UI tests
         run: |
           make -C tests/host clean
           make -C tests/host test_michi_ui

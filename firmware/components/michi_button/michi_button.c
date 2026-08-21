@@ -20,6 +20,8 @@
 
 #define TAG "michi_button"
 
+#define MICHI_BUTTON_MIN_PRESS_MS CONFIG_MICHI_BUTTON_MIN_PRESS_MS
+
 /* Gesture contract (P1-07): the factory-reset band must sit strictly
  * above the recovery band - otherwise every recovery hold would become a
  * destructive reset. Enforced at build time on top of the Kconfig range. */
@@ -120,8 +122,16 @@ static esp_err_t post_with_retry(michi_event_id_t id, uint32_t data)
 
 static void handle_short_press(uint32_t press_ms, michi_state_t st)
 {
+    /* Short press opens pairing from any non-protected state.
+     * Note: when primary_state is PLAYING/PAUSED/BUFFERING, the FSM must
+     * implement auxiliary pairing (pairing window + no audio teardown).
+     * If the FSM performs a hard PLAYING->PAIRING transition, only
+     * IDLE/UNPROVISIONED/PAIRING are safe. Update this list once the FSM
+     * supports auxiliary pairing. */
     if (st == MICHI_STATE_IDLE || st == MICHI_STATE_UNPROVISIONED ||
-        st == MICHI_STATE_PAIRING) {
+        st == MICHI_STATE_PAIRING || st == MICHI_STATE_SESSION_PENDING ||
+        st == MICHI_STATE_BUFFERING || st == MICHI_STATE_PLAYING ||
+        st == MICHI_STATE_PAUSED) {
         ESP_LOGI(TAG, "button: press_ms=%u action=pairing", (unsigned)press_ms);
         /* The physical press is the ONLY authority that opens the pairing
          * window. From IDLE/UNPROVISIONED, PAIRING_STARTED is posted ONLY
@@ -159,6 +169,13 @@ static void handle_short_press(uint32_t press_ms, michi_state_t st)
  * tested); this file executes the chosen action. */
 static void handle_release(uint32_t press_ms)
 {
+    /* Discard noise pulses shorter than the minimum valid press. */
+    if (press_ms < MICHI_BUTTON_MIN_PRESS_MS) {
+        ESP_LOGD(TAG, "button: press %u ms < MIN_PRESS %u ms, discarded as noise",
+                 (unsigned)press_ms, (unsigned)MICHI_BUTTON_MIN_PRESS_MS);
+        return;
+    }
+
     const michi_state_t st = michi_state_get();
 
     const michi_button_action_t action = michi_button_gesture_classify(
@@ -236,50 +253,33 @@ static void button_task(void *arg)
             michi_button_debounce_feed(&deb, level, now_us);
 
         if (evt == MICHI_BTN_DEBOUNCE_PRESS) {
+            /* Debouncer is the single authority: record press time unconditionally.
+             * The ISR snapshot is used only for diagnostics, not as a veto. */
+            press_t_us = now_us;   /* now_us is already computed above */
+            portENTER_CRITICAL(&s_edge_mux);
+            s_press_state = michi_state_get();
+            s_press_boot_elapsed = (now_us - s_boot_time) / 1000;
+            portEXIT_CRITICAL(&s_edge_mux);
+            /* Diagnostic: log if ISR record appears stale */
             michi_button_edge_t edge;
             take_edge_snapshot(&edge);
-            /* Stable press (active low): anchor the duration with the ISR edge
-             * timestamp (sub-tick accuracy) - the duration is measured
-             * edge-to-edge on the release. The ISR record must still say
-             * "pressed": a stale or coalesced record (edge.level != 0) cannot
-             * anchor the duration - discard it (no press_t_us => the release
-             * does nothing, safer than a bogus long press). */
-            if (edge.level == 0) {
-                press_t_us = edge.t_us;
-                /* Snapshot the FSM state and the boot elapsed under the mux:
-                 * the release gates on both (F1: the press must not have
-                 * STARTED in a protected state; F4: factory reset needs the
-                 * arm window). */
-                portENTER_CRITICAL(&s_edge_mux);
-                s_press_state = michi_state_get();
-                s_press_boot_elapsed = (now_us - s_boot_time) / 1000;
-                portEXIT_CRITICAL(&s_edge_mux);
-            } else {
-                ESP_LOGD(TAG, "button: press anchor discarded (edge "
-                         "level=%d, stale or coalesced record)",
+            if (edge.level != 0) {
+                ESP_LOGD(TAG, "button: press confirmed by debouncer; ISR record level=%d (stale)",
                          edge.level);
             }
         } else if (evt == MICHI_BTN_DEBOUNCE_RELEASE) {
-            michi_button_edge_t edge;
-            take_edge_snapshot(&edge);
-            /* Stable release: duration between the two confirmed edges, both
-             * ISR-timestamped (sub-tick, debounce window excluded). Symmetric
-             * gate: the release requires a REAL release edge (edge.level == 1),
-             * mirroring the press path's edge.level == 0 anchor check - a stale
-             * or coalesced record cannot fire an action.
-             *
-             * The debouncer is authoritative here: a confirmed stable release
-             * fires the action directly. The old code re-read the pin with
-             * gpio_get_level() right before firing and aborted if it read 0
-             * (a rebound) - that re-introduced a TOCTOU race that dropped
-             * valid releases (PAIR-BTN-01 P0). The debouncer's stable
-             * confirmation is the only gate the release needs. */
-            if (press_t_us != 0 && edge.level == 1 && edge.t_us > press_t_us) {
-                const uint32_t press_ms =
-                    (uint32_t)((edge.t_us - press_t_us) / 1000);
+            /* Debouncer is the single authority: use debounce-confirmed timestamps only. */
+            if (press_t_us != 0) {
+                const uint32_t press_ms = (uint32_t)((now_us - press_t_us) / 1000);
                 handle_release(press_ms);
             }
             press_t_us = 0;
+            /* Diagnostic only */
+            michi_button_edge_t edge;
+            take_edge_snapshot(&edge);
+            if (edge.level != 1) {
+                ESP_LOGD(TAG, "button: release confirmed by debouncer; ISR record level=%d (stale)", edge.level);
+            }
         }
 
         /* 10 ms poll; a shutdown notification wakes the task immediately

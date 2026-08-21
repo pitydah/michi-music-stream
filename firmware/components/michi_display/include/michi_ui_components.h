@@ -76,6 +76,15 @@ void michi_ui_draw_playback_footer_landscape(uint16_t *fb, uint16_t fb_w,
                                              const char *format_str);
 
 /**
+ * @brief Draw the minimal audio footer at y=212: source left, format right-aligned.
+ *        No speaker icon, no volume.
+ */
+void michi_ui_draw_audio_footer_landscape(uint16_t *fb, uint16_t fb_w,
+                                          uint16_t fb_h, uint16_t y_origin,
+                                          const char *source,
+                                          const char *format_str);
+
+/**
  * @brief Draw a 6-digit pairing PIN visually spaced as "XXX XXX" centered
  *        at absolute (x_center, y_center) in MICHI_FONT_PIN (41 px height).
  */

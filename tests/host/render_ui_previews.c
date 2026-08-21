@@ -41,7 +41,6 @@ static void render_scenario_to_file(const char *filename, const michi_ui_screen_
     uint16_t *full_frame = calloc((size_t)PANEL_W * PANEL_H, sizeof(uint16_t));
     if (!full_frame) return;
 
-    /* Render through banded pipeline (6 bands of 320x40) to verify exact hardware execution */
     uint16_t band_buf[PANEL_W * BAND_H];
     for (int b = 0; b < N_BANDS; b++) {
         uint16_t y_origin = (uint16_t)(b * BAND_H);
@@ -69,21 +68,41 @@ int main(int argc, char **argv)
     michi_ui_screen_ctx_t s02 = { .state = MICHI_STATE_UNPROVISIONED };
     render_scenario_to_file("ui-02-unprovisioned.ppm", &s02, out_dir);
 
-    /* 3. Ready */
+    /* 2b. Provisioning */
+    michi_ui_screen_ctx_t s02b = { .state = MICHI_STATE_PROVISIONING };
+    render_scenario_to_file("ui-02b-provisioning.ppm", &s02b, out_dir);
+
+    /* 3. Ready ONLINE */
     michi_ui_screen_ctx_t s03 = {
         .state = MICHI_STATE_IDLE,
         .wifi_connected = true,
         .wifi_rssi = -48,
         .server_connected = false,
     };
-    render_scenario_to_file("ui-03-ready.ppm", &s03, out_dir);
+    render_scenario_to_file("ui-03-ready-online.ppm", &s03, out_dir);
 
-    /* 4. Connecting */
+    /* 3b. Ready OFFLINE */
+    michi_ui_screen_ctx_t s03b = {
+        .state = MICHI_STATE_IDLE,
+        .wifi_connected = false,
+        .wifi_rssi = -90,
+        .server_connected = false,
+    };
+    render_scenario_to_file("ui-03b-ready-offline.ppm", &s03b, out_dir);
+
+    /* 4. Connecting WITH SSID */
     michi_ui_screen_ctx_t s04 = {
         .state = MICHI_STATE_WIFI_CONNECTING,
         .wifi_ssid = "Michi-Studio-5G",
     };
-    render_scenario_to_file("ui-04-connecting.ppm", &s04, out_dir);
+    render_scenario_to_file("ui-04-connecting-ssid.ppm", &s04, out_dir);
+
+    /* 4b. Connecting NO SSID */
+    michi_ui_screen_ctx_t s04b = {
+        .state = MICHI_STATE_WIFI_CONNECTING,
+        .wifi_ssid = NULL,
+    };
+    render_scenario_to_file("ui-04b-connecting-nossid.ppm", &s04b, out_dir);
 
     /* 5. Pairing waiting */
     michi_ui_screen_ctx_t s05 = {
@@ -284,6 +303,5 @@ int main(int argc, char **argv)
     };
     render_scenario_to_file("ui-20-volume-overlay.ppm", &s20, out_dir);
 
-    printf("Generated all 22 UI previews in %s/\n", out_dir);
     return 0;
 }

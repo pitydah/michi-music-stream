@@ -77,18 +77,13 @@ void michi_ui_draw_screen_unprovisioned(uint16_t *fb, uint16_t fb_w, uint16_t fb
 {
     const michi_ui_font_t *font_lg = michi_ui_font_get(MICHI_FONT_LG);
 
-    michi_ui_draw_header_landscape(fb, fb_w, fb_h, y_origin, MICHI_UI_STR_BRAND, false, 0, false);
-    michi_ui_draw_divider(fb, fb_w, fb_h, y_origin, false);
+    michi_ui_draw_icon(fb, fb_w, fb_h, y_origin, 136, 35, MICHI_ICON_BUTTON, 48, MICHI_UI_ACCENT);
 
-    /* Physical button icon 32x32 at (40, 95) */
-    michi_ui_draw_icon(fb, fb_w, fb_h, y_origin, 40, 95, MICHI_ICON_BUTTON, 32, MICHI_UI_ACCENT);
+    ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 100, MICHI_UI_STR_SETUP_TITLE, font_lg, MICHI_UI_TEXT_PRIMARY);
 
-    /* Title & Hint at x=95 */
-    ui_draw_text(fb, fb_w, fb_h, y_origin, 95, 85, MICHI_UI_STR_SETUP_TITLE, font_lg, MICHI_UI_TEXT_PRIMARY);
-
-    michi_ui_rect_t r = { .x = 95, .y = 120, .w = 205, .h = 50 };
+    michi_ui_rect_t r = { .x = 20, .y = 128, .w = 280, .h = 60 };
     michi_ui_draw_multiline(fb, fb_w, fb_h, y_origin, &r, MICHI_FONT_SM,
-                            MICHI_UI_STR_SETUP_HINT, MICHI_UI_ALIGN_LEFT, MICHI_UI_TEXT_SECONDARY);
+                            MICHI_UI_STR_SETUP_HINT, MICHI_UI_ALIGN_CENTER, MICHI_UI_TEXT_SECONDARY);
 }
 
 void michi_ui_draw_screen_ready(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin,
@@ -96,17 +91,20 @@ void michi_ui_draw_screen_ready(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint
 {
     (void)ctx;
     const michi_ui_font_t *font_lg = michi_ui_font_get(MICHI_FONT_LG);
-    const michi_ui_font_t *font_sm = michi_ui_font_get(MICHI_FONT_SM);
-    (void)font_sm;
 
     bool wifi = (ctx != NULL) ? ctx->wifi_connected : false;
 
-    michi_ui_draw_icon(fb, fb_w, fb_h, y_origin, (320 - 48) / 2, 60, MICHI_ICON_CAT, 48, MICHI_UI_TEXT_PRIMARY);
-    ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 120, MICHI_UI_STR_BRAND_LOWER, font_lg, MICHI_UI_TEXT_PRIMARY);
-    ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 152, MICHI_UI_STR_READY, font_sm, MICHI_UI_TEXT_TERTIARY);
+    michi_ui_draw_icon(fb, fb_w, fb_h, y_origin, 136, 55, MICHI_ICON_CAT, 48, MICHI_UI_TEXT_PRIMARY);
+    ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 117, MICHI_UI_STR_BRAND_LOWER, font_lg, MICHI_UI_TEXT_PRIMARY);
 
     if (!wifi) {
-        michi_ui_draw_status_dot(fb, fb_w, fb_h, y_origin, 300, 220, MICHI_UI_MUTED);
+        const michi_ui_font_t *font_sm2 = michi_ui_font_get(MICHI_FONT_SM);
+        ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 151, MICHI_UI_STR_NO_CONNECTION,
+                              font_sm2, MICHI_UI_TEXT_SECONDARY);
+    } else {
+        const michi_ui_font_t *font_sm2 = michi_ui_font_get(MICHI_FONT_SM);
+        ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 151, MICHI_UI_STR_READY,
+                              font_sm2, MICHI_UI_TEXT_TERTIARY);
     }
 }
 
@@ -114,18 +112,12 @@ void michi_ui_draw_screen_provisioning(uint16_t *fb, uint16_t fb_w, uint16_t fb_
 {
     const michi_ui_font_t *font_lg = michi_ui_font_get(MICHI_FONT_LG);
 
-    michi_ui_draw_header_landscape(fb, fb_w, fb_h, y_origin, MICHI_UI_STR_BRAND, false, 0, false);
-    michi_ui_draw_divider(fb, fb_w, fb_h, y_origin, false);
+    ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 85, MICHI_UI_STR_SETUP_TITLE,
+                          font_lg, MICHI_UI_TEXT_PRIMARY);
 
-    /* Wi-Fi icon 32x32 at (45, 95) */
-    michi_ui_draw_icon(fb, fb_w, fb_h, y_origin, 45, 95, MICHI_ICON_WIFI, 32, MICHI_UI_ACCENT);
-
-    /* Text block at x=100 */
-    ui_draw_text(fb, fb_w, fb_h, y_origin, 100, 85, MICHI_UI_STR_PROV_TITLE, font_lg, MICHI_UI_TEXT_PRIMARY);
-
-    michi_ui_rect_t r = { .x = 100, .y = 120, .w = 200, .h = 60 };
+    michi_ui_rect_t r = { .x = 20, .y = 118, .w = 280, .h = 80 };
     michi_ui_draw_multiline(fb, fb_w, fb_h, y_origin, &r, MICHI_FONT_SM,
-                            MICHI_UI_STR_PROV_HINT, MICHI_UI_ALIGN_LEFT, MICHI_UI_TEXT_SECONDARY);
+                            MICHI_UI_STR_PROV_HINT, MICHI_UI_ALIGN_CENTER, MICHI_UI_TEXT_SECONDARY);
 }
 
 void michi_ui_draw_screen_connecting(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin,
@@ -134,23 +126,14 @@ void michi_ui_draw_screen_connecting(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
     (void)ctx;
     const michi_ui_font_t *font_lg = michi_ui_font_get(MICHI_FONT_LG);
     const michi_ui_font_t *font_sm = michi_ui_font_get(MICHI_FONT_SM);
-    (void)font_sm;
 
-    bool wifi = (ctx != NULL) ? ctx->wifi_connected : false;
-    int8_t rssi = (ctx != NULL) ? ctx->wifi_rssi : 0;
-    bool srv = (ctx != NULL) ? ctx->server_connected : false;
-
-    michi_ui_draw_header_landscape(fb, fb_w, fb_h, y_origin, MICHI_UI_STR_BRAND, wifi, rssi, srv);
-    michi_ui_draw_divider(fb, fb_w, fb_h, y_origin, false);
-
-    /* Wi-Fi icon 32x32 at (45, 95) in INFO */
-    michi_ui_draw_icon(fb, fb_w, fb_h, y_origin, 45, 95, MICHI_ICON_WIFI, 32, MICHI_UI_INFO);
-
-    /* Text at x=100 */
-    ui_draw_text(fb, fb_w, fb_h, y_origin, 100, 88, MICHI_UI_STR_CONNECTING_TITLE, font_lg, MICHI_UI_TEXT_PRIMARY);
+    ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 90, MICHI_UI_STR_CONNECTING_TITLE,
+                          font_lg, MICHI_UI_TEXT_PRIMARY);
 
     const char *sub = (ssid != NULL && ssid[0] != '\0') ? ssid : MICHI_UI_STR_CONNECTING_WIFI;
-    ui_draw_text(fb, fb_w, fb_h, y_origin, 100, 124, sub, font_sm, MICHI_UI_TEXT_SECONDARY);
+    ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 125, sub, font_sm, MICHI_UI_TEXT_SECONDARY);
+
+    michi_ui_draw_activity_dots(fb, fb_w, fb_h, y_origin, 160, 165, 3, 12, MICHI_UI_ACCENT);
 }
 
 void michi_ui_draw_screen_pairing(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin,
@@ -228,7 +211,7 @@ void michi_ui_draw_screen_buffering(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, 
 
     char fmt[32];
     format_audio_spec(fmt, sizeof(fmt), (ctx != NULL) ? ctx->sample_rate : 48000, (ctx != NULL) ? ctx->bit_depth : 16);
-    michi_ui_draw_playback_footer_landscape(fb, fb_w, fb_h, y_origin, (ctx != NULL) ? ctx->volume : 72, fmt);
+    michi_ui_draw_audio_footer_landscape(fb, fb_w, fb_h, y_origin, NULL, fmt);
 }
 
 void michi_ui_draw_screen_playing(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin,
@@ -262,8 +245,6 @@ void michi_ui_draw_screen_playing(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, ui
             ui_draw_text(fb, fb_w, fb_h, y_origin, 18, art_y, artist_buf, font_md, MICHI_UI_TEXT_SECONDARY);
         }
 
-        michi_ui_draw_hline(fb, fb_w, fb_h, y_origin, 18, 225, 24, MICHI_UI_ACCENT);
-        michi_ui_draw_hline(fb, fb_w, fb_h, y_origin, 18, 226, 24, MICHI_UI_ACCENT);
     } else {
         michi_ui_draw_icon(fb, fb_w, fb_h, y_origin, (320 - 32) / 2, 80, MICHI_ICON_PLAY, 32, MICHI_UI_ACCENT);
         ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 125, MICHI_UI_STR_PLAYING, font_lg, MICHI_UI_TEXT_PRIMARY);
@@ -271,7 +252,9 @@ void michi_ui_draw_screen_playing(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, ui
 
     char fmt[32];
     format_audio_spec(fmt, sizeof(fmt), (ctx != NULL) ? ctx->sample_rate : 48000, (ctx != NULL) ? ctx->bit_depth : 16);
-    michi_ui_draw_playback_footer_landscape(fb, fb_w, fb_h, y_origin, (ctx != NULL) ? ctx->volume : 72, fmt);
+    const char *source = (ctx != NULL && ctx->source != NULL && ctx->source[0] != '\0')
+                         ? ctx->source : MICHI_UI_STR_DEFAULT_SERVER;
+    michi_ui_draw_audio_footer_landscape(fb, fb_w, fb_h, y_origin, source, fmt);
 }
 
 void michi_ui_draw_screen_paused(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin,
@@ -306,8 +289,6 @@ void michi_ui_draw_screen_paused(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uin
 
         ui_draw_text(fb, fb_w, fb_h, y_origin, 18, 195, MICHI_UI_STR_PAUSED, font_xs, MICHI_UI_ACCENT_SOFT);
 
-        michi_ui_draw_hline(fb, fb_w, fb_h, y_origin, 18, 225, 24, MICHI_UI_ACCENT);
-        michi_ui_draw_hline(fb, fb_w, fb_h, y_origin, 18, 226, 24, MICHI_UI_ACCENT);
     } else {
         michi_ui_draw_icon(fb, fb_w, fb_h, y_origin, (320 - 32) / 2, 80, MICHI_ICON_PAUSE, 32, MICHI_UI_ACCENT_SOFT);
         ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 125, MICHI_UI_STR_PAUSED, font_lg, MICHI_UI_TEXT_PRIMARY);
@@ -315,7 +296,9 @@ void michi_ui_draw_screen_paused(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uin
 
     char fmt[32];
     format_audio_spec(fmt, sizeof(fmt), (ctx != NULL) ? ctx->sample_rate : 48000, (ctx != NULL) ? ctx->bit_depth : 16);
-    michi_ui_draw_playback_footer_landscape(fb, fb_w, fb_h, y_origin, (ctx != NULL) ? ctx->volume : 72, fmt);
+    const char *source = (ctx != NULL && ctx->source != NULL && ctx->source[0] != '\0')
+                         ? ctx->source : MICHI_UI_STR_DEFAULT_SERVER;
+    michi_ui_draw_audio_footer_landscape(fb, fb_w, fb_h, y_origin, source, fmt);
 }
 
 void michi_ui_draw_screen_updating(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin,

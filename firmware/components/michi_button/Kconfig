@@ -4,7 +4,7 @@ menu "Michi Music Stream Button"
 
     config MICHI_BUTTON_DEBOUNCE_MS
         int "Debounce window (ms)"
-        default 20
+        default 30
         range 10 200
         help
           Stable-window debounce: an edge (press/release) is confirmed only
@@ -15,6 +15,17 @@ menu "Michi Music Stream Button"
           the debounce. Honest guarantee: a glitch shorter than this window
           is rejected by the single-authority state machine; contacts that
           bounce for longer than the window need a larger value.
+          30 ms rejects most contact chatter while preserving clean taps
+
+    config MICHI_BUTTON_MIN_PRESS_MS
+        int "Minimum valid press duration (ms)"
+        default 50
+        range 5 500
+        help
+          Press durations shorter than this are treated as noise and
+          discarded. Default 50 ms is below any intentional human gesture
+          but above typical contact chatter. Must be less than
+          MICHI_BUTTON_RECOVERY_PRESS_MS.
 
     config MICHI_BUTTON_RECOVERY_PRESS_MS
         int "Recovery press threshold (ms)"
@@ -60,7 +71,7 @@ menu "Michi Music Stream Button"
 
     config MICHI_BUTTON_POLL_MS
         int "Debounce task poll period (ms)"
-        default 10
+        default 5
         range 1 50
         help
           Sampling period of the debounce task. Each sample is fed to the
@@ -70,8 +81,7 @@ menu "Michi Music Stream Button"
           NOT gate that window (a sub-window bounce is rejected by the
           stable-state machine itself, not by sample counting). The poll
           cadence sets the task's wake rate and the granularity of the
-          idle current; 10 ms gives sub-debounce resolution while keeping
-          the CPU at 100 samples/s of a single GPIO read.
+          idle current; 5 ms gives 200 samples/s of a single GPIO read.
 
     config MICHI_BUTTON_TASK_STACK_BYTES
         int "Debounce task stack (bytes)"

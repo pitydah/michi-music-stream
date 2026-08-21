@@ -119,6 +119,31 @@ void michi_ui_draw_divider(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
     }
 }
 
+void michi_ui_draw_audio_footer_landscape(uint16_t *fb, uint16_t fb_w,
+                                          uint16_t fb_h, uint16_t y_origin,
+                                          const char *source,
+                                          const char *format_str)
+{
+    const michi_ui_font_t *font_sm = michi_ui_font_get(MICHI_FONT_SM);
+
+    /* Left: source label (Device Truth) */
+    if (source != NULL && source[0] != '\0') {
+        ui_draw_text(fb, fb_w, fb_h, y_origin, 18, 212, source, font_sm,
+                     MICHI_UI_TEXT_TERTIARY);
+    }
+
+    /* Right: format string right-aligned to x=302 */
+    if (format_str != NULL && format_str[0] != '\0') {
+        int fmt_w = ui_text_measure(font_sm, format_str);
+        int x = 302 - fmt_w;
+        if (x < 18) {
+            x = 18;
+        }
+        ui_draw_text(fb, fb_w, fb_h, y_origin, x, 212, format_str, font_sm,
+                     MICHI_UI_TEXT_TERTIARY);
+    }
+}
+
 void michi_ui_draw_playback_footer_landscape(uint16_t *fb, uint16_t fb_w,
                                              uint16_t fb_h, uint16_t y_origin,
                                              uint8_t volume,
@@ -227,22 +252,18 @@ void michi_ui_draw_volume_overlay(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
     const michi_ui_font_t *font_pin = michi_ui_font_get(MICHI_FONT_PIN);
     const michi_ui_font_t *font_sm = michi_ui_font_get(MICHI_FONT_SM);
 
-    /* Speaker icon at center top (cx=160, y=40, size 24) */
-    michi_ui_draw_icon(fb, fb_w, fb_h, y_origin, 148, 40, MICHI_ICON_SPEAKER, 24,
-                       MICHI_UI_TEXT_PRIMARY);
-
-    /* Large Volume Number (PIN font ~41px) at center (y=75) */
+    /* Large volume number centered (PIN font ~41px) at y=80 */
     snprintf(vol_str, sizeof(vol_str), "%u", (unsigned)volume);
     int num_w = ui_text_measure(font_pin, vol_str);
     int num_x = (320 - num_w) / 2;
-    ui_draw_text(fb, fb_w, fb_h, y_origin, num_x, 75, vol_str, font_pin,
+    ui_draw_text(fb, fb_w, fb_h, y_origin, num_x, 80, vol_str, font_pin,
                  MICHI_UI_TEXT_PRIMARY);
 
-    /* Fine progress bar at x=40, y=140, w=240, h=3 */
-    michi_ui_draw_progress_landscape(fb, fb_w, fb_h, y_origin, 40, 140, 240, 3, volume);
+    /* Progress bar at x=40, y=145, w=240, h=3 */
+    michi_ui_draw_progress_landscape(fb, fb_w, fb_h, y_origin, 40, 145, 240, 3, volume);
 
-    /* Label "Volumen" at y=165 in SM font */
-    ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 165, MICHI_UI_STR_VOLUME_TITLE,
+    /* Label "volumen" centered at y=170 in SM, TERTIARY */
+    ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 170, MICHI_UI_STR_VOLUME_TITLE,
                           font_sm, MICHI_UI_TEXT_TERTIARY);
 }
 

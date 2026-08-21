@@ -4,6 +4,13 @@
 
 #include "../assets/fonts/michi_ui_fonts_data.h"
 
+#if CONFIG_MICHI_DISPLAY_RASTER_2BIT
+#if defined(MICHI_UI_SM_RASTER_BITS) && MICHI_UI_SM_RASTER_BITS != 2
+#error "Kconfig MICHI_DISPLAY_RASTER_2BIT=y but generated assets are 1-bit. "\
+       "Regenerate with: python3 tools/gen_michi_ui_assets.py --raster 2bit"
+#endif
+#endif
+
 /*
  * Font registry. Every descriptor points into the generated flash tables
  * (static const, no runtime allocation). The pin font remaps the full
@@ -11,29 +18,34 @@
  */
 static const michi_ui_font_t s_fonts[MICHI_FONT_COUNT] = {
     [MICHI_FONT_XS] = {
-        "xs", 8, 6, 10, MICHI_UI_FONT_GLYPH_COUNT,
+        "xs", MICHI_UI_XS_HEIGHT, MICHI_UI_XS_BASELINE, MICHI_UI_XS_LINE_HEIGHT,
+        MICHI_UI_FONT_GLYPH_COUNT,
         michi_ui_xs_bitmap, michi_ui_xs_width, michi_ui_xs_advance,
-        michi_ui_xs_offset, 1, 1, NULL,
+        michi_ui_xs_offset, MICHI_UI_XS_RASTER_BITS, MICHI_UI_XS_BYTES_PER_COL, NULL,
     },
     [MICHI_FONT_SM] = {
-        "sm", 13, 10, 16, MICHI_UI_FONT_GLYPH_COUNT,
+        "sm", MICHI_UI_SM_HEIGHT, MICHI_UI_SM_BASELINE, MICHI_UI_SM_LINE_HEIGHT,
+        MICHI_UI_FONT_GLYPH_COUNT,
         michi_ui_sm_bitmap, michi_ui_sm_width, michi_ui_sm_advance,
-        michi_ui_sm_offset, 1, 2, NULL,
+        michi_ui_sm_offset, MICHI_UI_SM_RASTER_BITS, MICHI_UI_SM_BYTES_PER_COL, NULL,
     },
     [MICHI_FONT_MD] = {
-        "md", 17, 13, 20, MICHI_UI_FONT_GLYPH_COUNT,
+        "md", MICHI_UI_MD_HEIGHT, MICHI_UI_MD_BASELINE, MICHI_UI_MD_LINE_HEIGHT,
+        MICHI_UI_FONT_GLYPH_COUNT,
         michi_ui_md_bitmap, michi_ui_md_width, michi_ui_md_advance,
-        michi_ui_md_offset, 1, 3, NULL,
+        michi_ui_md_offset, MICHI_UI_MD_RASTER_BITS, MICHI_UI_MD_BYTES_PER_COL, NULL,
     },
     [MICHI_FONT_LG] = {
-        "lg", 26, 20, 30, MICHI_UI_FONT_GLYPH_COUNT,
+        "lg", MICHI_UI_LG_HEIGHT, MICHI_UI_LG_BASELINE, MICHI_UI_LG_LINE_HEIGHT,
+        MICHI_UI_FONT_GLYPH_COUNT,
         michi_ui_lg_bitmap, michi_ui_lg_width, michi_ui_lg_advance,
-        michi_ui_lg_offset, 1, 4, NULL,
+        michi_ui_lg_offset, MICHI_UI_LG_RASTER_BITS, MICHI_UI_LG_BYTES_PER_COL, NULL,
     },
     [MICHI_FONT_PIN] = {
-        "pin", 41, 41, 46, MICHI_UI_FONT_GLYPH_COUNT,
+        "pin", MICHI_UI_PIN_HEIGHT, MICHI_UI_PIN_BASELINE, MICHI_UI_PIN_LINE_HEIGHT,
+        MICHI_UI_FONT_GLYPH_COUNT,
         michi_ui_pin_bitmap, michi_ui_pin_width, michi_ui_pin_advance,
-        michi_ui_pin_offset, 1, 6, michi_ui_pin_map,
+        michi_ui_pin_offset, MICHI_UI_PIN_RASTER_BITS, MICHI_UI_PIN_BYTES_PER_COL, michi_ui_pin_map,
     },
 };
 

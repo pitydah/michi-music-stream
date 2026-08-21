@@ -23,6 +23,9 @@ extern "C" {
 #define MICHI_UI_STR_READY             "Listo"
 #define MICHI_UI_STR_WAITING_PLAYBACK  "Esperando reproducción"
 
+/* Status */
+#define MICHI_UI_STR_NO_CONNECTION    "Sin conexi\xc3\xb3n"
+
 /* Unprovisioned */
 #define MICHI_UI_STR_SETUP_TITLE       "Configurar Michi"
 #define MICHI_UI_STR_SETUP_HINT        "Mantén presionado el botón para comenzar"
