@@ -17,6 +17,7 @@
 #include "michi_button_gesture.h"
 #include "michi_pairing.h"
 #include "michi_state.h"
+#include "michi_display.h"
 
 #define TAG "michi_button"
 
@@ -147,9 +148,17 @@ static void handle_short_press(uint32_t press_ms, michi_state_t st)
                      esp_err_to_name(err));
             return;
         }
-        if (st != MICHI_STATE_PAIRING) {
+        /* Post PAIRING_STARTED only from states where the FSM safely
+         * transitions to PAIRING without tearing down an active session.
+         * From SESSION_PENDING/BUFFERING/PLAYING/PAUSED the pairing window
+         * is orthogonal: primary FSM state is preserved; the display overlay
+         * communicates pairing status without a state transition. */
+        if (st == MICHI_STATE_IDLE || st == MICHI_STATE_UNPROVISIONED) {
             post_with_retry(MICHI_EVENT_PAIRING_STARTED, 0);
         }
+        /* Set pairing waiting overlay for ALL states. The display task reads
+         * this at the next render, independent of primary FSM state. */
+        michi_display_set_pairing_overlay(MICHI_DISPLAY_PAIRING_OVERLAY_WAITING);
         return;
     }
     ESP_LOGW(TAG, "button: press_ms=%u action=pairing state=%s "
@@ -169,6 +178,11 @@ static void handle_short_press(uint32_t press_ms, michi_state_t st)
  * tested); this file executes the chosen action. */
 static void handle_release(uint32_t press_ms)
 {
+    /* Always clear button-press feedback overlay on any release (the button
+     * is physically up; handle_short_press re-sets to WAITING if pairing
+     * window opens successfully). */
+    michi_display_set_pairing_overlay(MICHI_DISPLAY_PAIRING_OVERLAY_NONE);
+
     /* Discard noise pulses shorter than the minimum valid press. */
     if (press_ms < MICHI_BUTTON_MIN_PRESS_MS) {
         ESP_LOGD(TAG, "button: press %u ms < MIN_PRESS %u ms, discarded as noise",
@@ -267,6 +281,9 @@ static void button_task(void *arg)
                 ESP_LOGD(TAG, "button: press confirmed by debouncer; ISR record level=%d (stale)",
                          edge.level);
             }
+            /* Immediate visual feedback on confirmed press: <100 ms perceptual
+             * latency target. Cleared unconditionally in handle_release(). */
+            michi_display_set_pairing_overlay(MICHI_DISPLAY_PAIRING_OVERLAY_BTN_PRESS);
         } else if (evt == MICHI_BTN_DEBOUNCE_RELEASE) {
             /* Debouncer is the single authority: use debounce-confirmed timestamps only. */
             if (press_t_us != 0) {

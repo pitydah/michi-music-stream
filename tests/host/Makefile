@@ -158,7 +158,7 @@ test_michi_pairing: test_michi_pairing.c $(PAIRING_SRC) \
 BUTTON_DIR = $(FIRMWARE)/michi_button
 BUTTON_SRC = $(BUTTON_DIR)/michi_button_gesture.c \
              shim/michi_pairing_fake.c shim/nvs_flash.c shim/esp_system.c \
-             shim/michi_state.c \
+             shim/michi_state.c shim/michi_display_fake.c \
              $(IDENTITY_DIR)/michi_identity.c $(IDENTITY_DIR)/identity_nvs.c \
              shim/nvs_fake.c \
              $(IDENTITY_DIR)/monocypher/monocypher.c \
