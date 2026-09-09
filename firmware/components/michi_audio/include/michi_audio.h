@@ -225,7 +225,7 @@ esp_err_t michi_audio_init(void);
  *         ESP_ERR_NO_MEM when the session buffers or the task cannot
  *         be allocated; ESP_FAIL on socket/bind failure.
  */
-esp_err_t michi_audio_session_start(uint16_t port, uint32_t ssrc,
+esp_err_t michi_audio_session_start(uint32_t port, uint32_t ssrc,
                                     const char *source_ip);
 
 /**

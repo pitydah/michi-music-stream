@@ -834,7 +834,7 @@ static int session_bind_socket(uint16_t port, uint16_t *out_port)
     return -1;
 }
 
-esp_err_t michi_audio_session_start(uint16_t port, uint32_t ssrc,
+esp_err_t michi_audio_session_start(uint32_t port, uint32_t ssrc,
                                     const char *source_ip)
 {
     if (!s_initialized) {
@@ -856,12 +856,14 @@ esp_err_t michi_audio_session_start(uint16_t port, uint32_t ssrc,
                  MICHI_AUDIO_STREAM_PORT_MAX);
         return ESP_ERR_INVALID_ARG;
     }
-    struct in_addr peer;
-    if (ip4addr_aton(source_ip, &peer) == 0) {
+    ip4_addr_t parsed_ip;
+    if (ip4addr_aton(source_ip, &parsed_ip) == 0) {
         ESP_LOGW(TAG, "session start: source IP '%s' is not a dotted IPv4",
                  source_ip);
         return ESP_ERR_INVALID_ARG;
     }
+    struct in_addr peer;
+    peer.s_addr = parsed_ip.addr;
     if (s_session_task != NULL) {
         if (!s_session_done) {
             ESP_LOGE(TAG, "session start: a session task already exists");
@@ -1076,7 +1078,9 @@ esp_err_t michi_audio_session_get_peer(char *out, size_t out_len)
     portENTER_CRITICAL(&s_lock);
     peer = s_session_peer;
     portEXIT_CRITICAL(&s_lock);
-    if (ip4addr_ntoa_r((const ip4_addr_t *)&peer, out, (int)out_len) == NULL) {
+    ip4_addr_t peer_ip;
+    peer_ip.addr = peer.s_addr;
+    if (ip4addr_ntoa_r(&peer_ip, out, (int)out_len) == NULL) {
         return ESP_ERR_INVALID_SIZE;
     }
     return ESP_OK;
