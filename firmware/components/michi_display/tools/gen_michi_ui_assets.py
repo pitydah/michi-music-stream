@@ -40,20 +40,41 @@ try:
 except ImportError:
     PIL_VER = "?"
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+FONTS_OUT = os.path.join(HERE, "..", "assets", "fonts", "michi_ui_fonts_data.h")
+ICONS_OUT = os.path.join(HERE, "..", "assets", "icons", "michi_ui_icons_data.h")
+
 # ---------------------------------------------------------------------------
 # Font path discovery: support both Noto Sans and Inter.
 # ---------------------------------------------------------------------------
 
-NOTO_DIR = "/usr/share/fonts/noto"
+NOTO_DIRS = [
+    os.path.join(HERE, ".fonts"),
+    "/usr/share/fonts/noto",
+    "/usr/share/fonts/truetype/noto",
+    "/usr/share/fonts/opentype/noto",
+    "/usr/local/share/fonts/noto",
+    "/usr/local/share/fonts",
+]
+
 INTER_DIRS = [
+    os.path.join(HERE, ".fonts"),
     "/usr/share/fonts/inter",
     "/usr/share/fonts/truetype/inter",
     "/usr/local/share/fonts/inter",
     os.path.expanduser("~/.local/share/fonts/inter"),
 ]
 
-NOTO_REGULAR = f"{NOTO_DIR}/NotoSans-Regular.ttf"
-NOTO_MEDIUM  = f"{NOTO_DIR}/NotoSans-Medium.ttf"
+
+def _find_noto(weight="Regular"):
+    candidates = [f"NotoSans-{weight}.ttf", f"NotoSans_{weight}.ttf",
+                  f"notosans-{weight.lower()}.ttf", "NotoSans.ttf"]
+    for d in NOTO_DIRS:
+        for name in candidates:
+            p = os.path.join(d, name)
+            if os.path.exists(p):
+                return p
+    return None
 
 
 def _find_inter(weight="Regular"):
@@ -65,11 +86,6 @@ def _find_inter(weight="Regular"):
             if os.path.exists(p):
                 return p
     return None
-
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-FONTS_OUT = os.path.join(HERE, "..", "assets", "fonts", "michi_ui_fonts_data.h")
-ICONS_OUT = os.path.join(HERE, "..", "assets", "icons", "michi_ui_icons_data.h")
 
 # ---------------------------------------------------------------------------
 # Theme palette (RGB888 sources) -> RGB565 with proper rounding.
@@ -452,8 +468,12 @@ def emit_fonts(font_family="notosans", raster_bits_override=1):
         font_medium  = inter_med
         family_label = "Inter"
     else:
-        font_regular = NOTO_REGULAR
-        font_medium  = NOTO_MEDIUM
+        font_regular = _find_noto("Regular")
+        font_medium  = _find_noto("Medium")
+        if font_regular is None:
+            raise FileNotFoundError("Noto Sans Regular font not found in search paths")
+        if font_medium is None:
+            font_medium = font_regular
         family_label = "Noto Sans"
 
     paths = {'regular': font_regular, 'medium': font_medium}
