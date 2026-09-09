@@ -528,9 +528,21 @@ void michi_ui_render_screen(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
         return;
     }
 
-    /* Diagnostics: always beats all overlays */
+    /* FATAL error: critical protected screen, always beats all overlays and diagnostics */
+    if (ctx->state == MICHI_STATE_FATAL_ERROR) {
+        michi_ui_draw_screen_fatal_error(fb, fb_w, fb_h, y_origin, ctx->last_error, ctx);
+        return;
+    }
+
+    /* Diagnostics: beats non-fatal overlays */
     if (ctx->show_diagnostics) {
         michi_ui_draw_screen_diagnostics(fb, fb_w, fb_h, y_origin, ctx);
+        return;
+    }
+
+    /* UPDATING: critical OTA progress, cannot be obscured by temporary overlays */
+    if (ctx->state == MICHI_STATE_UPDATING) {
+        michi_ui_draw_screen_updating(fb, fb_w, fb_h, y_origin, ctx->update_pct, ctx->has_update_pct, ctx);
         return;
     }
 

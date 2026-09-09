@@ -103,6 +103,14 @@ static void on_state_event(const michi_event_t *ev)
         queue_render();
         return;
     }
+    if (ev->id == MICHI_EVENT_PAIRING_WINDOW_CLOSED) {
+        portENTER_CRITICAL(&s_info_mux);
+        s_pairing_overlay = MICHI_DISPLAY_PAIRING_OVERLAY_NONE;
+        s_pairing_pin[0] = '\0';
+        portEXIT_CRITICAL(&s_info_mux);
+        queue_render();
+        return;
+    }
     if (ev->id == MICHI_EVENT_ERROR) {
         portENTER_CRITICAL(&s_info_mux);
         s_last_error = ev->data;
@@ -385,11 +393,18 @@ esp_err_t michi_display_show_pairing_pin(const char *pin)
         }
         if (digits) {
             memcpy(s_pairing_pin, pin, 7);
+            s_pairing_overlay = MICHI_DISPLAY_PAIRING_OVERLAY_PIN;
         } else {
             s_pairing_pin[0] = '\0';
+            if (s_pairing_overlay == MICHI_DISPLAY_PAIRING_OVERLAY_PIN) {
+                s_pairing_overlay = MICHI_DISPLAY_PAIRING_OVERLAY_NONE;
+            }
         }
     } else {
         s_pairing_pin[0] = '\0';
+        if (s_pairing_overlay == MICHI_DISPLAY_PAIRING_OVERLAY_PIN) {
+            s_pairing_overlay = MICHI_DISPLAY_PAIRING_OVERLAY_NONE;
+        }
     }
     portEXIT_CRITICAL(&s_info_mux);
     queue_render();
