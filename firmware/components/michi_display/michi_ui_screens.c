@@ -476,7 +476,7 @@ void michi_ui_draw_screen_diagnostics(uint16_t *fb, uint16_t fb_w, uint16_t fb_h
 
     /* Row 6: Firmware */
     rows[r_count].label = "Firmware";
-    const char *fw = (ctx != NULL && ctx->fw_version != NULL) ? ctx->fw_version : MICHI_FW_VERSION_STR;
+    const char *fw = (ctx != NULL && ctx->fw_version != NULL) ? ctx->fw_version : MICHI_FW_PROVENANCE_STR;
     snprintf(rows[r_count].val, sizeof(rows[r_count].val), "%s", fw);
     rows[r_count].val_color = MICHI_UI_TEXT_SECONDARY;
     r_count++;

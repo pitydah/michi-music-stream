@@ -494,7 +494,7 @@ esp_err_t michi_board_display_boot_screen(const michi_board_info_t *info,
     /* Title from the dynamic product profile (name) + the firmware version;
      * the BSP never hardcodes the product name. */
     char title[48];
-    snprintf(title, sizeof(title), "%s v%s", product_name, MICHI_FW_VERSION_STR);
+    snprintf(title, sizeof(title), "%s v%s", product_name, MICHI_FW_PROVENANCE_STR);
 
     for (uint16_t y_origin = 0; y_origin < info->display_height;
          y_origin += MICHI_LCD_BAND) {

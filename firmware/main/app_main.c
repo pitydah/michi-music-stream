@@ -9,6 +9,7 @@
 
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_task_wdt.h"
 #include "nvs_flash.h"
 
@@ -143,6 +144,16 @@ void app_main(void)
     ESP_LOGW(TAG, "MICHI_DAC_MOCK is ENABLED - this build fakes a DAC and "
              "must NOT be used in production");
 #endif
+    ESP_LOGI(TAG, "============================================================");
+    ESP_LOGI(TAG, "Michi Music Stream %s (git: %s)", MICHI_FW_PROVENANCE_STR, MICHI_FW_GIT_SHA);
+    ESP_LOGI(TAG, "  version:  %s", MICHI_FW_PROVENANCE_STR);
+    ESP_LOGI(TAG, "  git:      %s", MICHI_FW_GIT_SHA);
+    ESP_LOGI(TAG, "  idf:      %s", esp_get_idf_version());
+    ESP_LOGI(TAG, "  board:    %s", MICHI_FW_BOARD_NAME);
+    ESP_LOGI(TAG, "  target:   %s", CONFIG_IDF_TARGET);
+    ESP_LOGI(TAG, "  protocol: %s", MICHI_FW_PROTOCOL);
+    ESP_LOGI(TAG, "  built:    %s", MICHI_FW_BUILD_DATE);
+    ESP_LOGI(TAG, "============================================================");
     ESP_LOGI(TAG, "michi-music-stream firmware v%s target=%s",
              MICHI_FW_VERSION_STR, CONFIG_IDF_TARGET);
 

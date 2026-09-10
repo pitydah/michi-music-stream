@@ -258,7 +258,7 @@ int main(int argc, char **argv)
         .sample_rate = 48000,
         .bit_depth = 16,
         .psram_bytes = 8 * 1024 * 1024,
-        .fw_version = "v0.2.0",
+        .fw_version = "v0.3.0-rc1",
     };
     render_scenario_to_file("ui-19-diagnostics-connected.ppm", &s19, out_dir);
 
@@ -275,7 +275,7 @@ int main(int argc, char **argv)
         .sample_rate = 48000,
         .bit_depth = 16,
         .psram_bytes = 8 * 1024 * 1024,
-        .fw_version = "v0.2.0",
+        .fw_version = "v0.3.0-rc1",
     };
     render_scenario_to_file("ui-19b-diagnostics-dac-absent.ppm", &s19b, out_dir);
 
@@ -291,7 +291,7 @@ int main(int argc, char **argv)
         .sample_rate = 0,
         .bit_depth = 0,
         .psram_bytes = 8 * 1024 * 1024,
-        .fw_version = "v0.2.0",
+        .fw_version = "v0.3.0-rc1",
     };
     render_scenario_to_file("ui-19c-diagnostics-dac-unknown.ppm", &s19c, out_dir);
 

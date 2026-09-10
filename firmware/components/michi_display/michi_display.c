@@ -234,7 +234,7 @@ static void render_current_state(void)
          * exists to expose the ACTUALLY detected size, pass 0 so the
          * diagnostics screen shows "Desconocido" rather than an assumed value. */
         .psram_bytes = 0,
-        .fw_version = MICHI_FW_VERSION_STR,
+        .fw_version = MICHI_FW_PROVENANCE_STR,
         .board_model = binfo != NULL ? binfo->model : "Waveshare ESP32-S3-LCD-2",
         .show_volume_overlay = show_vol,
         .pairing_overlay = (michi_ui_pairing_overlay_t)pairing_overlay_snap,
