@@ -295,6 +295,47 @@ static void test_info_profile_invalid_args(void)
     CHECK(build_info_json(NULL, NULL) != ESP_OK, "NULL args rejected");
 }
 
+/* Duplicate of request_id_generate to test formatting logic on host */
+#include "esp_random.h"
+#include <inttypes.h>
+
+static void test_request_id_generate(char *out, size_t out_len)
+{
+    if (out == NULL || out_len < 37) {
+        return;
+    }
+    const uint32_t a = esp_random();
+    const uint32_t b = esp_random();
+    const uint32_t c = esp_random();
+    const uint32_t d = esp_random();
+    const uint32_t e = esp_random();
+    /* UUID v4: time_low - time_mid - 4xxx - (10xx variant) - node. */
+    snprintf(out, out_len, "%08" PRIx32 "-%04x-4%03x-%04x-%04x%08" PRIx32,
+             a,
+             (unsigned int)(b & 0xFFFFu),          /* time_mid */
+             (unsigned int)((b >> 16) & 0xFFFu),   /* version 4 + time_hi */
+             (unsigned int)((c & 0x3FFFu) | 0x8000u), /* variant 10 + clock_seq */
+             (unsigned int)(e & 0xFFFFu),          /* node upper 16 bits */
+             d);                                   /* node lower 32 bits */
+}
+
+static void test_uuid_format(void)
+{
+    printf("uuid: generator format\n");
+    char req_id[37];
+    test_request_id_generate(req_id, sizeof(req_id));
+    
+    CHECK(strlen(req_id) == 36, "length is 36");
+    CHECK(req_id[8] == '-', "hyphen 1");
+    CHECK(req_id[13] == '-', "hyphen 2");
+    CHECK(req_id[18] == '-', "hyphen 3");
+    CHECK(req_id[23] == '-', "hyphen 4");
+    CHECK(req_id[14] == '4', "version 4");
+    
+    char variant = req_id[19];
+    CHECK(variant == '8' || variant == '9' || variant == 'a' || variant == 'b', "variant RFC 4122");
+}
+
 int main(void)
 {
     test_error_envelope();
@@ -304,6 +345,7 @@ int main(void)
     test_info_profile_hifi();
     test_info_profile_diagnostic_maps_standard();
     test_info_profile_invalid_args();
+    test_uuid_format();
 
     if (failures != 0) {
         printf("\n%d host HTTP/JSON DTO check(s) FAILED\n", failures);
