@@ -40,6 +40,21 @@ BaseType_t xQueueSendFromISR(QueueHandle_t xQueue, const void *pvItemToQueue, Ba
     return pdTRUE;
 }
 
+BaseType_t xQueueSend(QueueHandle_t xQueue, const void *pvItemToQueue, uint32_t xTicksToWait) {
+    (void)xTicksToWait; /* non-blocking in shim: mirrors xQueueSendFromISR behaviour */
+    pthread_mutex_lock(&xQueue->m);
+    if (xQueue->count == xQueue->capacity) {
+        pthread_mutex_unlock(&xQueue->m);
+        return pdFALSE;
+    }
+    memcpy(xQueue->data + xQueue->tail * xQueue->item_size, pvItemToQueue, xQueue->item_size);
+    xQueue->tail = (xQueue->tail + 1) % xQueue->capacity;
+    xQueue->count++;
+    pthread_cond_signal(&xQueue->cv);
+    pthread_mutex_unlock(&xQueue->m);
+    return pdTRUE;
+}
+
 BaseType_t xQueueReceive(QueueHandle_t xQueue, void *pvBuffer, uint32_t xTicksToWait) {
     pthread_mutex_lock(&xQueue->m);
     while (xQueue->count == 0) {
