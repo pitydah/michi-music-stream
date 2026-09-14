@@ -1775,7 +1775,7 @@ bool michi_ota_busy(void)
     return busy;
 }
 
-esp_err_t michi_ota_boot_selftest_done(bool selftest_ok)
+esp_err_t michi_ota_boot_selftest_done(michi_selftest_result_t selftest_result)
 {
     const esp_partition_t *running = esp_ota_get_running_partition();
     if (running == NULL) {
@@ -1792,7 +1792,7 @@ esp_err_t michi_ota_boot_selftest_done(bool selftest_ok)
                  image_state_name(st));
         return ESP_OK;
     }
-    if (selftest_ok) {
+    if (selftest_result == MICHI_SELFTEST_PASS || selftest_result == MICHI_SELFTEST_DEGRADED) {
         const esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "ota: mark_valid failed err=%s", esp_err_to_name(err));

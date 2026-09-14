@@ -140,6 +140,8 @@ static void init_dac(void)
 
 void app_main(void)
 {
+#define MICHI_BOOT_TRUTHFULNESS_ASSERT(condition) do { if (!(condition)) { ESP_LOGE(TAG, "Boot truthfulness violation"); esp_restart(); } } while(0)
+
 #ifdef CONFIG_MICHI_DAC_MOCK
     ESP_LOGW(TAG, "MICHI_DAC_MOCK is ENABLED - this build fakes a DAC and "
              "must NOT be used in production");
@@ -176,10 +178,12 @@ void app_main(void)
      * post events. */
     err = michi_state_init();
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "state bus unavailable - all events will be dropped");
-        ESP_LOGI(TAG, "subsystem=state state=failed phase=5");
+        ESP_LOGE(TAG, "FATAL: FSM init failed (%s) - cannot boot safely",
+                 esp_err_to_name(err));
+        esp_restart();
+        return;
     }
-    const bool state_ok = (err == ESP_OK);
+    const bool state_ok = true;
 
     /* Display subsystem (phase 6): dynamic state screens rendered by the
      * display task. BOOTING/SELF_TEST stay covered by the BSP boot screen
@@ -408,7 +412,15 @@ void app_main(void)
      * the image is PENDING_VERIFY: pass marks it valid (cancel rollback),
      * fail logs + restarts so the bootloader rolls back. Any other image
      * state is a no-op. */
-    michi_ota_boot_selftest_done(st.overall);
+    michi_selftest_result_t st_res;
+    if (!st.overall) {
+        st_res = MICHI_SELFTEST_FATAL;
+    } else if (!profile->audio_available) {
+        st_res = MICHI_SELFTEST_DEGRADED;
+    } else {
+        st_res = MICHI_SELFTEST_PASS;
+    }
+    michi_ota_boot_selftest_done(st_res);
 
     /* HTTP API (phase 4): read-only migrated endpoints (/info, /firmware).
      * A failure is logged and boot continues - no halt. */
@@ -474,9 +486,19 @@ void app_main(void)
 
     log_pending_subsystems();
 
-    ESP_LOGI(TAG, "boot=ok mode=%s audio_available=%s",
-             michi_product_profile_tier_name(),
-             profile->audio_available ? "true" : "false");
+    if (st_res == MICHI_SELFTEST_PASS) {
+        ESP_LOGI(TAG, "boot=ok mode=%s audio_available=true",
+                 michi_product_profile_tier_name());
+    } else if (st_res == MICHI_SELFTEST_DEGRADED) {
+        ESP_LOGI(TAG, "boot=degraded mode=%s audio_available=false",
+                 michi_product_profile_tier_name());
+    } else {
+        ESP_LOGE(TAG, "FATAL: self_test failed - boot halted");
+        /* En teoria ya reseteó, pero si no fue un boot OTA,
+           llegó aquí, así que lo detenemos. */
+        esp_restart();
+        return;
+    }
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(10000));
