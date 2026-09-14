@@ -567,21 +567,21 @@ static esp_err_t validate_manifest(michi_ota_manifest_t *m,
         return ESP_ERR_NOT_FOUND;
     }
 
-    uint16_t cur[3], ver[3], min_ver[3];
-    if (!semver_parse(p->firmware_version, cur) ||
-        !semver_parse(m->version, ver)) {
+    semver_t cur, ver, min_ver;
+    if (!semver_parse(p->firmware_version, &cur) ||
+        !semver_parse(m->version, &ver)) {
         ESP_LOGW(TAG, "ota: state=validating semver_invalid version=%s "
                       "source=%s", m->version, source);
         return ESP_ERR_INVALID_ARG;
     }
-    if (semver_cmp(ver, cur) <= 0) {
+    if (semver_cmp(&ver, &cur) <= 0) {
         ESP_LOGW(TAG, "ota: state=validating downgrade_rejected "
                       "version=%s current=%s source=%s",
                  m->version, p->firmware_version, source);
         return ESP_ERR_INVALID_VERSION;
     }
-    if (!semver_parse(m->min_version, min_ver) ||
-        semver_cmp(ver, min_ver) < 0) {
+    if (!semver_parse(m->min_version, &min_ver) ||
+        semver_cmp(&ver, &min_ver) < 0) {
         ESP_LOGW(TAG, "ota: state=validating min_version_not_met "
                       "version=%s min_version=%s source=%s",
                  m->version, m->min_version, source);
