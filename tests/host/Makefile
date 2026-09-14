@@ -24,6 +24,8 @@ CPPFLAGS = -Ishim \
            -I../../firmware/components/michi_audio/include \
            -I../../firmware/components/michi_volume/include \
            -I../../firmware/components/michi_display/include \
+           -I../../firmware/components/michi_board/include \
+           -I../../firmware/components/michi_state/include \
            -I../../firmware/components/michi_product_profile/include \
            -I../../firmware/components/michi_dac/include
 
@@ -58,8 +60,9 @@ IDENTITY_INC = -I$(IDENTITY_DIR)/include -I$(IDENTITY_DIR)/monocypher \
                -I$(IDENTITY_DIR)/blake3
 
 TESTS := test_semver test_pairing_validators test_michi_identity \
-         test_michi_pairing test_michi_session test_rtp_guard test_michi_button \
-         test_michi_ui \
+         test_michi_pairing test_michi_session test_rtp_guard test_rtp_clock \
+         test_michi_button test_michi_button_debounce test_michi_ui \
+         test_spiffs_journal \
          $(if $(filter yes,$(HAS_CJSON)),test_json_helpers test_http_canonical test_michi_discovery test_michi_time test_capability_parity test_pairing_http test_session_http test_discovery_disc)
 
 .PHONY: all test clean
@@ -68,7 +71,7 @@ all: $(TESTS)
 
 test: all
 	@set -e; \
-	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard test_michi_button test_michi_ui; do ./$$t; done; \
+	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard test_rtp_clock test_michi_button test_michi_button_debounce test_michi_ui test_spiffs_journal; do ./$$t; done; \
 	if [ "$(HAS_CJSON)" = "yes" ]; then \
 	    ./test_json_helpers; \
 	    ./test_http_canonical; \
@@ -79,14 +82,13 @@ test: all
 	    ./test_session_http; \
 	    ./test_discovery_disc; \
 	else \
-	    echo "SKIP test_json_helpers (libcjson-dev not installed - CI installs it)"; \
-	    echo "SKIP test_http_canonical (libcjson-dev not installed - CI installs it)"; \
-	    echo "SKIP test_michi_discovery (libcjson-dev not installed - CI installs it)"; \
-	    echo "SKIP test_michi_time (libcjson-dev not installed - CI installs it)"; \
-	    echo "SKIP test_capability_parity (libcjson-dev not installed - CI installs it)"; \
-	    echo "SKIP test_pairing_http (libcjson-dev not installed - CI installs it)"; \
-	    echo "SKIP test_session_http (libcjson-dev not installed - CI installs it)"; \
-	    echo "SKIP test_discovery_disc (libcjson-dev not installed - CI installs it)"; \
+	    if [ "$$SKIP_CJSON" = "1" ]; then \
+	        echo "TEST RESULT: INCOMPLETE (libcjson-dev not installed)"; \
+	        exit 0; \
+	    else \
+	        echo "ERROR: libcjson-dev required. Install it or set SKIP_CJSON=1"; \
+	        exit 1; \
+	    fi; \
 	fi
 
 test_semver: test_semver.c $(FIRMWARE)/michi_ota/semver.c \
@@ -156,7 +158,7 @@ test_michi_pairing: test_michi_pairing.c $(PAIRING_SRC) \
 BUTTON_DIR = $(FIRMWARE)/michi_button
 BUTTON_SRC = $(BUTTON_DIR)/michi_button_gesture.c \
              shim/michi_pairing_fake.c shim/nvs_flash.c shim/esp_system.c \
-             shim/michi_state.c \
+             shim/michi_state.c shim/michi_display_fake.c \
              $(IDENTITY_DIR)/michi_identity.c $(IDENTITY_DIR)/identity_nvs.c \
              shim/nvs_fake.c \
              $(IDENTITY_DIR)/monocypher/monocypher.c \
@@ -174,6 +176,16 @@ test_michi_button: test_michi_button.c $(BUTTON_SRC) \
 	    $(IDENTITY_INC) -I$(IDENTITY_DIR) $(IDENTITY_DEFS) \
 	    -o $@ test_michi_button.c $(BUTTON_SRC)
 
+# michi_button_debounce: compiles the PURE debouncer (the single-authority
+# state machine) with NO ESP/FreeRTOS/NVS/identity deps - only stdint, so it
+# links with no shim ESP headers. Proves the release-bounce P0 fix and the
+# single-PRESS/single-RELEASE-per-tap contract on the host, no hardware.
+test_michi_button_debounce: test_michi_button_debounce.c \
+                            $(BUTTON_DIR)/michi_button_debounce.c \
+                            $(BUTTON_DIR)/michi_button_debounce.h $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(BUTTON_DIR) -o $@ \
+	    test_michi_button_debounce.c $(BUTTON_DIR)/michi_button_debounce.c
+
 test_michi_identity: test_michi_identity.c $(IDENTITY_SRC) \
                      $(IDENTITY_DIR)/include/michi_identity.h $(SHIMS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(IDENTITY_INC) $(IDENTITY_DEFS) \
@@ -186,7 +198,8 @@ test_michi_identity: test_michi_identity.c $(IDENTITY_SRC) \
 SESSION_DIR = $(FIRMWARE)/michi_session
 SESSION_SRC = $(SESSION_DIR)/michi_session.c shim/esp_timer.c \
               shim/michi_state.c shim/michi_audio_fake.c \
-              shim/michi_volume_fake.c shim/michi_display_fake.c
+              shim/michi_volume_fake.c shim/michi_display_fake.c \
+              shim/freertos/task.c shim/freertos/queue.c
 SESSION_INC = -I$(SESSION_DIR)/include
 
 test_michi_session: test_michi_session.c $(SESSION_SRC) \
@@ -206,22 +219,57 @@ UI_INC = -I$(UI_DIR)/include
 
 test_michi_ui: test_michi_ui.c $(UI_DIR)/michi_ui_text.c \
                $(UI_DIR)/michi_ui_fonts.c $(UI_DIR)/michi_ui_components.c \
+               $(UI_DIR)/michi_ui_screens.c $(UI_DIR)/michi_ui_icons.c \
+               $(UI_DIR)/michi_ui_theme.c \
                $(UI_DIR)/include/michi_ui.h \
                $(UI_DIR)/include/michi_ui_components.h \
+               $(UI_DIR)/include/michi_ui_screens.h \
+               $(UI_DIR)/include/michi_ui_strings.h \
                $(UI_DIR)/include/michi_ui_text.h \
                $(UI_DIR)/include/michi_ui_fonts.h \
                $(UI_DIR)/include/michi_ui_theme.h \
                $(UI_DIR)/include/michi_ui_icons.h \
-               $(UI_DIR)/assets/fonts/michi_ui_fonts_data.h $(SHIMS)
+               $(UI_DIR)/assets/fonts/michi_ui_fonts_data.h \
+               $(UI_DIR)/assets/icons/michi_ui_icons_data.h $(SHIMS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(UI_INC) -o $@ test_michi_ui.c \
 	    $(UI_DIR)/michi_ui_text.c $(UI_DIR)/michi_ui_fonts.c \
-	    $(UI_DIR)/michi_ui_components.c
+	    $(UI_DIR)/michi_ui_components.c $(UI_DIR)/michi_ui_screens.c \
+	    $(UI_DIR)/michi_ui_icons.c $(UI_DIR)/michi_ui_theme.c
+
+render_ui_previews: render_ui_previews.c $(UI_DIR)/michi_ui_text.c \
+                   $(UI_DIR)/michi_ui_fonts.c $(UI_DIR)/michi_ui_components.c \
+                   $(UI_DIR)/michi_ui_screens.c $(UI_DIR)/michi_ui_icons.c \
+                   $(UI_DIR)/michi_ui_theme.c \
+                   $(UI_DIR)/include/michi_ui.h \
+                   $(UI_DIR)/include/michi_ui_components.h \
+                   $(UI_DIR)/include/michi_ui_screens.h \
+                   $(UI_DIR)/include/michi_ui_strings.h \
+                   $(UI_DIR)/include/michi_ui_text.h \
+                   $(UI_DIR)/include/michi_ui_fonts.h \
+                   $(UI_DIR)/include/michi_ui_theme.h \
+                   $(UI_DIR)/include/michi_ui_icons.h \
+                   $(UI_DIR)/assets/fonts/michi_ui_fonts_data.h \
+                   $(UI_DIR)/assets/icons/michi_ui_icons_data.h $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(UI_INC) -o $@ render_ui_previews.c \
+	    $(UI_DIR)/michi_ui_text.c $(UI_DIR)/michi_ui_fonts.c \
+	    $(UI_DIR)/michi_ui_components.c $(UI_DIR)/michi_ui_screens.c \
+	    $(UI_DIR)/michi_ui_icons.c $(UI_DIR)/michi_ui_theme.c
 
 # rtp_guard: the SAME datagram validation the engine runs (pure C).
 test_rtp_guard: test_rtp_guard.c $(FIRMWARE)/michi_audio/rtp_guard.c \
                 $(FIRMWARE)/michi_audio/rtp_guard.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ test_rtp_guard.c \
 	    $(FIRMWARE)/michi_audio/rtp_guard.c
+
+# rtp_clock: 64-bit extended timestamp tracker (P0-02: wrap fix, header-only).
+test_rtp_clock: test_rtp_clock.c $(FIRMWARE)/michi_audio/michi_rtp_clock.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(FIRMWARE)/michi_audio -o $@ test_rtp_clock.c
+
+# spiffs_journal: first-boot SPIFFS format decision logic (P0-07).
+# Pure-C decision function extracted from michi_log.c; no firmware deps.
+test_spiffs_journal: test_spiffs_journal.c
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -D_DEFAULT_SOURCE \
+	    -o $@ test_spiffs_journal.c
 
 # Session HTTP body gates: the SAME json_helpers.c + validators.c the
 # firmware builds (cJSON-gated like the other HTTP tests).
@@ -323,4 +371,4 @@ clean:
 	      test_michi_time test_michi_pairing test_pairing_http \
 	      test_michi_session test_rtp_guard test_session_http \
 	      test_capability_parity test_discovery_disc test_michi_button \
-	      test_michi_ui
+	      test_michi_button_debounce test_michi_ui render_ui_previews

@@ -21,7 +21,7 @@ extern "C" {
  *   NO network-visible API that opens it - the HTTP pair handlers only
  *   operate INSIDE a window already opened by the button.
  * - A window lasts exactly CONFIG_MICHI_PAIRING_WINDOW_SECONDS (default
- *   120) on the MONOTONIC clock (esp_timer). A reboot closes it (window
+ *   5) on the MONOTONIC clock (esp_timer). A reboot closes it (window
  *   state is RAM-only). Re-opening replaces the previous window AND
  *   drops every pending pairing session.
  * - POST /pair/start verifies an Ed25519 signature over the DECODED

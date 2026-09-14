@@ -18,7 +18,7 @@ extern "C" {
  * (tools/gen_michi_ui_assets.py) and by the host smoke test.
  */
 
-#define MICHI_UI_BG                0x0842u /* #080A0F background            */
+#define MICHI_UI_BG                0x0861u /* #080A0F background            */
 #define MICHI_UI_SURFACE           0x10A3u /* #10141A cards/panels          */
 #define MICHI_UI_SURFACE_ELEVATED  0x18C4u /* #151A24 raised surfaces       */
 #define MICHI_UI_TEXT_PRIMARY      0xF7BEu /* #F5F6F8 headings/values       */
@@ -31,6 +31,22 @@ extern "C" {
 #define MICHI_UI_ERROR             0xFB0Cu /* #FF6262 fatal/rejected        */
 #define MICHI_UI_INFO              0x6D5Fu /* #68A8FF neutral info          */
 #define MICHI_UI_MUTED             0x52ACu /* #505765 disabled/inactive     */
+
+/*!< Panel dimensions in pixels (Landscape 320 x 240). */
+#define MICHI_UI_PANEL_W           320
+#define MICHI_UI_PANEL_H           240
+
+/*!< Safe area margins */
+#define MICHI_UI_SAFE_LEFT         16
+#define MICHI_UI_SAFE_RIGHT        16
+#define MICHI_UI_SAFE_TOP          12
+#define MICHI_UI_SAFE_BOTTOM       12
+
+/*!< Vertical grid constants (Landscape) */
+#define MICHI_UI_HEADER_Y          14
+#define MICHI_UI_DIVIDER_Y         42
+#define MICHI_UI_CONTENT_TOP_Y     62
+#define MICHI_UI_FOOTER_Y          211
 
 /**
  * @brief Convert an RGB888 triplet to RGB565 with rounding.

@@ -14,13 +14,20 @@ extern "C" {
  *   (esp_timer_get_time) in a volatile struct under a portMUX critical
  *   section. It contains NO logic: no debounce, no pairing, no state posts.
  * - The debounce task (priority 2, MICHI_BUTTON_POLL_MS tick) polls
- *   gpio_get_level and requires N consecutive equal samples to confirm a
- *   press (stable low) or a release (stable high), N = DEBOUNCE/POLL
- *   rounded up (the stable window is (N-1) poll periods; init clamps N to
- *   2 and logs a warning when POLL >= DEBOUNCE). The press duration is
- *   measured edge-to-edge from the ISR-recorded timestamps (sub-tick
- *   accuracy); the pin level is re-checked right before an action fires,
- *   so a mid-window bounce aborts the release.
+ *   gpio_get_level and feeds each sample - with the monotonic timestamp
+ *   (esp_timer_get_time) - to the PURE single-authority debouncer
+ *   (michi_button_debounce.c, host-tested). The debouncer confirms an edge
+ *   only after the level is stable for a full MICHI_BUTTON_DEBOUNCE_MS
+ *   window (measured on the wall clock, so the poll period no longer gates
+ *   the rejection of sub-window bounces); it is the ONLY authority on
+ *   release validity: a confirmed stable release fires the action directly
+ *   with NO raw gpio_get_level() re-check. A mid-window rebound is rejected
+ *   by the stable-state machine itself (PAIR-BTN-01 P0: the old
+ *   re-check/abort-on-bounce TOCTOU that dropped valid releases is gone).
+ *   The press duration is measured edge-to-edge from the ISR-recorded
+ *   timestamps (sub-tick accuracy); the ISR level anchor is validated
+ *   (edge.level == 0 on press, == 1 on release) so a stale or coalesced
+ *   record cannot produce a bogus long press.
  * - All actions run in the task, NEVER in the ISR. The gesture
  *   classification is deterministic (contract in michi_button_gesture.h,
  *   pure + host-tested):

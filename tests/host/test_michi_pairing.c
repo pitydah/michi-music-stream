@@ -210,23 +210,25 @@ static void test_window_open_and_start(void)
 
 static void test_window_expiry(void)
 {
-    printf("pairing: window expiry (120 s monotonic)\n");
-    pairing_test_reset(0x1003);
-    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
-    CHECK(michi_pairing_open_window() == ESP_OK, "open_window succeeds");
-    char sid[MICHI_PAIRING_SESSION_ID_LEN];
-    char exp[MICHI_PAIRING_EXPIRES_AT_LEN];
-    uint32_t attempts = 0;
-    CHECK(michi_pairing_start(valid_peer(), NULL, sid, sizeof(sid), exp,
-                              sizeof(exp), &attempts) ==
-              MICHI_PAIRING_START_OK,
-          "start succeeds");
-    CHECK(michi_pairing_is_window_open(), "window open before expiry");
+     printf("pairing: window expiry (%u s monotonic)\n",
+            (unsigned)CONFIG_MICHI_PAIRING_WINDOW_SECONDS);
+     pairing_test_reset(0x1003);
+     CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+     CHECK(michi_pairing_open_window() == ESP_OK, "open_window succeeds");
+     char sid[MICHI_PAIRING_SESSION_ID_LEN];
+     char exp[MICHI_PAIRING_EXPIRES_AT_LEN];
+     uint32_t attempts = 0;
+     CHECK(michi_pairing_start(valid_peer(), NULL, sid, sizeof(sid), exp,
+                               sizeof(exp), &attempts) ==
+               MICHI_PAIRING_START_OK,
+           "start succeeds");
+     CHECK(michi_pairing_is_window_open(), "window open before expiry");
 
-    /* 120 s on the monotonic clock: the one-shot timer fires and closes
-     * the window with the FSM event. */
-    test_esp_timer_advance(120 * 1000000LL);
-    CHECK(!michi_pairing_is_window_open(), "window closed after 120 s");
+     /* Advance past the configured window: the one-shot timer fires and
+      * closes the window with the FSM event. */
+     test_esp_timer_advance((uint64_t)CONFIG_MICHI_PAIRING_WINDOW_SECONDS *
+                            1000000ULL);
+     CHECK(!michi_pairing_is_window_open(), "window closed after expiry");
     CHECK(test_state_saw_event(MICHI_EVENT_PAIRING_WINDOW_CLOSED),
           "PAIRING_WINDOW_CLOSED posted on expiry");
     CHECK(spy_clear_calls >= 1, "PIN display cleared on expiry");

@@ -11,7 +11,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Contract sync check (vendored michi-link bundle)
-        run: python3 scripts/sync_michi_link_contract.py --check
+        run: python3 scripts/sync_michi_link_contract.py --check && python3 scripts/sync_michi_link_contract.py --verify-source
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Contract tests
@@ -40,6 +40,40 @@ jobs:
           make -C tests/host clean
           make -C tests/host test
 
+  ui-preview:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Python deps
+        run: pip install -r firmware/components/michi_display/tools/requirements.txt
+      - name: Verify font inputs (assets.lock checksums)
+        working-directory: firmware/components/michi_display
+        run: |
+          REG_EXPECTED=$(grep '^regular_sha256=' tools/assets.lock | cut -d= -f2)
+          MED_EXPECTED=$(grep '^medium_sha256=' tools/assets.lock | cut -d= -f2)
+          echo "${REG_EXPECTED}  tools/.fonts/NotoSans-Regular.ttf" | sha256sum -c -
+          echo "${MED_EXPECTED}  tools/.fonts/NotoSans-Medium.ttf" | sha256sum -c -
+      - name: Verify generator determinism (independent runs A vs B)
+        working-directory: firmware/components/michi_display
+        run: |
+          mkdir -p /tmp/gen_a /tmp/gen_b
+          python3 tools/gen_michi_ui_assets.py --font notosans --raster 1bit --strict --output-dir /tmp/gen_a
+          python3 tools/gen_michi_ui_assets.py --font notosans --raster 1bit --strict --output-dir /tmp/gen_b
+          diff -u /tmp/gen_a/fonts/michi_ui_fonts_data.h /tmp/gen_b/fonts/michi_ui_fonts_data.h
+          diff -u /tmp/gen_a/icons/michi_ui_icons_data.h /tmp/gen_b/icons/michi_ui_icons_data.h
+      - name: Generate canonical UI assets
+        working-directory: firmware/components/michi_display
+        run: |
+          python3 tools/gen_michi_ui_assets.py --font notosans --raster 1bit --strict
+      - name: Verify committed asset drift
+        run: |
+          git diff --exit-code firmware/components/michi_display/assets/
+      - name: Build and run host UI tests
+        run: |
+          make -C tests/host clean
+          make -C tests/host test_michi_ui
+          ./tests/host/test_michi_ui
+
   e2e:
     runs-on: ubuntu-latest
     steps:
@@ -52,7 +86,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Vendored contract sync check
-        run: python3 scripts/sync_michi_link_contract.py --check
+        run: python3 scripts/sync_michi_link_contract.py --check && python3 scripts/sync_michi_link_contract.py --verify-source
       - name: E2E interoperability certification (canonical simulator)
         run: python3 tests/e2e/run_e2e.py
 
@@ -97,7 +131,8 @@ jobs:
   firmware:
     runs-on: ubuntu-latest
     container:
-      image: espressif/idf:release-v5.3
+      # Pinned from release-v5.3 tag — update via: docker pull espressif/idf:release-v5.3 && docker inspect --format='{{index .RepoDigests 0}}' espressif/idf:release-v5.3
+      image: espressif/idf@sha256:d862412a8944efc19b73ce23e48d4cb8aa72304d25c75ab50fb9717e639eeb34
     defaults:
       run:
         working-directory: firmware
@@ -131,3 +166,4 @@ jobs:
             firmware/build/bootloader/bootloader.bin
             firmware/build/partition_table/partition-table.bin
             firmware/build/ota_data_initial.bin
+

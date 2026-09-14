@@ -145,12 +145,14 @@ static void request_id_generate(char *out, size_t out_len)
     const uint32_t b = esp_random();
     const uint32_t c = esp_random();
     const uint32_t d = esp_random();
+    const uint32_t e = esp_random();
     /* UUID v4: time_low - time_mid - 4xxx - (10xx variant) - node. */
-    snprintf(out, out_len, "%08" PRIx32 "-%04x-4%03x-%04x-%08" PRIx32,
+    snprintf(out, out_len, "%08" PRIx32 "-%04x-4%03x-%04x-%04x%08" PRIx32,
              a,
              (unsigned int)(b & 0xFFFFu),          /* time_mid */
              (unsigned int)((b >> 16) & 0xFFFu),   /* version 4 + time_hi */
              (unsigned int)((c & 0x3FFFu) | 0x8000u), /* variant 10 + clock_seq */
+             (unsigned int)(e & 0xFFFFu),          /* node upper 16 bits */
              d);
 }
 

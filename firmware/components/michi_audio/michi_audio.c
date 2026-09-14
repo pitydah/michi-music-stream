@@ -53,6 +53,7 @@
 #include "michi_product_profile.h"
 #include "michi_state.h"
 #include "michi_volume.h"
+#include "michi_rtp_clock.h"
 #include "rtp_guard.h"
 
 #define TAG "michi_audio"
@@ -116,11 +117,16 @@ typedef struct {
     uint16_t last_seq;       /* received high-water mark */
     uint32_t last_played_ts; /* RTP ts of the last played packet; 0 = none */
     uint32_t samples_per_packet; /* canonical: 480 */
-    uint32_t base_ts;        /* first packet ts (jitter reference) */
+    uint32_t base_ts;        /* first packet ts (jitter reference, raw) */
     int64_t  base_time_us;   /* first packet arrival (jitter reference) */
     uint32_t jitter_us;      /* EWMA estimate */
     bool     in_underrun;    /* one underrun counted per contiguous stall */
     uint32_t drop_log_count; /* rogue-source log throttle */
+
+    /* Extended 64-bit RTP clock (P0-02: wrap fix, see michi_rtp_clock.h).
+     * Tracks the monotonic 64-bit form of the RTP timestamp to prevent
+     * uint32_t wrap at ~24.85h causing a corrupted jitter reading. */
+    michi_rtp_clock_t rtp_clock;
 
     jitter_buffer_t jb;
     uint8_t *recv_buf;       /* datagram buffer (heap) */
@@ -303,15 +309,16 @@ static bool stream_policy(session_t *s, const michi_rtp_guard_packet_t *pkt)
     }
 
     if (!s->stream_seeded) {
-        /* First accepted packet: seed the playhead and the jitter
-         * reference. PT/SSRC/source/size were already validated by the
-         * guard against the NEGOTIATED constants - the payload geometry
-         * is canonical (1920 bytes = 480 samples). */
+        /* First accepted packet: seed the playhead and the jitter reference.
+         * Initialise the 64-bit extended clock at the same time (P0-02). */
         s->stream_seeded = true;
         s->playhead = pkt->seq;
         s->last_seq = pkt->seq;
-        s->base_ts = pkt->timestamp;
+        s->base_ts  = pkt->timestamp;
         s->base_time_us = esp_timer_get_time();
+        /* michi_rtp_clock_feed seeds .extended and .base on first call. */
+        michi_rtp_clock_reset(&s->rtp_clock);
+        michi_rtp_clock_feed(&s->rtp_clock, pkt->timestamp);
         (void)jb_insert(s, s->playhead, pkt);
         return true;
     }
@@ -321,14 +328,20 @@ static bool stream_policy(session_t *s, const michi_rtp_guard_packet_t *pkt)
     if (diff_p > max_pkts) {
         /* Ahead of the playhead by more than the window: stream
          * discontinuity (sender restart). Flush + resync; the buffered
-         * packets are obsolete. */
+         * packets are obsolete.  Reset the 64-bit extended clock so the
+         * new epoch does not carry the old base (P0-02). */
         ESP_LOGW(TAG, "seq %u ahead of playhead %u by more than the window: "
                       "buffer flush + resync",
                  (unsigned)pkt->seq, (unsigned)s->playhead);
         jb_flush(&s->jb);
         s->playhead = pkt->seq;
-        s->last_seq = pkt->seq; /* reset the received high-water mark */
+        s->last_seq = pkt->seq;
         s->last_played_ts = 0;
+        s->base_ts  = pkt->timestamp;
+        s->base_time_us = esp_timer_get_time();
+        /* Reset extended clock for the new sender epoch. */
+        michi_rtp_clock_reset(&s->rtp_clock);
+        michi_rtp_clock_feed(&s->rtp_clock, pkt->timestamp);
         (void)jb_insert(s, s->playhead, pkt);
         return true;
     }
@@ -438,12 +451,14 @@ static void session_recv(session_t *s)
     metrics_live(s);
 
     /* Jitter EWMA (no RTCP in this phase): expected arrival = first
-     * arrival + (ts - base_ts) / sample_rate. uint64 accumulation (no
-     * wrap of jitter_us*15 at ~4.8 min) and sample clamp (a sender
-     * stall is not jitter). */
-    const uint32_t ts_delta = pkt.timestamp - s->base_ts;
-    const int64_t expected_us = s->base_time_us +
-                                (int64_t)ts_delta * 1000000 / MICHI_AUDIO_SAMPLE_RATE;
+     * arrival + (ts_extended - base) / sample_rate.
+     * Using the 64-bit extended clock (P0-02) prevents uint32_t wrap
+     * at 2^32 samples (~24.85h at 48kHz) from corrupting the reading. */
+    michi_rtp_clock_feed(&s->rtp_clock, pkt.timestamp);
+    const uint64_t ts_delta_64 = michi_rtp_clock_delta(&s->rtp_clock);
+    const int64_t expected_us  = s->base_time_us +
+                                 (int64_t)(ts_delta_64 * 1000000u /
+                                           MICHI_AUDIO_SAMPLE_RATE);
     const int64_t sample_signed = esp_timer_get_time() - expected_us;
     uint64_t sample_us = sample_signed < 0 ? (uint64_t)(-sample_signed)
                                            : (uint64_t)sample_signed;
@@ -834,7 +849,7 @@ static int session_bind_socket(uint16_t port, uint16_t *out_port)
     return -1;
 }
 
-esp_err_t michi_audio_session_start(uint16_t port, uint32_t ssrc,
+esp_err_t michi_audio_session_start(uint32_t port, uint32_t ssrc,
                                     const char *source_ip)
 {
     if (!s_initialized) {
@@ -856,12 +871,14 @@ esp_err_t michi_audio_session_start(uint16_t port, uint32_t ssrc,
                  MICHI_AUDIO_STREAM_PORT_MAX);
         return ESP_ERR_INVALID_ARG;
     }
-    struct in_addr peer;
-    if (ip4addr_aton(source_ip, &peer) == 0) {
+    ip4_addr_t parsed_ip;
+    if (ip4addr_aton(source_ip, &parsed_ip) == 0) {
         ESP_LOGW(TAG, "session start: source IP '%s' is not a dotted IPv4",
                  source_ip);
         return ESP_ERR_INVALID_ARG;
     }
+    struct in_addr peer;
+    peer.s_addr = parsed_ip.addr;
     if (s_session_task != NULL) {
         if (!s_session_done) {
             ESP_LOGE(TAG, "session start: a session task already exists");
@@ -1076,7 +1093,9 @@ esp_err_t michi_audio_session_get_peer(char *out, size_t out_len)
     portENTER_CRITICAL(&s_lock);
     peer = s_session_peer;
     portEXIT_CRITICAL(&s_lock);
-    if (ip4addr_ntoa_r((const ip4_addr_t *)&peer, out, (int)out_len) == NULL) {
+    ip4_addr_t peer_ip;
+    peer_ip.addr = peer.s_addr;
+    if (ip4addr_ntoa_r(&peer_ip, out, (int)out_len) == NULL) {
         return ESP_ERR_INVALID_SIZE;
     }
     return ESP_OK;

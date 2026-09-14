@@ -48,7 +48,7 @@ void test_michi_audio_set_start_err(esp_err_t err)
     s_fake.start_err = err;
 }
 
-esp_err_t michi_audio_session_start(uint16_t port, uint32_t ssrc,
+esp_err_t michi_audio_session_start(uint32_t port, uint32_t ssrc,
                                     const char *source_ip)
 {
     s_fake.start_calls++;

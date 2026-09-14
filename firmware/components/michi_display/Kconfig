@@ -25,4 +25,13 @@ menu "Michi Music Stream Display"
           stale (a drop racing that re-render is covered by the next state
           change).
 
+    config MICHI_DISPLAY_RASTER_2BIT
+        bool "Enable 2-bit anti-aliased raster mode"
+        default n
+        help
+          Enable 2-bit AA raster mode. Requires regenerating assets with --raster 2bit. Disabled by default pending hardware display validation.
+
+    comment "WARNING: MICHI_DISPLAY_RASTER_2BIT=y requires regenerating assets with --raster 2bit"
+        depends on MICHI_DISPLAY_RASTER_2BIT
+
 endmenu
