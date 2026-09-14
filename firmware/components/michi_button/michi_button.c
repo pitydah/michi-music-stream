@@ -23,13 +23,15 @@
 
 #define MICHI_BUTTON_MIN_PRESS_MS CONFIG_MICHI_BUTTON_MIN_PRESS_MS
 
-/* Gesture contract (P1-07): the factory-reset band must sit strictly
- * above the recovery band - otherwise every recovery hold would become a
- * destructive reset. Enforced at build time on top of the Kconfig range. */
-_Static_assert(CONFIG_MICHI_BUTTON_FACTORY_RESET_PRESS_MS >
-                   CONFIG_MICHI_BUTTON_RECOVERY_PRESS_MS,
-               "MICHI_BUTTON_FACTORY_RESET_PRESS_MS must be greater than "
-               "MICHI_BUTTON_RECOVERY_PRESS_MS");
+/* Build-time contract (P0-01): pairing threshold < factory-warn < factory-reset.
+ * This is enforced by the Kconfig range; the assert catches an invalid
+ * manual override of the defaults. */
+_Static_assert(CONFIG_MICHI_BUTTON_PAIRING_HOLD_MS <
+                   CONFIG_MICHI_BUTTON_FACTORY_WARN_MS,
+               "PAIRING_HOLD_MS must be less than FACTORY_WARN_MS");
+_Static_assert(CONFIG_MICHI_BUTTON_FACTORY_WARN_MS <
+                   CONFIG_MICHI_BUTTON_FACTORY_RESET_PRESS_MS,
+               "FACTORY_WARN_MS must be less than FACTORY_RESET_PRESS_MS");
 
 /* Debounce task priority: below the FSM task (5) so the event bus is never
  * delayed by button work; the task only polls a GPIO and posts events. */
@@ -44,6 +46,12 @@ _Static_assert(CONFIG_MICHI_BUTTON_FACTORY_RESET_PRESS_MS >
 /* Join timeout: the task ticks every POLL_MS, so 200 ms covers a full tick
  * plus the shutdown exit. */
 #define MICHI_BUTTON_SHUTDOWN_TIMEOUT_MS 200
+
+/* Hold thresholds (P0-01): all in milliseconds. */
+#define MICHI_BUTTON_PAIRING_HOLD_MS      CONFIG_MICHI_BUTTON_PAIRING_HOLD_MS
+#define MICHI_BUTTON_FACTORY_WARN_MS      CONFIG_MICHI_BUTTON_FACTORY_WARN_MS
+#define MICHI_BUTTON_FACTORY_RESET_MS     CONFIG_MICHI_BUTTON_FACTORY_RESET_PRESS_MS
+#define MICHI_BUTTON_FACTORY_ARM_MS_CFG   CONFIG_MICHI_BUTTON_FACTORY_ARM_MS
 
 /* ISR record: the latest GPIO edge (level + timestamp). Written by the ISR,
  * read by the debounce task. The ISR contains NO logic - it only records;
@@ -71,13 +79,6 @@ static volatile bool s_shutdown_in_progress;
 /* Boot reference (esp_timer_get_time() at init, a few ms after power-on):
  * the factory-reset arm window measures the press start against it. */
 static int64_t s_boot_time;
-/* FSM state at the press confirmation (F1: the release action requires the
- * press to have started OUTSIDE the protected states). */
-static volatile michi_state_t s_press_state = MICHI_STATE_BOOTING;
-/* Boot elapsed at the press confirmation, ms (F4: factory-reset arm).
- * int64_t: esp_timer_get_time() is int64_t, and a uint32_t cast would wrap
- * at 49.7 days of uptime (F8 follow-up). */
-static int64_t s_press_boot_elapsed;
 
 static void IRAM_ATTR button_isr(void *arg)
 {
@@ -121,27 +122,16 @@ static esp_err_t post_with_retry(michi_event_id_t id, uint32_t data)
     return err;
 }
 
-static void handle_short_press(uint32_t press_ms, michi_state_t st)
+static void handle_pairing_action(michi_state_t st, int64_t elapsed_ms)
 {
-    /* Short press opens pairing from any non-protected state.
-     * Note: when primary_state is PLAYING/PAUSED/BUFFERING, the FSM must
-     * implement auxiliary pairing (pairing window + no audio teardown).
-     * If the FSM performs a hard PLAYING->PAIRING transition, only
-     * IDLE/UNPROVISIONED/PAIRING are safe. Update this list once the FSM
-     * supports auxiliary pairing. */
+    /* Pairing fires from any non-protected state.  The pairing window is the
+     * ONLY authority that opens the physical pairing flow. */
     if (st == MICHI_STATE_IDLE || st == MICHI_STATE_UNPROVISIONED ||
         st == MICHI_STATE_PAIRING || st == MICHI_STATE_SESSION_PENDING ||
         st == MICHI_STATE_BUFFERING || st == MICHI_STATE_PLAYING ||
         st == MICHI_STATE_PAUSED) {
-        ESP_LOGI(TAG, "button: press_ms=%u action=pairing", (unsigned)press_ms);
-        /* The physical press is the ONLY authority that opens the pairing
-         * window. From IDLE/UNPROVISIONED, PAIRING_STARTED is posted ONLY
-         * when the window actually opened: posting it anyway would strand
-         * the FSM in PAIRING. From PAIRING the press REPLACES the open
-         * window (contract 2.3: "abrir de nuevo reemplaza la ventana
-         * previa y elimina sesiones pendientes") - the FSM already sits
-         * in PAIRING, no event is posted. On failure the press is a no-op
-         * (logged): the next press retries. */
+        ESP_LOGI(TAG, "button: hold=%" PRId64 "ms action=pairing (threshold crossed)",
+                 elapsed_ms);
         const esp_err_t err = michi_pairing_open_window();
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "button: pairing window open failed err=%s",
@@ -149,107 +139,95 @@ static void handle_short_press(uint32_t press_ms, michi_state_t st)
             return;
         }
         /* Post PAIRING_STARTED only from states where the FSM safely
-         * transitions to PAIRING without tearing down an active session.
-         * From SESSION_PENDING/BUFFERING/PLAYING/PAUSED the pairing window
-         * is orthogonal: primary FSM state is preserved; the display overlay
-         * communicates pairing status without a state transition. */
+         * transitions to PAIRING without tearing down an active session. */
         if (st == MICHI_STATE_IDLE || st == MICHI_STATE_UNPROVISIONED) {
             post_with_retry(MICHI_EVENT_PAIRING_STARTED, 0);
         }
-        /* Set pairing waiting overlay for ALL states. The display task reads
-         * this at the next render, independent of primary FSM state. */
         michi_display_set_pairing_overlay(MICHI_DISPLAY_PAIRING_OVERLAY_WAITING);
         return;
     }
-    ESP_LOGW(TAG, "button: press_ms=%u action=pairing state=%s "
-             "(expected IDLE, UNPROVISIONED or PAIRING)",
-             (unsigned)press_ms, michi_state_name(st));
+    ESP_LOGW(TAG, "button: hold=%" PRId64 "ms action=pairing state=%s "
+             "(ignored: non-pairable state)", elapsed_ms, michi_state_name(st));
 }
 
-/* Deterministic gestures (P1-07, contract in michi_button_gesture.h):
- *   - short press  (< RECOVERY_PRESS_MS):               pairing window
- *   - long press   (>= RECOVERY_PRESS_MS, < FACTORY_RESET_PRESS_MS):
- *     recovery, only when the FSM is in RECOVERABLE_ERROR at the release
- *   - very long    (>= FACTORY_RESET_PRESS_MS):         factory reset,
- *     armed (press started >= FACTORY_ARM_MS after boot)
- * Hard protection: a press that STARTED or ENDED in BOOTING, SELF_TEST
- * or UPDATING is ignored - a factory reset during OTA could brick the
- * unit. The classification lives in michi_button_gesture.c (pure, host-
- * tested); this file executes the chosen action. */
-static void handle_release(uint32_t press_ms)
+/* Evaluate the hold-on-threshold contract while the button is pressed.
+ * Called every poll tick. Mutates ctx (action_fired, factory_warned).
+ * Returns true if a destructive action (factory reset) was fired and the
+ * task should restart its loop. */
+static bool evaluate_hold(michi_button_press_ctx_t *ctx, int64_t now_us)
 {
-    /* Always clear button-press feedback overlay on any release (the button
-     * is physically up; handle_short_press re-sets to WAITING if pairing
-     * window opens successfully). */
-    michi_display_set_pairing_overlay(MICHI_DISPLAY_PAIRING_OVERLAY_NONE);
+    const int64_t elapsed_ms = (now_us - ctx->pressed_at_us) / 1000;
+    const michi_state_t cur_state = michi_state_get();
 
-    /* Discard noise pulses shorter than the minimum valid press. */
-    if (press_ms < MICHI_BUTTON_MIN_PRESS_MS) {
-        ESP_LOGD(TAG, "button: press %u ms < MIN_PRESS %u ms, discarded as noise",
-                 (unsigned)press_ms, (unsigned)MICHI_BUTTON_MIN_PRESS_MS);
-        return;
-    }
-
-    const michi_state_t st = michi_state_get();
-
-    const michi_button_action_t action = michi_button_gesture_classify(
-        press_ms, s_press_state, st, s_press_boot_elapsed,
-        CONFIG_MICHI_BUTTON_RECOVERY_PRESS_MS,
-        CONFIG_MICHI_BUTTON_FACTORY_RESET_PRESS_MS,
-        CONFIG_MICHI_BUTTON_FACTORY_ARM_MS);
+    const michi_button_action_t action = michi_button_hold_classify(
+        elapsed_ms,
+        ctx->press_state,
+        cur_state,
+        ctx->press_boot_ms,
+        ctx,
+        MICHI_BUTTON_PAIRING_HOLD_MS,
+        MICHI_BUTTON_FACTORY_WARN_MS,
+        MICHI_BUTTON_FACTORY_RESET_MS,
+        MICHI_BUTTON_FACTORY_ARM_MS_CFG);
 
     switch (action) {
     case MICHI_BUTTON_ACTION_PAIRING:
-        handle_short_press(press_ms, st);
+        ctx->action_fired = true;
+        handle_pairing_action(cur_state, elapsed_ms);
         break;
+
     case MICHI_BUTTON_ACTION_RECOVERY:
-        ESP_LOGI(TAG, "button: press_ms=%u action=recovery",
-                 (unsigned)press_ms);
+        ctx->action_fired = true;
+        ESP_LOGI(TAG, "button: hold=%" PRId64 "ms action=recovery (threshold crossed)",
+                 elapsed_ms);
         post_with_retry(MICHI_EVENT_RECOVER, 0);
         break;
+
+    case MICHI_BUTTON_ACTION_FACTORY_WARN:
+        ctx->factory_warned = true;
+        ESP_LOGW(TAG, "button: hold=%" PRId64 "ms factory_reset_imminent "
+                 "(release to cancel)", elapsed_ms);
+        /* Display a warning overlay — keep NONE for now (display TBD). */
+        break;
+
     case MICHI_BUTTON_ACTION_FACTORY_RESET:
-        ESP_LOGW(TAG, "button: press_ms=%u action=factory_reset state=%s",
-                 (unsigned)press_ms, michi_state_name(st));
-        (void)michi_button_factory_reset_run();
-        break;
+        ctx->action_fired = true;
+        ESP_LOGW(TAG, "button: hold=%" PRId64 "ms action=factory_reset "
+                 "(threshold crossed)", elapsed_ms);
+        (void)michi_button_factory_reset_run(); /* never returns */
+        return true; /* unreachable but keeps compiler happy */
+
     case MICHI_BUTTON_ACTION_IGNORED_PROTECTED:
-        ESP_LOGW(TAG, "button: action=ignored press_state=%s release_state=%s",
-                 michi_state_name(s_press_state), michi_state_name(st));
+        /* Became protected mid-press (e.g. OTA started) — ignore. */
         break;
+
     case MICHI_BUTTON_ACTION_IGNORED_ARM:
-        ESP_LOGW(TAG, "button: factory_reset ignored arm_window=%d ms "
-                 "(press_elapsed=%" PRId64 " ms)",
-                 CONFIG_MICHI_BUTTON_FACTORY_ARM_MS, s_press_boot_elapsed);
+        /* Boot-hold: already logged at hold init. */
         break;
-    case MICHI_BUTTON_ACTION_IGNORED_STATE:
-        ESP_LOGW(TAG, "button: press_ms=%u action=recovery state=%s "
-                 "(expected RECOVERABLE_ERROR)",
-                 (unsigned)press_ms, michi_state_name(st));
+
+    case MICHI_BUTTON_ACTION_NONE:
+        /* Below threshold or already consumed. */
         break;
     }
+    return false;
 }
 
 static void button_task(void *arg)
 {
     /* The debouncer is the SINGLE AUTHORITY for edge confirmation: it owns
-     * the raw-level -> stable-level state machine and emits exactly one
+     * the raw-level → stable-level state machine and emits exactly one
      * event per confirmed transition. GPIO, time and the FSM never bypass it.
      * The ISR (button_isr) records the edge timestamp that anchors the
      * duration; the task only reads it AFTER the debouncer has confirmed a
-     * stable transition - never as a validity re-check (the old raw
-     * gpio_get_level() abort on release was a TOCTOU that dropped valid
-     * releases, PAIR-BTN-01 P0). */
+     * stable transition. */
     michi_button_debounce_t deb;
     michi_button_debounce_init(&deb, MICHI_BUTTON_DEBOUNCE_MS);
-    /* ISR timestamp of the confirmed press edge (0 = no confirmed press). */
-    int64_t press_t_us = 0;
+
+    /* Press context: holds the state of the current (or last) press. */
+    michi_button_press_ctx_t ctx = {0};
 
     for (;;) {
-        /* Stop check + join notify under the mux (F8 follow-up): the
-         * shutdown caller registers s_done_notify and clears it under the
-         * same mux before returning, so a notify issued while holding the
-         * mux can never hit a stale (freed) handle - the joiner is either
-         * still waiting or has already cleared the target. */
+        /* Stop check + join notify (shutdown coordination). */
         portENTER_CRITICAL(&s_edge_mux);
         const bool stop = s_stop;
         if (stop) {
@@ -267,40 +245,50 @@ static void button_task(void *arg)
             michi_button_debounce_feed(&deb, level, now_us);
 
         if (evt == MICHI_BTN_DEBOUNCE_PRESS) {
-            /* Debouncer is the single authority: record press time unconditionally.
-             * The ISR snapshot is used only for diagnostics, not as a veto. */
-            press_t_us = now_us;   /* now_us is already computed above */
+            /* Confirmed press: initialise the press context. */
+            ctx.pressed       = true;
+            ctx.action_fired  = false;
+            ctx.factory_warned= false;
+            ctx.pressed_at_us = now_us;
             portENTER_CRITICAL(&s_edge_mux);
-            s_press_state = michi_state_get();
-            s_press_boot_elapsed = (now_us - s_boot_time) / 1000;
+            ctx.press_state   = michi_state_get();
+            ctx.press_boot_ms = (now_us - s_boot_time) / 1000;
             portEXIT_CRITICAL(&s_edge_mux);
-            /* Diagnostic: log if ISR record appears stale */
-            michi_button_edge_t edge;
-            take_edge_snapshot(&edge);
-            if (edge.level != 0) {
-                ESP_LOGD(TAG, "button: press confirmed by debouncer; ISR record level=%d (stale)",
-                         edge.level);
-            }
-            /* Immediate visual feedback on confirmed press: <100 ms perceptual
-             * latency target. Cleared unconditionally in handle_release(). */
-            michi_display_set_pairing_overlay(MICHI_DISPLAY_PAIRING_OVERLAY_BTN_PRESS);
+
+            ESP_LOGD(TAG, "button: press confirmed state=%s boot_ms=%" PRId64,
+                     michi_state_name(ctx.press_state), ctx.press_boot_ms);
+            /* Immediate visual feedback on confirmed press. */
+            michi_display_set_pairing_overlay(
+                MICHI_DISPLAY_PAIRING_OVERLAY_BTN_PRESS);
+
         } else if (evt == MICHI_BTN_DEBOUNCE_RELEASE) {
-            /* Debouncer is the single authority: use debounce-confirmed timestamps only. */
-            if (press_t_us != 0) {
-                const uint32_t press_ms = (uint32_t)((now_us - press_t_us) / 1000);
-                handle_release(press_ms);
+            /* Release: clear feedback regardless of whether action fired. */
+            michi_display_set_pairing_overlay(MICHI_DISPLAY_PAIRING_OVERLAY_NONE);
+
+            if (ctx.pressed && !ctx.action_fired) {
+                /* Press was NOT consumed: check if it's a noise pulse. */
+                const int64_t held_ms = (now_us - ctx.pressed_at_us) / 1000;
+                if (held_ms < MICHI_BUTTON_MIN_PRESS_MS) {
+                    ESP_LOGD(TAG, "button: release after %" PRId64 "ms < MIN_PRESS "
+                             "%d ms, discarded as noise", held_ms,
+                             MICHI_BUTTON_MIN_PRESS_MS);
+                } else {
+                    /* Valid press but too short to trigger any action (< 5 s).
+                     * Silently discard: the user did not hold long enough. */
+                    ESP_LOGD(TAG, "button: release after %" PRId64 "ms "
+                             "(below pairing threshold %d ms, no action)",
+                             held_ms, MICHI_BUTTON_PAIRING_HOLD_MS);
+                }
             }
-            press_t_us = 0;
-            /* Diagnostic only */
-            michi_button_edge_t edge;
-            take_edge_snapshot(&edge);
-            if (edge.level != 1) {
-                ESP_LOGD(TAG, "button: release confirmed by debouncer; ISR record level=%d (stale)", edge.level);
-            }
+            /* Clear context. */
+            ctx = (michi_button_press_ctx_t){0};
+
+        } else if (ctx.pressed) {
+            /* Button is still held: evaluate hold thresholds this tick. */
+            evaluate_hold(&ctx, now_us);
         }
 
-        /* 10 ms poll; a shutdown notification wakes the task immediately
-         * instead of waiting for the next tick. */
+        /* Poll period; a shutdown notification wakes the task immediately. */
         ulTaskNotifyTake(pdFALSE, pdMS_TO_TICKS(CONFIG_MICHI_BUTTON_POLL_MS));
     }
 }

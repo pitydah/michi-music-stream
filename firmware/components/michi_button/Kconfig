@@ -27,33 +27,42 @@ menu "Michi Music Stream Button"
           but above typical contact chatter. Must be less than
           MICHI_BUTTON_RECOVERY_PRESS_MS.
 
-    config MICHI_BUTTON_RECOVERY_PRESS_MS
-        int "Recovery press threshold (ms)"
+    config MICHI_BUTTON_PAIRING_HOLD_MS
+        int "Pairing hold threshold (ms)"
         default 5000
-        range 500 30000
+        range 2000 30000
         help
-          Press duration (measured edge-to-edge from the ISR timestamps) at
-          or above which the press counts as LONG and runs the RECOVERY
-          gesture (post MICHI_EVENT_RECOVER) instead of pairing. Recovery
-          fires only when the FSM is in RECOVERABLE_ERROR at the release;
-          in any other state the long press is ignored. 5 s is long enough
-          that a normal pairing tap can never trip it. Must be <
-          MICHI_BUTTON_FACTORY_RESET_PRESS_MS (the factory-reset range is
-          bounded by this symbol; a build-time assert backs it up).
+          Duration the button must be held (without release) before the
+          pairing window opens (hold-on-threshold contract, P0-01). The
+          action fires at the MOMENT the elapsed time crosses this value,
+          not when the button is released. In RECOVERABLE_ERROR state the
+          same threshold triggers recovery instead of pairing.
+          5000 ms is long enough to avoid accidental triggers.
+          Must be < MICHI_BUTTON_FACTORY_WARN_MS.
+
+    config MICHI_BUTTON_FACTORY_WARN_MS
+        int "Factory-reset warning threshold (ms)"
+        default 10000
+        range MICHI_BUTTON_PAIRING_HOLD_MS 60000
+        help
+          If the button is still held after this duration AND the pairing
+          action was NOT fired (gesture not consumed), a visual/audio
+          warning is shown indicating that releasing now cancels the press
+          but continued holding will trigger a factory reset.
+          Must be > PAIRING_HOLD_MS and < FACTORY_RESET_PRESS_MS.
 
     config MICHI_BUTTON_FACTORY_RESET_PRESS_MS
-        int "Factory reset press threshold (ms)"
-        default 10000
-        range MICHI_BUTTON_RECOVERY_PRESS_MS 60000
+        int "Factory reset hold threshold (ms)"
+        default 15000
+        range MICHI_BUTTON_FACTORY_WARN_MS 60000
         help
-          Press duration at or above which the press runs the FACTORY
-          RESET gesture (wipe the whole NVS partition - identity,
-          controllers, wifi credentials, DAC override, server_id - and
-          restart) instead of recovery/pairing. 10 s is deliberately
-          distinct from the 5 s recovery gesture so a recovery hold can
-          never drift into a destructive reset. Always available in the
-          default build (no choice): a corrupt identity store has no
-          other physical recovery path.
+          Duration the button must be held to trigger factory reset.  Only
+          fires if the gesture is NOT already consumed (pairing/recovery did
+          not fire earlier in the same press), preventing accidental
+          escalation from pairing to reset.  The press must also have
+          started at least MICHI_BUTTON_FACTORY_ARM_MS after boot.
+          15 s is deliberately above the 10 s warning to give time to
+          release.
 
     config MICHI_BUTTON_FACTORY_ARM_MS
         int "Factory reset arm window (ms)"
