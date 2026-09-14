@@ -41,3 +41,8 @@ static inline void vTaskDelay(uint32_t ticks)
 #ifdef __cplusplus
 }
 #endif
+
+/* Shim for portYIELD_FROM_ISR */
+static inline void portYIELD_FROM_ISR(void) {
+    /* No-op in shim */
+}
