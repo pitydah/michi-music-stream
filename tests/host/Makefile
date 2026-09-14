@@ -60,8 +60,8 @@ IDENTITY_INC = -I$(IDENTITY_DIR)/include -I$(IDENTITY_DIR)/monocypher \
                -I$(IDENTITY_DIR)/blake3
 
 TESTS := test_semver test_pairing_validators test_michi_identity \
-         test_michi_pairing test_michi_session test_rtp_guard test_michi_button \
-         test_michi_button_debounce test_michi_ui \
+         test_michi_pairing test_michi_session test_rtp_guard test_rtp_clock \
+         test_michi_button test_michi_button_debounce test_michi_ui \
          $(if $(filter yes,$(HAS_CJSON)),test_json_helpers test_http_canonical test_michi_discovery test_michi_time test_capability_parity test_pairing_http test_session_http test_discovery_disc)
 
 .PHONY: all test clean
@@ -70,7 +70,7 @@ all: $(TESTS)
 
 test: all
 	@set -e; \
-	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard test_michi_button test_michi_button_debounce test_michi_ui; do ./$$t; done; \
+	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard test_rtp_clock test_michi_button test_michi_button_debounce test_michi_ui; do ./$$t; done; \
 	if [ "$(HAS_CJSON)" = "yes" ]; then \
 	    ./test_json_helpers; \
 	    ./test_http_canonical; \
@@ -197,7 +197,8 @@ test_michi_identity: test_michi_identity.c $(IDENTITY_SRC) \
 SESSION_DIR = $(FIRMWARE)/michi_session
 SESSION_SRC = $(SESSION_DIR)/michi_session.c shim/esp_timer.c \
               shim/michi_state.c shim/michi_audio_fake.c \
-              shim/michi_volume_fake.c shim/michi_display_fake.c
+              shim/michi_volume_fake.c shim/michi_display_fake.c \
+              shim/freertos/task.c shim/freertos/queue.c
 SESSION_INC = -I$(SESSION_DIR)/include
 
 test_michi_session: test_michi_session.c $(SESSION_SRC) \
@@ -258,6 +259,10 @@ test_rtp_guard: test_rtp_guard.c $(FIRMWARE)/michi_audio/rtp_guard.c \
                 $(FIRMWARE)/michi_audio/rtp_guard.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ test_rtp_guard.c \
 	    $(FIRMWARE)/michi_audio/rtp_guard.c
+
+# rtp_clock: 64-bit extended timestamp tracker (P0-02: wrap fix, header-only).
+test_rtp_clock: test_rtp_clock.c $(FIRMWARE)/michi_audio/michi_rtp_clock.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(FIRMWARE)/michi_audio -o $@ test_rtp_clock.c
 
 # Session HTTP body gates: the SAME json_helpers.c + validators.c the
 # firmware builds (cJSON-gated like the other HTTP tests).
