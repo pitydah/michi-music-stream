@@ -81,14 +81,13 @@ test: all
 	    ./test_session_http; \
 	    ./test_discovery_disc; \
 	else \
-	    echo "SKIP test_json_helpers (libcjson-dev not installed - CI installs it)"; \
-	    echo "SKIP test_http_canonical (libcjson-dev not installed - CI installs it)"; \
-	    echo "SKIP test_michi_discovery (libcjson-dev not installed - CI installs it)"; \
-	    echo "SKIP test_michi_time (libcjson-dev not installed - CI installs it)"; \
-	    echo "SKIP test_capability_parity (libcjson-dev not installed - CI installs it)"; \
-	    echo "SKIP test_pairing_http (libcjson-dev not installed - CI installs it)"; \
-	    echo "SKIP test_session_http (libcjson-dev not installed - CI installs it)"; \
-	    echo "SKIP test_discovery_disc (libcjson-dev not installed - CI installs it)"; \
+	    if [ "$$SKIP_CJSON" = "1" ]; then \
+	        echo "TEST RESULT: INCOMPLETE (libcjson-dev not installed)"; \
+	        exit 0; \
+	    else \
+	        echo "ERROR: libcjson-dev required. Install it or set SKIP_CJSON=1"; \
+	        exit 1; \
+	    fi; \
 	fi
 
 test_semver: test_semver.c $(FIRMWARE)/michi_ota/semver.c \

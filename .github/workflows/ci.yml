@@ -11,7 +11,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Contract sync check (vendored michi-link bundle)
-        run: python3 scripts/sync_michi_link_contract.py --check
+        run: python3 scripts/sync_michi_link_contract.py --check && python3 scripts/sync_michi_link_contract.py --verify-source
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Contract tests
@@ -86,7 +86,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Vendored contract sync check
-        run: python3 scripts/sync_michi_link_contract.py --check
+        run: python3 scripts/sync_michi_link_contract.py --check && python3 scripts/sync_michi_link_contract.py --verify-source
       - name: E2E interoperability certification (canonical simulator)
         run: python3 tests/e2e/run_e2e.py
 
@@ -131,7 +131,8 @@ jobs:
   firmware:
     runs-on: ubuntu-latest
     container:
-      image: espressif/idf:release-v5.3
+      # Pinned from release-v5.3 tag — update via: docker pull espressif/idf:release-v5.3 && docker inspect --format='{{index .RepoDigests 0}}' espressif/idf:release-v5.3
+      image: espressif/idf@sha256:d862412a8944efc19b73ce23e48d4cb8aa72304d25c75ab50fb9717e639eeb34
     defaults:
       run:
         working-directory: firmware
