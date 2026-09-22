@@ -62,7 +62,7 @@ IDENTITY_INC = -I$(IDENTITY_DIR)/include -I$(IDENTITY_DIR)/monocypher \
 TESTS := test_semver test_pairing_validators test_michi_identity \
          test_michi_pairing test_michi_session test_rtp_guard test_rtp_clock \
          test_michi_button test_michi_button_debounce test_michi_ui \
-         test_spiffs_journal \
+         test_spiffs_journal test_michi_jb \
          $(if $(filter yes,$(HAS_CJSON)),test_json_helpers test_http_canonical test_michi_discovery test_michi_time test_capability_parity test_pairing_http test_session_http test_discovery_disc)
 
 .PHONY: all test clean
@@ -71,7 +71,7 @@ all: $(TESTS)
 
 test: all
 	@set -e; \
-	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard test_rtp_clock test_michi_button test_michi_button_debounce test_michi_ui test_spiffs_journal; do ./$$t; done; \
+	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard test_rtp_clock test_michi_button test_michi_button_debounce test_michi_ui test_spiffs_journal test_michi_jb; do ./$$t; done; \
 	if [ "$(HAS_CJSON)" = "yes" ]; then \
 	    ./test_json_helpers; \
 	    ./test_http_canonical; \
@@ -270,6 +270,12 @@ test_rtp_clock: test_rtp_clock.c $(FIRMWARE)/michi_audio/michi_rtp_clock.h
 test_spiffs_journal: test_spiffs_journal.c
 	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -D_DEFAULT_SOURCE \
 	    -o $@ test_spiffs_journal.c
+
+# michi_jb: jitter-buffer insert/evict/wrap logic (P0-08, PR M).
+# header-only michi_jb.h extracted from michi_audio.c; no PSRAM deps.
+test_michi_jb: test_michi_jb.c $(FIRMWARE)/michi_audio/michi_jb.h
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -D_DEFAULT_SOURCE \
+	    -I$(FIRMWARE)/michi_audio -o $@ test_michi_jb.c
 
 # Session HTTP body gates: the SAME json_helpers.c + validators.c the
 # firmware builds (cJSON-gated like the other HTTP tests).

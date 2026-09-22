@@ -30,6 +30,7 @@
 #include <string.h>
 
 #include "esp_partition.h"
+#include "freertos/FreeRTOS.h"  /* portMUX_TYPE, portENTER/EXIT_CRITICAL */
 
 #include "michi_board.h"
 #include "michi_dac.h"
@@ -46,6 +47,11 @@
 static michi_product_profile_t s_profile = {
     .tier = MICHI_PRODUCT_DIAGNOSTIC,
 };
+
+/* P0-08 (PR L): Guards the 32-byte struct assignment in refresh() against
+ * concurrent readers in get(). Single critical section - no task switch
+ * between the write and its readers. */
+static portMUX_TYPE s_profile_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static const char *tier_to_name(michi_product_tier_t tier)
 {
@@ -156,7 +162,13 @@ esp_err_t michi_product_profile_refresh(void)
      * the string exists once. */
     copy_str(p.api_version, sizeof(p.api_version), "v1-lite");
 
+    /* P0-08: 32-byte struct write must be atomic relative to concurrent
+     * readers of s_profile (display task, HTTP task, OTA task, mDNS task).
+     * portENTER_CRITICAL ensures no reader observes a partially updated
+     * struct. The critical section is brief: a single struct copy. */
+    portENTER_CRITICAL(&s_profile_mux);
     s_profile = p;
+    portEXIT_CRITICAL(&s_profile_mux);
     return ESP_OK;
 }
 
@@ -168,12 +180,18 @@ esp_err_t michi_product_profile_init(void)
 
 const michi_product_profile_t *michi_product_profile_get(void)
 {
+    /* P0-08: Return a pointer to the (immutable during the critical section)
+     * static struct. Callers must not hold a pointer across a refresh().
+     * For snapshot semantics, use michi_product_profile_snapshot(). */
     return &s_profile;
 }
 
 const char *michi_product_profile_tier_name(void)
 {
-    return tier_to_name(s_profile.tier);
+    portENTER_CRITICAL(&s_profile_mux);
+    michi_product_tier_t tier = s_profile.tier;
+    portEXIT_CRITICAL(&s_profile_mux);
+    return tier_to_name(tier);
 }
 
 esp_err_t michi_product_profile_format_codecs(const michi_product_profile_t *p,
