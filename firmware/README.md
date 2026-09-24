@@ -1326,10 +1326,11 @@ security belongs to the production hardening package (MS-12).
 ### Canonical session integration (MS-07/MS-08)
 
 The session engine is idle at boot. `components/michi_session` starts and
-stops sessions through `michi_audio_session_start(port, ssrc, source_ip)`:
+stops sessions through `michi_audio_session_start(port, ssrc, source_ip, buffer_ms)`:
 the session layer picks a free UDP port in 49152..65535 (0 = pick a
-port), passes the negotiated SSRC (1..2^32-1; 0 is invalid) and the
-dotted IPv4 of the HTTP request peer (the ONLY accepted RTP source).
+port), passes the negotiated SSRC (1..2^32-1; 0 is invalid), the
+dotted IPv4 of the HTTP request peer (the ONLY accepted RTP source), and
+the negotiated jitter buffer target `buffer_ms` (50..500 ms).
 `michi_audio_session_stop()` tears the engine down; metrics feed
 `GET /api/v1/receiver-lite/diagnostics`; the session layer posts the
 `MICHI_EVENT_SESSION_*` events (the engine itself does not post them).

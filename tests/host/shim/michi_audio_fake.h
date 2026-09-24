@@ -19,6 +19,7 @@ typedef struct {
     bool paused;
     uint16_t port_requested;
     uint32_t ssrc_requested;
+    uint16_t buffer_ms_requested;
     char source_ip_requested[16];
     uint16_t bound_port;
     uint16_t next_auto_port;

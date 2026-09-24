@@ -592,7 +592,8 @@ esp_err_t michi_session_start(const michi_session_start_params_t *params,
      * engine has released everything it reserved - roll back to idle,
      * never a phantom session. */
     const esp_err_t err = michi_audio_session_start(0, params->ssrc,
-                                                    params->source_ip);
+                                                    params->source_ip,
+                                                    params->buffer_ms);
     if (err != ESP_OK) {
         memset(&s_session, 0, sizeof(s_session));
         xSemaphoreGive(s_mutex);

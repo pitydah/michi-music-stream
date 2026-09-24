@@ -150,6 +150,7 @@ static void test_start_success(void)
     michi_audio_fake_state_t *fake = test_michi_audio_state();
     CHECK(fake->port_requested == 0, "engine picks the port (port=0)");
     CHECK(fake->ssrc_requested == SSRC, "engine got the exact SSRC");
+    CHECK(fake->buffer_ms_requested == 120, "engine got the negotiated buffer_ms");
     CHECK(strcmp(fake->source_ip_requested, PEER_IP) == 0,
           "engine got the HTTP peer IP");
 

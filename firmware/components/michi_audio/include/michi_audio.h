@@ -218,6 +218,7 @@ esp_err_t michi_audio_init(void);
  * @param ssrc      Negotiated SSRC (1..4294967295; 0 is invalid).
  * @param source_ip Dotted IPv4 of the HTTP request peer (the only
  *                  accepted RTP source).
+ * @param buffer_ms Negotiated jitter buffer target in milliseconds (50..500 ms).
  * @return ESP_OK; ESP_ERR_INVALID_STATE before init, while a session
  *         task exists, or when the audio pipeline is not running;
  *         ESP_ERR_INVALID_ARG for an unusable SSRC/source_ip or when
@@ -226,7 +227,7 @@ esp_err_t michi_audio_init(void);
  *         be allocated; ESP_FAIL on socket/bind failure.
  */
 esp_err_t michi_audio_session_start(uint32_t port, uint32_t ssrc,
-                                    const char *source_ip);
+                                    const char *source_ip, uint16_t buffer_ms);
 
 /**
  * @brief Cooperative session stop: run flag + join with timeout. The

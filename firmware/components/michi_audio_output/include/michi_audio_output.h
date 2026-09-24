@@ -137,6 +137,16 @@ esp_err_t michi_audio_output_start(void);
 esp_err_t michi_audio_output_write(const uint8_t *data, size_t len);
 
 /**
+ * @brief Flush all buffered audio in the ring immediately.
+ *
+ * Empties the SPSC ring without stopping the I2S pipeline or disrupting
+ * the hardware clocks. Used on pause and teardown for immediate silence.
+ *
+ * @return ESP_OK; ESP_ERR_INVALID_STATE when not running.
+ */
+esp_err_t michi_audio_output_flush(void);
+
+/**
  * @brief Cooperative stop: flag + notify + i2s_channel_disable + join
  *        with timeout. The channel is DISABLED but NOT deleted (it is
  *        deleted only by deinit()). Idempotent when not running.

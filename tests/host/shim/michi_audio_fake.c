@@ -49,7 +49,7 @@ void test_michi_audio_set_start_err(esp_err_t err)
 }
 
 esp_err_t michi_audio_session_start(uint32_t port, uint32_t ssrc,
-                                    const char *source_ip)
+                                    const char *source_ip, uint16_t buffer_ms)
 {
     s_fake.start_calls++;
     if (s_fake.start_err != ESP_OK) {
@@ -60,6 +60,7 @@ esp_err_t michi_audio_session_start(uint32_t port, uint32_t ssrc,
     }
     s_fake.port_requested = port;
     s_fake.ssrc_requested = ssrc;
+    s_fake.buffer_ms_requested = buffer_ms;
     strncpy(s_fake.source_ip_requested, source_ip,
             sizeof(s_fake.source_ip_requested) - 1);
     if (port == 0) {

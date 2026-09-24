@@ -128,6 +128,7 @@ typedef struct {
      * uint32_t wrap at ~24.85h causing a corrupted jitter reading. */
     michi_rtp_clock_t rtp_clock;
 
+    uint16_t buffer_ms;      /* negotiated jitter target (50..500 ms) */
     jitter_buffer_t jb;
     uint8_t *recv_buf;       /* datagram buffer (heap) */
     uint8_t *zeros;          /* one packet of silence (heap) */
@@ -476,11 +477,12 @@ static void session_recv(session_t *s)
 /* Prefill target in packets (ceil of prefill_ms / packet duration). */
 static uint32_t prefill_target(const session_t *s)
 {
-    uint32_t prefill_ms = CONFIG_MICHI_AUDIO_PREFILL_MS;
+    uint32_t prefill_ms = (s != NULL && s->buffer_ms > 0) ? s->buffer_ms
+                                                           : CONFIG_MICHI_AUDIO_PREFILL_MS;
     if (prefill_ms > CONFIG_MICHI_AUDIO_JITTER_MAX_MS) {
         prefill_ms = CONFIG_MICHI_AUDIO_JITTER_MAX_MS;
     }
-    if (s->samples_per_packet == 0) {
+    if (s == NULL || s->samples_per_packet == 0) {
         return 1; /* defensive: canonical geometry is fixed at 480 */
     }
     uint32_t packet_ms = (uint32_t)((uint64_t)s->samples_per_packet * 1000 /
@@ -621,18 +623,23 @@ static void session_task(void *arg)
         const bool paused = s_paused;
         session_recv(s);
         if (paused) {
-            /* Paused: receive + count, discard. The playhead resync
-             * happens on the first unpaused iteration below. */
+            /* Paused: receive + count, discard. Flush any buffered packets
+             * so no stale audio lingers. */
+            if (s->jb.count > 0) {
+                jb_flush(&s->jb);
+            }
             was_paused = true;
             continue;
         }
         if (was_paused) {
             was_paused = false;
             jb_flush(&s->jb);
-            s->playhead = (uint16_t)(s->last_seq + 1);
+            s->stream_seeded = false;
             s->last_played_ts = 0;
             s->in_underrun = false;
             metrics_live(s);
+            session_fill(s, MICHI_AUDIO_PREFILL_DEADLINE_MS);
+            continue;
         }
         if (!session_drain(s)) {
             ESP_LOGE(TAG, "session: pipeline rejected a write - ending session");
@@ -641,7 +648,7 @@ static void session_task(void *arg)
             self_end = true;
             break;
         }
-        if (s->jb.count == 0) {
+        if (s->stream_seeded && s->jb.count == 0) {
             /* Underrun: explicit silence keeps the clocks running, then
              * a brief re-prefill resyncs the playhead to the next
              * packet. */
@@ -850,7 +857,7 @@ static int session_bind_socket(uint16_t port, uint16_t *out_port)
 }
 
 esp_err_t michi_audio_session_start(uint32_t port, uint32_t ssrc,
-                                    const char *source_ip)
+                                    const char *source_ip, uint16_t buffer_ms)
 {
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
@@ -929,6 +936,7 @@ esp_err_t michi_audio_session_start(uint32_t port, uint32_t ssrc,
     }
     s->port = port;
     s->ssrc = ssrc;
+    s->buffer_ms = buffer_ms;
     s->sock = -1;
     s->samples_per_packet = MICHI_AUDIO_SAMPLES_PER_PACKET;
     s->guard.pt = (uint8_t)MICHI_AUDIO_RTP_PT_S16LE;
@@ -995,8 +1003,8 @@ esp_err_t michi_audio_session_start(uint32_t port, uint32_t ssrc,
         return ESP_ERR_NO_MEM;
     }
     s_session_task = task;
-    ESP_LOGI(TAG, "session: udp :%u ssrc=0x%08" PRIx32 " peer=%s",
-             (unsigned)bound, ssrc, source_ip);
+    ESP_LOGI(TAG, "session: udp :%u ssrc=0x%08" PRIx32 " peer=%s buffer_ms=%u",
+             (unsigned)bound, ssrc, source_ip, (unsigned)buffer_ms);
     return ESP_OK;
 }
 
@@ -1009,6 +1017,7 @@ esp_err_t michi_audio_session_stop(void)
         return ESP_OK; /* idempotent */
     }
     s_session_run = false;
+    (void)michi_audio_output_flush();
     /* The task wakes within its 100 ms socket timeout or after the
      * completed blocking ring write; it tears down its own resources. */
     int waited_ms = 0;
@@ -1042,6 +1051,9 @@ void michi_audio_session_set_paused(bool paused)
     portENTER_CRITICAL(&s_lock);
     s_paused = paused;
     portEXIT_CRITICAL(&s_lock);
+    if (paused) {
+        (void)michi_audio_output_flush();
+    }
 }
 
 esp_err_t michi_audio_session_get_port(uint16_t *out_port)

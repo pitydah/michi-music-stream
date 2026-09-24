@@ -418,6 +418,19 @@ esp_err_t michi_audio_output_write(const uint8_t *data, size_t len)
     return ESP_OK;
 }
 
+esp_err_t michi_audio_output_flush(void)
+{
+    if (!s_running) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    portENTER_CRITICAL(&s_ring_lock);
+    s_ring.head = 0;
+    s_ring.tail = 0;
+    s_ring.used = 0;
+    portEXIT_CRITICAL(&s_ring_lock);
+    return ESP_OK;
+}
+
 esp_err_t michi_audio_output_stop(void)
 {
     if (!s_inited) {
