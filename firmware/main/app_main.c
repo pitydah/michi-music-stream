@@ -19,6 +19,7 @@
 #include "michi_dac.h"
 #include "michi_display.h"
 #include "michi_http.h"
+#include "michi_identity.h"
 #include "michi_led.h"
 #include "michi_log.h"
 #include "michi_ota.h"
@@ -242,6 +243,16 @@ void app_main(void)
         }
     }
 
+    /* Device identity (MS-04): Ed25519 identity key + BLAKE3 michi_id.
+     * Mints seed on first boot or loads existing key from NVS. */
+    err = michi_identity_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "michi_identity_init failed: %s", esp_err_to_name(err));
+        ESP_LOGI(TAG, "subsystem=identity state=failed phase=ms04");
+    } else {
+        ESP_LOGI(TAG, "subsystem=identity state=ok phase=ms04");
+    }
+
     /* Log journal (phase 16): SPIFFS mount + boot_seq + journal task,
      * right after NVS (boot_seq lives there; the crash dump flush needs
      * SPIFFS). On failure boot continues degraded - tail keeps working. */
@@ -412,30 +423,12 @@ void app_main(void)
              profile->lighting_status_rgb ? "true" : "false",
              profile->lighting_cat_contour ? "true" : "false");
 
-    /* OTA rollback self-test (phase 13): after the board self-test + the
-     * profile build. Criterion (documented in michi_ota.h): the BOARD
-     * self-test overall (chip/flash/psram/display/backlight); a
-     * DIAGNOSTIC profile (no DAC detected) is a legitimate hardware
-     * option and does NOT block the mark. On the first boot after an OTA
-     * the image is PENDING_VERIFY: pass marks it valid (cancel rollback),
-     * fail logs + restarts so the bootloader rolls back. Any other image
-     * state is a no-op. */
-    michi_selftest_result_t st_res;
-    if (!st.overall) {
-        st_res = MICHI_SELFTEST_FATAL;
-    } else if (!profile->audio_available) {
-        st_res = MICHI_SELFTEST_DEGRADED;
-    } else {
-        st_res = MICHI_SELFTEST_PASS;
-    }
-    michi_ota_boot_selftest_done(st_res);
-
     /* HTTP API (phase 4): read-only migrated endpoints (/info, /firmware).
      * A failure is logged and boot continues - no halt. */
-    err = michi_http_init();
-    if (err != ESP_OK) {
+    esp_err_t http_err = michi_http_init();
+    if (http_err != ESP_OK) {
         ESP_LOGE(TAG, "michi_http_init failed: %s (API /info and /firmware unavailable)",
-                 esp_err_to_name(err));
+                 esp_err_to_name(http_err));
         ESP_LOGI(TAG, "subsystem=http state=failed phase=4");
     } else {
         ESP_LOGI(TAG, "subsystem=http state=ok phase=4");
@@ -465,6 +458,7 @@ void app_main(void)
      * expect to observe the test window; the overall result is surfaced by
      * the log below. RECOVERABLE_ERROR has no boot path: it is reserved for
      * runtime producers arriving from phase 9. */
+    bool boot_events_ok = false;
     if (state_ok) {
         err = michi_state_post(MICHI_EVENT_BOOT_COMPLETE, 0);
         if (err != ESP_OK) {
@@ -476,8 +470,31 @@ void app_main(void)
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "MICHI_EVENT_SELF_TEST_DONE post failed: %s",
                      esp_err_to_name(err));
+        } else {
+            boot_events_ok = true;
         }
     }
+
+    /* Health Gate for Trial Boot (OTA rollback cancellation, phase 13):
+     * The running image is marked valid (canceling rollback) ONLY when ALL critical
+     * boot health checks pass:
+     *  1. Board self-test overall (st.overall: chip/flash/psram/display/backlight)
+     *  2. Cryptographic identity is READY (michi_identity_get_state() == MICHI_IDENTITY_READY)
+     *  3. HTTP server initialized (http_err == ESP_OK)
+     *  4. State bus initialized and accepted boot events (state_ok && boot_events_ok)
+     * A DIAGNOSTIC profile (no DAC detected) is a legitimate hardware
+     * option and remains acceptable (MICHI_SELFTEST_DEGRADED).
+     * Any fatal failure in trial boot (PENDING_VERIFY) triggers an honest rollback restart. */
+    michi_selftest_result_t st_res;
+    if (!st.overall || michi_identity_get_state() != MICHI_IDENTITY_READY ||
+        http_err != ESP_OK || !state_ok || !boot_events_ok) {
+        st_res = MICHI_SELFTEST_FATAL;
+    } else if (!profile->audio_available) {
+        st_res = MICHI_SELFTEST_DEGRADED;
+    } else {
+        st_res = MICHI_SELFTEST_PASS;
+    }
+    michi_ota_boot_selftest_done(st_res);
 
     /* Local (SD) update check (phase 17, review F2): NOT called directly
      * anymore. The FSM observer registered by michi_ota_init triggers

@@ -793,6 +793,13 @@ static esp_err_t session_start_handler(httpd_req_t *req)
                                      "a session already exists", NULL);
     }
 
+    /* OTA gate: while an update is in progress, session creation is blocked. */
+    if (michi_ota_busy() || michi_state_get() == MICHI_STATE_UPDATING) {
+        return michi_http_send_error(req, 409,
+                                     "an update is in progress",
+                                     "ota_in_progress");
+    }
+
     /* The RTP source IP is the TCP peer of THIS request - never JSON. */
     char source_ip[16] = {0};
     client_ip_str(req, source_ip, sizeof(source_ip));
@@ -821,6 +828,12 @@ static esp_err_t session_start_handler(httpd_req_t *req)
     if (start_err != ESP_OK) {
         ESP_LOGW(TAG, "session start failed: %s",
                  esp_err_to_name(start_err));
+        if (start_err == ESP_ERR_INVALID_STATE &&
+            (michi_ota_busy() || michi_state_get() == MICHI_STATE_UPDATING)) {
+            return michi_http_send_error(req, 409,
+                                         "an update is in progress",
+                                         "ota_in_progress");
+        }
         /* All-or-nothing start: bind/buffer/pipeline failures already
          * rolled back - no session exists, the client retries. */
         return michi_http_send_error(req, 500,
