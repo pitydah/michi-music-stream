@@ -118,6 +118,14 @@ static inline bool xSemaphoreGive(SemaphoreHandle_t h)
     return true;
 }
 
+static inline bool xSemaphoreGiveFromISR(SemaphoreHandle_t h, BaseType_t *pxHigherPriorityTaskWoken)
+{
+    if (pxHigherPriorityTaskWoken != NULL) {
+        *pxHigherPriorityTaskWoken = pdFALSE;
+    }
+    return xSemaphoreGive(h);
+}
+
 static inline void vSemaphoreDelete(SemaphoreHandle_t h)
 {
     /* TEST-ONLY contract: callers never delete a semaphore while a task

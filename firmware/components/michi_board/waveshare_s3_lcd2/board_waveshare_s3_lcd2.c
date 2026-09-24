@@ -7,6 +7,7 @@
 
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
+#include "esp_attr.h"
 #include "esp_chip_info.h"
 #include "esp_flash.h"
 #include "esp_heap_caps.h"
@@ -17,6 +18,9 @@
 #include "esp_lcd_panel_st7789.h"
 #include "esp_log.h"
 #include "esp_psram.h"
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 #include "michi_board.h"
 #include "michi_version.h"
@@ -64,6 +68,21 @@ static size_t s_fb_bytes = 0;
 static bool s_backlight_on = false;
 static bool s_spi_bus_inited = false;
 static bool s_inited = false;
+static SemaphoreHandle_t s_trans_done_sem = NULL;
+
+static bool IRAM_ATTR on_color_trans_done(esp_lcd_panel_io_handle_t panel_io,
+                                          esp_lcd_panel_io_event_data_t *edata,
+                                          void *user_ctx)
+{
+    (void)panel_io;
+    (void)edata;
+    BaseType_t high_task_wakeup = pdFALSE;
+    SemaphoreHandle_t sem = (SemaphoreHandle_t)user_ctx;
+    if (sem != NULL) {
+        xSemaphoreGiveFromISR(sem, &high_task_wakeup);
+    }
+    return high_task_wakeup == pdTRUE;
+}
 
 static void draw_pixel(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, int x, int y, uint16_t color)
 {
@@ -147,6 +166,16 @@ static esp_err_t init_display(void)
     }
     s_spi_bus_inited = true;
 
+    if (s_trans_done_sem == NULL) {
+        s_trans_done_sem = xSemaphoreCreateBinary();
+        if (s_trans_done_sem == NULL) {
+            ESP_LOGE(TAG, "trans_done semaphore creation failed");
+            spi_bus_free(MICHI_LCD_HOST);
+            s_spi_bus_inited = false;
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
     esp_lcd_panel_io_spi_config_t io_config = {
         .dc_gpio_num = bi->lcd_dc,
         .cs_gpio_num = bi->lcd_cs,
@@ -155,6 +184,8 @@ static esp_err_t init_display(void)
         .lcd_param_bits = MICHI_LCD_PARAM_BITS,
         .spi_mode = 0,
         .trans_queue_depth = MICHI_LCD_TRANS_QUEUE_DEPTH,
+        .on_color_trans_done = on_color_trans_done,
+        .user_ctx = s_trans_done_sem,
     };
     err = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)MICHI_LCD_HOST,
                                    &io_config, &s_panel_io);
@@ -162,6 +193,8 @@ static esp_err_t init_display(void)
         ESP_LOGE(TAG, "esp_lcd_new_panel_io_spi failed: %s", esp_err_to_name(err));
         spi_bus_free(MICHI_LCD_HOST);
         s_spi_bus_inited = false;
+        vSemaphoreDelete(s_trans_done_sem);
+        s_trans_done_sem = NULL;
         return err;
     }
 
@@ -177,6 +210,8 @@ static esp_err_t init_display(void)
         s_panel_io = NULL;
         spi_bus_free(MICHI_LCD_HOST);
         s_spi_bus_inited = false;
+        vSemaphoreDelete(s_trans_done_sem);
+        s_trans_done_sem = NULL;
         return err;
     }
 
@@ -189,6 +224,8 @@ static esp_err_t init_display(void)
         s_panel_io = NULL;
         spi_bus_free(MICHI_LCD_HOST);
         s_spi_bus_inited = false;
+        vSemaphoreDelete(s_trans_done_sem);
+        s_trans_done_sem = NULL;
         return err;
     }
     err = esp_lcd_panel_init(s_panel);
@@ -200,6 +237,8 @@ static esp_err_t init_display(void)
         s_panel_io = NULL;
         spi_bus_free(MICHI_LCD_HOST);
         s_spi_bus_inited = false;
+        vSemaphoreDelete(s_trans_done_sem);
+        s_trans_done_sem = NULL;
         return err;
     }
     // Polarity per official Waveshare demo (Arduino_GFX IPS=true -> INVON). Final check
@@ -213,6 +252,8 @@ static esp_err_t init_display(void)
         s_panel_io = NULL;
         spi_bus_free(MICHI_LCD_HOST);
         s_spi_bus_inited = false;
+        vSemaphoreDelete(s_trans_done_sem);
+        s_trans_done_sem = NULL;
         return err;
     }
     // Landscape orientation: swap X/Y coordinates on the ST7789 panel controller
@@ -225,6 +266,8 @@ static esp_err_t init_display(void)
         s_panel_io = NULL;
         spi_bus_free(MICHI_LCD_HOST);
         s_spi_bus_inited = false;
+        vSemaphoreDelete(s_trans_done_sem);
+        s_trans_done_sem = NULL;
         return err;
     }
     err = esp_lcd_panel_mirror(s_panel, false, true);
@@ -236,6 +279,8 @@ static esp_err_t init_display(void)
         s_panel_io = NULL;
         spi_bus_free(MICHI_LCD_HOST);
         s_spi_bus_inited = false;
+        vSemaphoreDelete(s_trans_done_sem);
+        s_trans_done_sem = NULL;
         return err;
     }
     err = esp_lcd_panel_disp_on_off(s_panel, true);
@@ -247,6 +292,8 @@ static esp_err_t init_display(void)
         s_panel_io = NULL;
         spi_bus_free(MICHI_LCD_HOST);
         s_spi_bus_inited = false;
+        vSemaphoreDelete(s_trans_done_sem);
+        s_trans_done_sem = NULL;
         return err;
     }
     return ESP_OK;
@@ -332,6 +379,10 @@ esp_err_t michi_board_shutdown(void)
         }
         s_panel_io = NULL;
     }
+    if (s_trans_done_sem != NULL) {
+        vSemaphoreDelete(s_trans_done_sem);
+        s_trans_done_sem = NULL;
+    }
     if (s_spi_bus_inited) {
         spi_bus_free(MICHI_LCD_HOST);
         s_spi_bus_inited = false;
@@ -405,12 +456,29 @@ michi_board_selftest_t michi_board_self_test(void)
  * MICHI_LCD_BAND). esp_lcd_panel_draw_bitmap() sets the panel window
  * (CASET/RASET) internally before streaming pixels - x_end/y_end are
  * exclusive in the ST7789 driver, so the full 240-column band is
- * covered. */
+ * covered.
+ * Synchronously waits on s_trans_done_sem for DMA completion before returning,
+ * ensuring s_fb is not reused or cleared while the SPI DMA engine is reading it. */
 static esp_err_t flush_band(uint16_t y_origin)
 {
     const michi_board_info_t *bi = &s_board_info;
-    return esp_lcd_panel_draw_bitmap(s_panel, 0, y_origin, bi->display_width,
-                                     y_origin + MICHI_LCD_BAND, s_fb);
+    if (s_trans_done_sem != NULL) {
+        /* Drain any stale completion before issuing transaction */
+        xSemaphoreTake(s_trans_done_sem, 0);
+    }
+    esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, 0, y_origin, bi->display_width,
+                                             y_origin + MICHI_LCD_BAND, s_fb);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (s_trans_done_sem != NULL) {
+        /* Synchronously wait for DMA transfer completion so s_fb is not modified in-flight */
+        if (xSemaphoreTake(s_trans_done_sem, pdMS_TO_TICKS(500)) != pdTRUE) {
+            ESP_LOGE(TAG, "display: DMA transfer timeout waiting for band y=%u", (unsigned)y_origin);
+            return ESP_ERR_TIMEOUT;
+        }
+    }
+    return ESP_OK;
 }
 
 static void boot_screen_row(const michi_board_info_t *bi, uint16_t y_origin, int y,

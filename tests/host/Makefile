@@ -67,7 +67,7 @@ TESTS := test_semver test_pairing_validators test_michi_identity \
          test_michi_pairing test_michi_session test_rtp_guard test_rtp_clock \
          test_michi_button test_michi_button_debounce test_michi_ui \
          test_spiffs_journal test_michi_jb test_michi_profile_logic test_michi_ota_logic \
-         test_michi_dac \
+         test_michi_dac test_michi_display_dma \
          $(if $(filter yes,$(HAS_CJSON)),test_json_helpers test_http_canonical test_michi_discovery test_michi_time test_capability_parity test_pairing_http test_session_http test_discovery_disc)
 
 .PHONY: all test clean
@@ -401,6 +401,14 @@ test_michi_dac: test_michi_dac.c $(DAC_SRC) $(SHIMS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(DAC_DIR)/include -I$(DAC_DIR) -o $@ \
 	    test_michi_dac.c $(DAC_SRC)
 
+BOARD_DIR = $(FIRMWARE)/michi_board
+BOARD_SRC = $(BOARD_DIR)/waveshare_s3_lcd2/board_waveshare_s3_lcd2.c \
+            shim/esp_lcd_shim.c shim/esp_system.c
+
+test_michi_display_dma: test_michi_display_dma.c $(BOARD_SRC) $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(BOARD_DIR)/include -I$(BOARD_DIR)/waveshare_s3_lcd2 -pthread -o $@ \
+	    test_michi_display_dma.c $(BOARD_SRC)
+
 clean:
 	rm -f test_semver test_pairing_validators test_json_helpers \
 	      test_http_canonical test_michi_identity test_michi_discovery \
@@ -408,4 +416,4 @@ clean:
 	      test_michi_session test_rtp_guard test_session_http \
 	      test_capability_parity test_discovery_disc test_michi_button \
 	      test_michi_button_debounce test_michi_ui render_ui_previews \
-	      test_michi_dac
+	      test_michi_dac test_michi_display_dma

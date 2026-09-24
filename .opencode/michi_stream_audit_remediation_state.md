@@ -20,7 +20,7 @@
 - [x] PHASE E: RTP clock wrap + reorder correctness
 - [x] PHASE F: OTA audio health + OTA/session exclusion
 - [x] PHASE G: esp_timer pairing/discovery non-blocking
-- [ ] PHASE H: display DMA buffer lifetime
+- [x] PHASE H: display DMA buffer lifetime (HARDWARE_DISPLAY_PASS: PENDING)
 - [ ] PHASE I: test-production unification (michi_jb, OTA, profile)
 - [ ] PHASE J: jitter/loss metric correctness
 - [ ] PHASE K: hardware docs consistency

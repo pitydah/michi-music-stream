@@ -90,12 +90,6 @@ static void IRAM_ATTR button_isr(void *arg)
     portEXIT_CRITICAL_ISR(&s_edge_mux);
 }
 
-static void take_edge_snapshot(michi_button_edge_t *out)
-{
-    portENTER_CRITICAL(&s_edge_mux);
-    *out = s_edge;
-    portEXIT_CRITICAL(&s_edge_mux);
-}
 
 /* Hard protection (inside the classifier, michi_button_gesture.c): while
  * the firmware is booting, self-testing or updating, NO button action
