@@ -44,32 +44,33 @@
 ## Diagrama
 
 ```
-┌──────────────┐  I2S    ┌──────────────┐   ┌──────────────┐
-│   ESP32-S3   │─MCLK───>│              │   │              │
-│              │─BCLK───>│   PCM5122    │──>│  NE5532      │──> RCA L
-│              │─LRC────>│  (DAC Hi-Fi) │   │  (buffer)    │
-│              │─DIN────>│              │   │              │──> RCA R
-└──────────────┘         └──────────────┘   └──────────────┘
+┌──────────────┐  3-wire I2S  ┌────────────────────────┐
+│   ESP32-S3   │─BCLK (3)────>│                        │
+│              │─LRCK (18)───>│        PCM5122         │──> RCA L (Single-ended)
+│              │─DIN (5)─────>│    (PLL from BCK,      │
+│              │              │  internal line driver) │──> RCA R (Single-ended)
+│              │─SDA (21)────>│                        │
+│              │─SCL (16)────>│                        │
+└──────────────┘  I2C (0x4C/4D)└────────────────────────┘
 ```
 
-## Pines I2S
+## Pines I2S (Kconfig Authoritative)
 
-| Señal | GPIO | PCM5122 pin |
-|-------|------|-------------|
-| MCLK | 9 | 12 (SCK) |
-| BCLK | 6 | 13 (BCK) |
-| LRC | 7 | 15 (LRCK) |
-| DIN | 8 | 14 (DATA) |
+| Señal | GPIO | PCM5122 pin | Nota |
+|-------|------|-------------|------|
+| MCLK | -1 | SCK (12) / GND | No requerido: PCM5122 PLL genera reloj interno desde BCK |
+| BCLK | 3 | 13 (BCK) | I2S bit clock (strapping pin ESP32-S3) |
+| LRCK | 18 | 15 (LRCK) | I2S left/right frame clock |
+| DIN | 5 | 14 (DIN) | I2S serial audio data |
 
-## I2C (PCM5122)
+## I2C Control Bus (PCM5122)
 
-| Señal | GPIO | Dirección |
-|-------|------|-----------|
-| SDA | 1 | `0x4D` |
-| SCL | 2 | — |
+| Señal | GPIO | Dirección I2C | Nota |
+|-------|------|---------------|------|
+| SDA | 21 | `0x4C` / `0x4D` | Bus 100 kHz (pull-ups externos 2.2-4.7 kΩ recomendados) |
+| SCL | 16 | — | Bus 100 kHz |
 
-## Alimentación
+## Salida de Audio y Alimentación
 
-USB-C 5 V / 1 A mínimo.
-Reguladores separados para sección digital y analógica.
-Star ground. Ferrita en fuente de alimentación.
+- **Topología de salida:** Single-ended estéreo centrada en masa (2.1 Vrms típica a 3.3 V AVDD). El PCM5122 integra buffers de línea internos con bomba de carga, eliminando condensadores de acoplo DC y op-amps intermedios (como el NE5532) para ruta analógica directa de bajo ruido.
+- **Alimentación:** USB-C 5 V / 1 A mínimo con filtrado por ferrita y reguladores LDO de ultra bajo ruido dedicados para riel analógico (AVDD 3.3 V) y digital (DVDD 3.3 V).
