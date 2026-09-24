@@ -37,8 +37,6 @@
 
 #include "dac_internal.h"
 
-#define MICHI_DAC_NVS_NAMESPACE "michi_dac"
-#define MICHI_DAC_NVS_KEY_PROFILE "dac_profile"
 #define MICHI_DAC_PROFILE_BUF_LEN 64 /* NVS string buffer, enough for any DAC profile */
 
 #define MICHI_DAC_I2C_PORT I2C_NUM_0
@@ -108,6 +106,36 @@ static esp_err_t load_profile_from_nvs(char *profile, size_t buf_len)
     return err;
 }
 
+esp_err_t michi_dac_get_nvs_profile(char *profile, size_t buf_len)
+{
+    if (profile == NULL || buf_len == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return load_profile_from_nvs(profile, buf_len);
+}
+
+esp_err_t michi_dac_set_nvs_profile(const char *profile)
+{
+    nvs_handle_t handle = 0;
+    esp_err_t err = nvs_open(MICHI_DAC_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (profile == NULL || profile[0] == '\0') {
+        err = nvs_erase_key(handle, MICHI_DAC_NVS_KEY_PROFILE);
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            err = ESP_OK;
+        }
+    } else {
+        err = nvs_set_str(handle, MICHI_DAC_NVS_KEY_PROFILE, profile);
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    return err;
+}
+
 /* I2C bus needed only when something may actually talk over it: a profile
  * binding an I2C DAC (self-detectable implies an I2C probe; PCM5102A is not
  * self-detectable and has no control bus), or autodetection candidates.
@@ -168,6 +196,12 @@ esp_err_t michi_dac_init(void)
     if (profile[0] != '\0') {
         ESP_LOGI(TAG, "NVS dac_profile=%s (force-bind source)", profile);
     }
+#ifdef CONFIG_MICHI_DAC_DEFAULT_PROFILE
+    if (profile[0] == '\0' && strlen(CONFIG_MICHI_DAC_DEFAULT_PROFILE) > 0) {
+        snprintf(profile, sizeof(profile), "%s", CONFIG_MICHI_DAC_DEFAULT_PROFILE);
+        ESP_LOGI(TAG, "default fallback dac_profile=%s (Kconfig)", profile);
+    }
+#endif
 
     if (i2c_bus_needed(profile)) {
         /* I2C master bus on Kconfig pins, 100 kHz by default. Internal

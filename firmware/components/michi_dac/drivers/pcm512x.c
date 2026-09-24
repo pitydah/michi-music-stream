@@ -622,7 +622,7 @@ static esp_err_t pcm512x_shutdown(const michi_dac_driver_t *drv, void *bus_ctx)
 }
 
 /* Caps template: silicon capabilities from the PCM5122 datasheet (SNR 112 dB,
- * up to 192 kHz/24-bit/2ch, differential outputs, PLL-based no-MCLK clocking).
+ * up to 192 kHz/24-bit/2ch, single-ended ground-centered outputs, PLL-based no-MCLK clocking).
  * tier/detected/initialized/board_verified are filled by the classifier based
  * on real evidence, never hardcoded here. */
 const michi_dac_caps_t g_michi_dac_pcm512x_caps = {
@@ -632,11 +632,11 @@ const michi_dac_caps_t g_michi_dac_pcm512x_caps = {
     .max_sample_rate = 192000, /* silicon limit ([D]); validated at 48 kHz in phase 2 */
     .max_bit_depth = 24,
     .channels = 2,
-    .snr_db = 112, /* [D] datasheet SNR, 2-VRMS differential */
+    .snr_db = 112, /* [D] datasheet SNR, 2.1-VRMS single-ended */
     .software_control = true,
     .hardware_volume = true,
     .hardware_mute = true,
-    .differential_output = true,
+    .differential_output = false,
     .headphone_output = false,
     .requires_mclk = false, /* PLL from BCK + autoset: no external MCLK needed */
     .tier = MICHI_PRODUCT_HIFI, /* classifier downgrades unless detected && initialized */

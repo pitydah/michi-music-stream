@@ -13,6 +13,7 @@
 #include "nvs_flash.h"
 
 #include "michi_button_gesture.h"
+#include "michi_dac.h"
 #include "michi_identity.h"
 #include "michi_pairing.h"
 
@@ -117,6 +118,12 @@ esp_err_t michi_button_factory_reset_run(void)
                  esp_err_to_name(err));
     }
 
+    /* Preserve hardware SKU identity (e.g. PCM5102A profile) across factory reset:
+     * Non-probeable DACs rely on NVS dac_profile binding. Preserve it so a factory
+     * reset returns the device to unprovisioned state without breaking audio output. */
+    char saved_dac[64] = {0};
+    bool had_dac = (michi_dac_get_nvs_profile(saved_dac, sizeof(saved_dac)) == ESP_OK && saved_dac[0] != '\0');
+
     err = nvs_flash_erase();
     if (err != ESP_OK) {
         /* Honest abort: without the full erase the reset did not achieve
@@ -126,6 +133,21 @@ esp_err_t michi_button_factory_reset_run(void)
         ESP_LOGE(TAG, "button: nvs_flash_erase failed: %s - factory reset "
                  "aborted", esp_err_to_name(err));
         return err;
+    }
+
+    if (had_dac) {
+        esp_err_t nvs_err = nvs_flash_init();
+        if (nvs_err == ESP_OK) {
+            esp_err_t set_err = michi_dac_set_nvs_profile(saved_dac);
+            if (set_err == ESP_OK) {
+                ESP_LOGI(TAG, "button: restored dac_profile=%s across factory reset", saved_dac);
+            } else {
+                ESP_LOGW(TAG, "button: failed to restore dac_profile: %s", esp_err_to_name(set_err));
+            }
+        } else {
+            ESP_LOGW(TAG, "button: nvs_flash_init failed during dac_profile restore: %s",
+                     esp_err_to_name(nvs_err));
+        }
     }
 
     /* Restart immediately, no log-flush delay: the factory-reset log is

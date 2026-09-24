@@ -123,6 +123,29 @@ esp_err_t michi_dac_shutdown(void);
  */
 void michi_dac_register_hw_id_source(michi_dac_hw_id_fn fn);
 
+#define MICHI_DAC_NVS_NAMESPACE   "michi_dac"
+#define MICHI_DAC_NVS_KEY_PROFILE "dac_profile"
+
+/**
+ * @brief Read the persistent DAC profile string from NVS (if set).
+ *
+ * @param[out] profile Buffer for the profile string.
+ * @param[in]  buf_len Size of buffer (at least 64 bytes).
+ * @return ESP_OK; ESP_ERR_NVS_NOT_FOUND when not set; error propagated on failure.
+ */
+esp_err_t michi_dac_get_nvs_profile(char *profile, size_t buf_len);
+
+/**
+ * @brief Write or erase the persistent DAC profile string in NVS.
+ *
+ * Used to provision or restore non-probeable DAC identities (e.g. PCM5102A)
+ * across factory resets.
+ *
+ * @param profile DAC profile ("pcm5102a", "pcm5122", etc.) or NULL/empty to erase.
+ * @return ESP_OK on success; NVS error on failure.
+ */
+esp_err_t michi_dac_set_nvs_profile(const char *profile);
+
 #ifdef __cplusplus
 }
 #endif

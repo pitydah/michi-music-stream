@@ -23,3 +23,8 @@ esp_err_t nvs_flash_erase(void)
     s_erase_count++;
     return ESP_OK;
 }
+
+esp_err_t nvs_flash_init(void)
+{
+    return ESP_OK;
+}

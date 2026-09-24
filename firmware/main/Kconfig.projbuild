@@ -87,6 +87,14 @@ menu "Michi Music Stream Hardware"
           y: mock probe succeeds and the mock DAC binds during autodetection.
           n: mock probe fails, simulating an absent DAC.
 
+    config MICHI_DAC_DEFAULT_PROFILE
+        string "Default fallback DAC profile if NVS is empty"
+        default ""
+        help
+          Fallback DAC profile ("pcm5102a", "pcm5122", etc.) to bind when
+          NVS has no profile and no self-detectable I2C DAC is found.
+          Enables factory-unprovisioned Standard units with PCM5102A to operate.
+
     config MICHI_LED_GPIO
         int "External LED (SK6812) data pin"
         default 4

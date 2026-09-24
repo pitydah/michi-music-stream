@@ -28,6 +28,7 @@
 #include "michi_session.h"
 #include "michi_state.h"
 #include "michi_version.h"
+#include "michi_volume.h"
 #include "michi_wifi.h"
 
 static const char *TAG = "michi_app";
@@ -345,6 +346,13 @@ void app_main(void)
             ESP_LOGW(TAG, "no DAC detected: I2S/DAC boot skipped "
                           "(profile stays diagnostic)");
         }
+    }
+
+    /* Volume subsystem (phase 11b): binds hardware DAC volume if present
+     * and sets default safe full-scale volume (or falls back to digital). */
+    err = michi_volume_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "michi_volume_init failed: %s", esp_err_to_name(err));
     }
 
     /* Session layer (phase 12): the single active session lifecycle

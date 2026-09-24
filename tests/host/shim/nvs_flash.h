@@ -18,6 +18,7 @@ void test_nvs_flash_erase_count_reset(void);
 /* --- fake nvs_flash API (used by the firmware sources under test) --- */
 
 esp_err_t nvs_flash_erase(void);
+esp_err_t nvs_flash_init(void);
 
 #ifdef __cplusplus
 }

@@ -23,6 +23,7 @@
 #include <string.h>
 
 #include "michi_button_gesture.h"
+#include "michi_dac.h"
 #include "michi_identity.h"
 #include "identity_storage.h"
 #include "michi_pairing_fake.h"
@@ -411,6 +412,25 @@ static void test_corrupt_identity_factory_reset(void)
           "well-formed seed persisted after recovery");
 }
 
+static void test_factory_reset_preserves_dac_profile(void)
+{
+    printf("button: factory reset preserves non-probeable dac profile (PCM5102A SKU)\n");
+
+    test_reset_all();
+    CHECK(michi_dac_set_nvs_profile("pcm5102a") == ESP_OK, "write dac profile before reset");
+
+    char profile_before[32] = {0};
+    CHECK(michi_dac_get_nvs_profile(profile_before, sizeof(profile_before)) == ESP_OK, "read dac profile before reset");
+    CHECK(strcmp(profile_before, "pcm5102a") == 0, "profile is pcm5102a");
+
+    CHECK(michi_button_factory_reset_run() == ESP_OK, "factory reset runs");
+    CHECK(test_nvs_flash_erase_count() == 1, "full NVS erase called once");
+
+    char profile_after[32] = {0};
+    CHECK(michi_dac_get_nvs_profile(profile_after, sizeof(profile_after)) == ESP_OK, "read dac profile after reset");
+    CHECK(strcmp(profile_after, "pcm5102a") == 0, "dac profile preserved across factory reset");
+}
+
 int main(void)
 {
     test_hold_threshold_exact();
@@ -422,6 +442,7 @@ int main(void)
     test_factory_reset_run_wiring();
     test_factory_reset_fresh_device();
     test_corrupt_identity_factory_reset();
+    test_factory_reset_preserves_dac_profile();
 
     if (failures == 0) {
         printf("button: ALL TESTS PASSED\n");

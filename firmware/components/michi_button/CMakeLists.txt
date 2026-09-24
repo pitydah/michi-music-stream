@@ -4,6 +4,6 @@ idf_component_register(
          "michi_button_gesture.c"
     INCLUDE_DIRS "include"
     REQUIRES driver esp_system esp_timer freertos michi_state nvs_flash
-             michi_pairing michi_identity
+             michi_pairing michi_identity michi_dac
     PRIV_REQUIRES michi_display
 )
