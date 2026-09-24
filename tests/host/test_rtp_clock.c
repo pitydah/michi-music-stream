@@ -93,6 +93,9 @@ static void test_wrap_48k_boundary(void)
     const uint32_t FIRST_AFTER_WRAP = 0u;
     const uint32_t FINAL_RAW = 99u;
 
+    michi_rtp_clock_feed(&c, 0x40000000u);
+    michi_rtp_clock_feed(&c, 0x80000000u);
+    michi_rtp_clock_feed(&c, 0xC0000000u);
     michi_rtp_clock_feed(&c, LAST_BEFORE_WRAP);
     michi_rtp_clock_feed(&c, FIRST_AFTER_WRAP);
     michi_rtp_clock_feed(&c, FINAL_RAW);
@@ -135,13 +138,50 @@ static void test_reorder_within_window(void)
     /* Out-of-order packet: 1500 < 2000, but (2000 - 1500) = 500 < 2^31.
      * Not a wrap: epoch must stay at 0. */
     michi_rtp_clock_feed(&c, 1500u);
-    CHECK((c.extended >> 32) == 0, "reorder: epoch unchanged");
+    CHECK((c.extended >> 32) == 0, "RTPCLK-03: reorder: epoch unchanged");
     CHECK((uint32_t)(c.extended & 0xFFFFFFFF) == 1500u,
-          "reorder: low word updated to 1500");
+          "RTPCLK-03: reorder: low word updated to 1500");
+    CHECK(c.highest_extended == 2000u, "RTPCLK-03: highest_extended retained at 2000");
 
     /* Continuing forward after reorder. */
     michi_rtp_clock_feed(&c, 2480u);
     CHECK(c.extended == 2480u, "after reorder: forward advance works");
+    CHECK(c.highest_extended == 2480u, "highest_extended advances to 2480");
+}
+
+static void test_reorder_across_wrap(void)
+{
+    printf("rtp_clock: RTPCLK-04 & RTPCLK-05: reorder across wrap boundary\n");
+    michi_rtp_clock_t c;
+    michi_rtp_clock_reset(&c);
+
+    /* 1. Seed near wrap boundary */
+    const uint32_t PRE_WRAP_TS1 = 0xFFFFFFF0u;
+    michi_rtp_clock_feed(&c, PRE_WRAP_TS1);
+    CHECK(c.extended == PRE_WRAP_TS1, "seeded pre-wrap");
+
+    /* 2. Packet crosses wrap boundary into next epoch */
+    const uint32_t POST_WRAP_TS2 = 0x00000010u;
+    michi_rtp_clock_feed(&c, POST_WRAP_TS2);
+    CHECK(c.extended == 0x100000010ULL, "RTPCLK-02: epoch incremented upon wrap");
+    CHECK(c.highest_extended == 0x100000010ULL, "highest_extended is at epoch 1");
+
+    /* 3. RTPCLK-04: Late out-of-order packet arrives from PREVIOUS epoch (pre-wrap).
+     * TS is 0xFFFFFFF8 (between TS1 and TS2, 24 samples behind POST_WRAP_TS2).
+     * Must resolve to epoch 0 (0x00000000FFFFFFF8ULL), NOT epoch 1 or 2! */
+    const uint32_t LATE_TS = 0xFFFFFFF8u;
+    uint64_t ext = michi_rtp_clock_feed(&c, LATE_TS);
+    CHECK(ext == (uint64_t)LATE_TS, "RTPCLK-04: late packet from prior epoch mapped to epoch 0");
+    CHECK(c.extended == (uint64_t)LATE_TS, "extended updated to late packet ts in epoch 0");
+    CHECK(c.highest_extended == 0x100000010ULL, "RTPCLK-04: highest_extended NOT corrupted by late packet");
+
+    /* 4. RTPCLK-05: Subsequent in-order packet arrives in epoch 1.
+     * TS is 0x00000020u. Must advance smoothly from highest_extended without double-wrap! */
+    const uint32_t NEXT_TS = 0x00000020u;
+    ext = michi_rtp_clock_feed(&c, NEXT_TS);
+    CHECK(ext == 0x100000020ULL, "RTPCLK-05: subsequent in-order packet advances smoothly in epoch 1");
+    CHECK(c.extended == 0x100000020ULL, "extended updated to 0x100000020");
+    CHECK(c.highest_extended == 0x100000020ULL, "highest_extended advances to 0x100000020");
 }
 
 static void test_jitter_no_wrap_corruption(void)
@@ -209,6 +249,7 @@ int main(void)
     test_wrap_48k_boundary();
     test_reset_and_reseed();
     test_reorder_within_window();
+    test_reorder_across_wrap();
     test_jitter_no_wrap_corruption();
 
     if (failures == 0) {
