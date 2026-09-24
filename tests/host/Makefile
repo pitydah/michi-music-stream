@@ -18,6 +18,7 @@ CPPFLAGS = -Ishim \
            -I../../firmware/components/michi_pairing \
            -I../../firmware/components/michi_pairing/include \
            -I../../firmware/components/michi_identity/include \
+           -I../../firmware/components/michi_discovery/include \
            -I../../firmware/components/michi_http/include \
            -I../../firmware/components/michi_session/include \
            -I../../firmware/components/michi_audio \
@@ -30,6 +31,8 @@ CPPFLAGS = -Ishim \
            -I../../firmware/components/michi_dac/include
 
 FIRMWARE = ../../firmware/components
+
+export PKG_CONFIG_PATH := $(HOME)/.local/cjson/lib/pkgconfig:$(PKG_CONFIG_PATH)
 
 HAS_CJSON := $(shell pkg-config --exists libcjson && echo yes || echo no)
 CJSON_CFLAGS := $(shell pkg-config --cflags libcjson 2>/dev/null)
@@ -62,7 +65,7 @@ IDENTITY_INC = -I$(IDENTITY_DIR)/include -I$(IDENTITY_DIR)/monocypher \
 TESTS := test_semver test_pairing_validators test_michi_identity \
          test_michi_pairing test_michi_session test_rtp_guard test_rtp_clock \
          test_michi_button test_michi_button_debounce test_michi_ui \
-         test_spiffs_journal test_michi_jb \
+         test_spiffs_journal test_michi_jb test_michi_profile_logic test_michi_ota_logic \
          $(if $(filter yes,$(HAS_CJSON)),test_json_helpers test_http_canonical test_michi_discovery test_michi_time test_capability_parity test_pairing_http test_session_http test_discovery_disc)
 
 .PHONY: all test clean
@@ -71,7 +74,7 @@ all: $(TESTS)
 
 test: all
 	@set -e; \
-	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard test_rtp_clock test_michi_button test_michi_button_debounce test_michi_ui test_spiffs_journal test_michi_jb; do ./$$t; done; \
+	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard test_rtp_clock test_michi_button test_michi_button_debounce test_michi_ui test_spiffs_journal test_michi_jb test_michi_profile_logic test_michi_ota_logic; do ./$$t; done; \
 	if [ "$(HAS_CJSON)" = "yes" ]; then \
 	    ./test_json_helpers; \
 	    ./test_http_canonical; \
@@ -276,6 +279,18 @@ test_spiffs_journal: test_spiffs_journal.c
 test_michi_jb: test_michi_jb.c $(FIRMWARE)/michi_audio/michi_jb.h
 	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -D_DEFAULT_SOURCE \
 	    -I$(FIRMWARE)/michi_audio -o $@ test_michi_jb.c
+
+# michi_profile_logic: tier + audio_available decision functions (P0-08, PR M).
+# Pure-C extraction from michi_product_profile.c; no firmware deps.
+test_michi_profile_logic: test_michi_profile_logic.c
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -D_DEFAULT_SOURCE \
+	    -o $@ test_michi_profile_logic.c
+
+# michi_ota_logic: OTA state machine and gate checks (P0-08, PR M).
+test_michi_ota_logic: test_michi_ota_logic.c $(FIRMWARE)/michi_ota/semver.c \
+                      $(FIRMWARE)/michi_ota/semver.h
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -D_DEFAULT_SOURCE \
+	    -I$(FIRMWARE)/michi_ota -o $@ test_michi_ota_logic.c $(FIRMWARE)/michi_ota/semver.c
 
 # Session HTTP body gates: the SAME json_helpers.c + validators.c the
 # firmware builds (cJSON-gated like the other HTTP tests).

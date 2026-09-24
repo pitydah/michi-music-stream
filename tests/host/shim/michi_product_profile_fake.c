@@ -14,6 +14,7 @@ static void profile_defaults(void)
     snprintf(s_profile.product_name, sizeof(s_profile.product_name),
              "%s", "Michi Test");
     s_profile.tier = MICHI_PRODUCT_STANDARD;
+    s_profile.audio_available = true;
     s_profile.validated_sample_rate = 48000;
     s_profile.validated_bit_depth = 16;
 }

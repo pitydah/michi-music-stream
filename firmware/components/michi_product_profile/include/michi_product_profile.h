@@ -109,15 +109,20 @@ typedef struct {
     bool ota;         /*!< 501 NOT_IMPLEMENTED (service lands in phase 13) */
 } michi_product_capabilities_t;
 
-/**
- * @brief Get the canonical capability flags (single source of truth).
- *
- * Pure C, no ESP-IDF runtime dependency: the firmware components and the
- * host-side tests compile the SAME source (capabilities.c).
- *
- * @return Pointer to the immutable canonical table; never NULL.
- */
 const michi_product_capabilities_t *michi_product_profile_capabilities(void);
+
+/**
+ * @brief Get truthful capabilities for a specific profile snapshot.
+ *
+ * Signal Truth (KILLCRITIC P0): if p->audio_available is false (e.g.
+ * DIAGNOSTIC tier or no DAC initialized), session, heartbeat, and volume
+ * are reported as false. No receiver may announce session/volume capabilities
+ * when the audio pipeline is absent or unable to run.
+ *
+ * @param p Product profile snapshot (or NULL for nominal defaults).
+ * @return Truthful capabilities struct by value.
+ */
+michi_product_capabilities_t michi_product_profile_capabilities_for(const michi_product_profile_t *p);
 
 /**
  * @brief Build the profile once and cache it (refresh(); the consolidated

@@ -9,6 +9,8 @@
  */
 
 #include "michi_http.h"
+#include "michi_discovery.h"
+#include "michi_identity.h"
 
 #include "cJSON.h"
 
@@ -92,15 +94,14 @@ static bool add_number_array(cJSON *obj, const char *key,
     return true;
 }
 
-/* The canonical receiver v1-lite info profile (section 2.1). The
- * identity group (server_id, identity_scheme, michi_id, public_key) is
- * NOT emitted: it requires the persistent Ed25519 identity, which lands
- * with michi_identity (MS-04) and is wired into this endpoint by the
- * package that follows it - the profile here is everything this stage
- * can announce truthfully. service is derived from the runtime tier
- * (section 2.1: only michi-stream-standard or michi-stream-hifi); a
- * degraded (DIAGNOSTIC) unit announces the standard service. */
-esp_err_t build_info_json(cJSON *root, const michi_product_profile_t *p)
+/* The canonical receiver v1-lite info profile (section 2.1).
+ * Emits the complete contract surface required by server-info.schema.json:
+ * service, name, version, api_version, roles, auth, features, server_id,
+ * identity_scheme, michi_id, public_key, audio. */
+esp_err_t build_info_json_with_identity(cJSON *root, const michi_product_profile_t *p,
+                                        const char *server_id,
+                                        const char *michi_id,
+                                        const char *public_key)
 {
     if (root == NULL || p == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -128,25 +129,39 @@ esp_err_t build_info_json(cJSON *root, const michi_product_profile_t *p)
         return ESP_ERR_NO_MEM;
     }
 
-    /* Feature flags: read from the single canonical source
-     * (michi_product_profile_capabilities) - no capability literal is
-     * duplicated here. /server/info carries the full 6-flag surface:
-     * session/heartbeat/volume true (MS-07/MS-08, positive tests),
-     * now_playing and ota false (their handlers still answer 501
-     * NOT_IMPLEMENTED), diagnostics true. */
-    const michi_product_capabilities_t *caps =
-        michi_product_profile_capabilities();
+    /* Feature flags: read from michi_product_profile_capabilities_for(p)
+     * (Signal Truth: session/heartbeat/volume false when audio_available is false). */
+    const michi_product_capabilities_t caps =
+        michi_product_profile_capabilities_for(p);
     cJSON *feat = cJSON_AddObjectToObject(root, "features");
     if (feat == NULL ||
-        cJSON_AddBoolToObject(feat, "session", caps->session) == NULL ||
-        cJSON_AddBoolToObject(feat, "heartbeat", caps->heartbeat) == NULL ||
-        cJSON_AddBoolToObject(feat, "volume", caps->volume) == NULL ||
-        cJSON_AddBoolToObject(feat, "now_playing", caps->now_playing) ==
-            NULL ||
-        cJSON_AddBoolToObject(feat, "diagnostics", caps->diagnostics) ==
-            NULL ||
-        cJSON_AddBoolToObject(feat, "ota", caps->ota) == NULL) {
+        cJSON_AddBoolToObject(feat, "session", caps.session) == NULL ||
+        cJSON_AddBoolToObject(feat, "heartbeat", caps.heartbeat) == NULL ||
+        cJSON_AddBoolToObject(feat, "volume", caps.volume) == NULL ||
+        cJSON_AddBoolToObject(feat, "now_playing", caps.now_playing) == NULL ||
+        cJSON_AddBoolToObject(feat, "diagnostics", caps.diagnostics) == NULL ||
+        cJSON_AddBoolToObject(feat, "ota", caps.ota) == NULL) {
         return ESP_ERR_NO_MEM;
+    }
+
+    /* Identity group: mandatory for michi-stream-* per server-info.schema.json */
+    if (server_id != NULL && server_id[0] != '\0') {
+        if (cJSON_AddStringToObject(root, "server_id", server_id) == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    if (cJSON_AddStringToObject(root, "identity_scheme", MICHI_IDENTITY_SCHEME) == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    if (michi_id != NULL && michi_id[0] != '\0') {
+        if (cJSON_AddStringToObject(root, "michi_id", michi_id) == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    if (public_key != NULL && public_key[0] != '\0') {
+        if (cJSON_AddStringToObject(root, "public_key", public_key) == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
     }
 
     /* Reproducible audio: the certified baseline is the SAME for
@@ -170,4 +185,29 @@ esp_err_t build_info_json(cJSON *root, const michi_product_profile_t *p)
     }
 
     return ESP_OK;
+}
+
+esp_err_t build_info_json(cJSON *root, const michi_product_profile_t *p)
+{
+    char server_id[MICHI_DISCOVERY_UUID_LEN] = {0};
+    char michi_id[MICHI_IDENTITY_MICHI_ID_LEN] = {0};
+    uint8_t pk_raw[MICHI_IDENTITY_KEY_BYTES];
+    char pk_b64[MICHI_IDENTITY_PUBLIC_KEY_B64_LEN] = {0};
+
+    const char *s_id = NULL;
+    const char *m_id = NULL;
+    const char *pk = NULL;
+
+    if (michi_discovery_get_server_id(server_id, sizeof(server_id)) == ESP_OK) {
+        s_id = server_id;
+    }
+    if (michi_identity_michi_id(michi_id, sizeof(michi_id)) == ESP_OK) {
+        m_id = michi_id;
+    }
+    if (michi_identity_public_key(pk_raw) == ESP_OK &&
+        michi_identity_base64url_encode(pk_raw, sizeof(pk_raw), pk_b64, sizeof(pk_b64)) == ESP_OK) {
+        pk = pk_b64;
+    }
+
+    return build_info_json_with_identity(root, p, s_id, m_id, pk);
 }

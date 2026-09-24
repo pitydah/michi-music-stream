@@ -138,12 +138,12 @@ static void announce_now_locked(void)
                               : "michi-stream-standard";
 
     /* Capability flags from the single canonical source
-     * (michi_product_profile_capabilities): session/heartbeat/volume
-     * are implemented (MS-07/MS-08) and advertised true. The announce
+     * (michi_product_profile_capabilities_for): session/heartbeat/volume
+     * are advertised true only when audio is available. The announce
      * carries ONLY this canonical group - the extended flags
      * (now_playing/diagnostics/ota) belong to /server/info. */
-    const michi_product_capabilities_t *caps =
-        michi_product_profile_capabilities();
+    const michi_product_capabilities_t caps =
+        michi_product_profile_capabilities_for(p);
     const michi_discovery_announce_t announce = {
         .device_id = s_server_id,
         .name = p->product_name,
@@ -151,9 +151,9 @@ static void announce_now_locked(void)
         .api_version = MICHI_DISCOVERY_API_VERSION,
         .host = s_ip,
         .port = MICHI_DISCOVERY_HTTP_PORT,
-        .feature_session = caps->session,
-        .feature_heartbeat = caps->heartbeat,
-        .feature_volume = caps->volume,
+        .feature_session = caps.session,
+        .feature_heartbeat = caps.heartbeat,
+        .feature_volume = caps.volume,
         .michi_id = michi_id,
         .public_key = pk_b64,
         /* P0-02: the synchronized wall clock (michi_time) - gated

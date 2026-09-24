@@ -18,6 +18,42 @@
 
 #include "cJSON.h"
 #include "michi_http.h"
+#include "michi_discovery.h"
+#include "michi_identity.h"
+
+static const char *const TEST_STUB_SERVER_ID = "550e8400-e29b-41d4-a716-446655440000";
+static const char *const TEST_STUB_MICHI_ID = "f2UwxQaeA6vA8LO7Cr1nGRr5MStned_Gbmc_ua48qUc";
+static const char *const TEST_STUB_PUBKEY_B64 = "RpHnJr9oP1DXBkPuIMuk0hJ2hAJ5SiWO2hAQVCMGREE";
+
+esp_err_t michi_discovery_get_server_id(char *out, size_t out_len)
+{
+    if (out == NULL || out_len < 37) return ESP_ERR_INVALID_SIZE;
+    snprintf(out, out_len, "%s", TEST_STUB_SERVER_ID);
+    return ESP_OK;
+}
+
+esp_err_t michi_identity_michi_id(char *out, size_t out_len)
+{
+    if (out == NULL || out_len < 44) return ESP_ERR_INVALID_SIZE;
+    snprintf(out, out_len, "%s", TEST_STUB_MICHI_ID);
+    return ESP_OK;
+}
+
+esp_err_t michi_identity_public_key(uint8_t out[32])
+{
+    if (out == NULL) return ESP_ERR_INVALID_ARG;
+    memset(out, 0x42, 32);
+    return ESP_OK;
+}
+
+esp_err_t michi_identity_base64url_encode(const uint8_t *in, size_t in_len,
+                                          char *out, size_t out_len)
+{
+    (void)in; (void)in_len;
+    if (out == NULL || out_len < 44) return ESP_ERR_INVALID_SIZE;
+    snprintf(out, out_len, "%s", TEST_STUB_PUBKEY_B64);
+    return ESP_OK;
+}
 
 static int failures = 0;
 
@@ -130,6 +166,7 @@ static void fill_profile(michi_product_profile_t *p, michi_product_tier_t tier,
 {
     memset(p, 0, sizeof(*p));
     p->tier = tier;
+    p->audio_available = (tier == MICHI_PRODUCT_HIFI || tier == MICHI_PRODUCT_STANDARD);
     snprintf(p->product_name, sizeof(p->product_name), "%s", name);
     snprintf(p->firmware_version, sizeof(p->firmware_version), "%s", version);
 }
@@ -144,9 +181,30 @@ static void test_info_profile_standard(void)
     esp_err_t err = build_info_json(root, &p);
     CHECK(err == ESP_OK, "build_info_json succeeds");
 
-    /* Exact top-level key set: the identity group is NOT emitted yet
-     * (MS-04), so exactly 8 keys. */
-    CHECK(cJSON_GetArraySize(root) == 8, "exactly 8 top-level keys");
+    /* Exact top-level key set per server-info.schema.json: 12 keys
+     * (service, name, version, api_version, roles, auth, features,
+     * server_id, identity_scheme, michi_id, public_key, audio). */
+    CHECK(cJSON_GetArraySize(root) == 12, "exactly 12 top-level keys");
+
+    const cJSON *server_id = cJSON_GetObjectItem(root, "server_id");
+    CHECK(server_id != NULL && cJSON_IsString(server_id) &&
+          strcmp(server_id->valuestring, TEST_STUB_SERVER_ID) == 0,
+          "server_id emitted correctly");
+
+    const cJSON *scheme = cJSON_GetObjectItem(root, "identity_scheme");
+    CHECK(scheme != NULL && cJSON_IsString(scheme) &&
+          strcmp(scheme->valuestring, "ed25519-blake3-v1") == 0,
+          "identity_scheme is ed25519-blake3-v1");
+
+    const cJSON *michi_id = cJSON_GetObjectItem(root, "michi_id");
+    CHECK(michi_id != NULL && cJSON_IsString(michi_id) &&
+          strcmp(michi_id->valuestring, TEST_STUB_MICHI_ID) == 0,
+          "michi_id emitted correctly");
+
+    const cJSON *pk = cJSON_GetObjectItem(root, "public_key");
+    CHECK(pk != NULL && cJSON_IsString(pk) &&
+          strcmp(pk->valuestring, TEST_STUB_PUBKEY_B64) == 0,
+          "public_key emitted correctly");
 
     const cJSON *service = cJSON_GetObjectItem(root, "service");
     CHECK(service != NULL && cJSON_IsString(service) &&
@@ -276,7 +334,7 @@ static void test_info_profile_hifi(void)
 
 static void test_info_profile_diagnostic_maps_standard(void)
 {
-    printf("info: diagnostic tier maps to standard\n");
+    printf("info: diagnostic tier maps to standard + truthful features\n");
     michi_product_profile_t p;
     fill_profile(&p, MICHI_PRODUCT_DIAGNOSTIC, "Michi Music Stream", "0.1.0");
     cJSON *root = cJSON_CreateObject();
@@ -286,6 +344,20 @@ static void test_info_profile_diagnostic_maps_standard(void)
     CHECK(service != NULL && strcmp(service->valuestring,
                                     "michi-stream-standard") == 0,
           "diagnostic service is michi-stream-standard");
+
+    /* Signal Truth (KILLCRITIC P0): in DIAGNOSTIC tier audio_available is false,
+     * so session, heartbeat and volume MUST be advertised as false. */
+    const cJSON *feat = cJSON_GetObjectItem(root, "features");
+    CHECK(feat != NULL, "features present");
+    CHECK(cJSON_IsFalse(cJSON_GetObjectItem(feat, "session")),
+          "diagnostic: features.session false");
+    CHECK(cJSON_IsFalse(cJSON_GetObjectItem(feat, "heartbeat")),
+          "diagnostic: features.heartbeat false");
+    CHECK(cJSON_IsFalse(cJSON_GetObjectItem(feat, "volume")),
+          "diagnostic: features.volume false");
+    CHECK(cJSON_IsTrue(cJSON_GetObjectItem(feat, "diagnostics")),
+          "diagnostic: features.diagnostics true");
+
     cJSON_Delete(root);
 }
 

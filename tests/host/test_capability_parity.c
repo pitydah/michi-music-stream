@@ -41,10 +41,18 @@ static bool json_feature(const cJSON *features, const char *key, bool *out)
     return true;
 }
 
+esp_err_t michi_discovery_get_server_id(char *out, size_t out_len)
+{
+    if (out == NULL || out_len < 37) return ESP_ERR_INVALID_SIZE;
+    snprintf(out, out_len, "%s", "550e8400-e29b-41d4-a716-446655440000");
+    return ESP_OK;
+}
+
 static void fill_profile(michi_product_profile_t *p)
 {
     memset(p, 0, sizeof(*p));
     p->tier = MICHI_PRODUCT_STANDARD;
+    p->audio_available = true;
     snprintf(p->product_name, sizeof(p->product_name), "%s",
              "Michi Music Stream");
     snprintf(p->firmware_version, sizeof(p->firmware_version), "%s", "0.3.0");

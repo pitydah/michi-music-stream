@@ -27,3 +27,7 @@ CONFIG_LWIP_SNTP=y
 # through log_vprintf 504B frames) overflows the IDF default 3584B main
 # task stack; 8192 leaves ample headroom.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# P0: RTP datagrams at 10 ms (1920B payload + headers ≈ 1960B) exceed standard
+# 1500B Wi-Fi MTU. IPv4 reassembly must be enabled in lwIP to reassemble fragments.
+CONFIG_LWIP_IP4_REASSEMBLY=y

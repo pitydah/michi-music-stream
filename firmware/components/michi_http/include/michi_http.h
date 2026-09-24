@@ -168,16 +168,10 @@ esp_err_t michi_http_build_error(cJSON **out_root, const char *code,
  * @brief Build the exact receiver v1-lite info profile into root
  *        (contract section 2.1).
  *
- * service is derived from the profile tier (michi-stream-standard or
- * michi-stream-hifi); name, version, api_version ("v1-lite"), roles
- * (["audio_receiver"]), auth (RECEIVER_BUTTON), the truthful feature
- * flags and the certified audio block follow. The feature flags are read
- * from michi_product_profile_capabilities() - the single canonical
- * source shared with the discovery announce (no duplicated literals).
- * The identity group
- * (server_id/identity_scheme/michi_id/public_key) is NOT emitted: it
- * requires the persistent Ed25519 identity (MS-04). Pure cJSON +
- * michi_product_profile_t: compiled and tested by the host-side tests.
+ * Emits the full contract surface required by server-info.schema.json:
+ * service, name, version, api_version ("v1-lite"), roles (["audio_receiver"]),
+ * auth (RECEIVER_BUTTON), truthful features, the identity group
+ * (server_id, identity_scheme, michi_id, public_key) and the certified audio block.
  *
  * @param root Target object (fresh, empty).
  * @param p    Current product profile snapshot.
@@ -185,6 +179,23 @@ esp_err_t michi_http_build_error(cJSON **out_root, const char *code,
  *         ESP_ERR_INVALID_ARG on NULL args.
  */
 esp_err_t build_info_json(cJSON *root, const michi_product_profile_t *p);
+
+/**
+ * @brief Build the receiver v1-lite info profile into root with explicitly
+ *        provided identity fields (host-testable without NVS/discovery state).
+ *
+ * @param root       Target object.
+ * @param p          Current product profile snapshot.
+ * @param server_id  Server UUID (or NULL if identity unavailable).
+ * @param michi_id   Base64url michi_id (or NULL if unavailable).
+ * @param public_key Base64url Ed25519 public key (or NULL if unavailable).
+ * @return ESP_OK; ESP_ERR_NO_MEM on allocation failure;
+ *         ESP_ERR_INVALID_ARG on NULL args.
+ */
+esp_err_t build_info_json_with_identity(cJSON *root, const michi_product_profile_t *p,
+                                        const char *server_id,
+                                        const char *michi_id,
+                                        const char *public_key);
 
 /**
  * @brief Send the single canonical error response.

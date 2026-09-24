@@ -36,3 +36,15 @@ const michi_product_capabilities_t *michi_product_profile_capabilities(void)
 {
     return &s_capabilities;
 }
+
+michi_product_capabilities_t michi_product_profile_capabilities_for(const michi_product_profile_t *p)
+{
+    michi_product_capabilities_t caps = s_capabilities;
+    if (p != NULL && !p->audio_available) {
+        /* Signal Truth: no session or volume can be accepted if audio pipeline is not available */
+        caps.session = false;
+        caps.heartbeat = false;
+        caps.volume = false;
+    }
+    return caps;
+}
