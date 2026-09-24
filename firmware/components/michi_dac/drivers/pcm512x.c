@@ -126,6 +126,7 @@ static pcm512x_ctx_t s_ctx;
 
 static esp_err_t pcm512x_set_page(void *bus_ctx, uint8_t page)
 {
+    (void)bus_ctx;
     if (s_ctx.page == page) {
         return ESP_OK;
     }
@@ -629,7 +630,7 @@ const michi_dac_caps_t g_michi_dac_pcm512x_caps = {
     .vendor = "TI",
     .model = "PCM5122",
     .board_profile = "pcm5122",
-    .max_sample_rate = 192000, /* silicon limit ([D]); validated at 48 kHz in phase 2 */
+    .max_sample_rate = 384000, /* silicon limit (TI PCM5122 datasheet); system-validated at 48 kHz */
     .max_bit_depth = 24,
     .channels = 2,
     .snr_db = 112, /* [D] datasheet SNR, 2.1-VRMS single-ended */

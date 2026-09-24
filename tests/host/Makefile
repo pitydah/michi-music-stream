@@ -66,6 +66,7 @@ TESTS := test_semver test_pairing_validators test_michi_identity \
          test_michi_pairing test_michi_session test_rtp_guard test_rtp_clock \
          test_michi_button test_michi_button_debounce test_michi_ui \
          test_spiffs_journal test_michi_jb test_michi_profile_logic test_michi_ota_logic \
+         test_michi_dac \
          $(if $(filter yes,$(HAS_CJSON)),test_json_helpers test_http_canonical test_michi_discovery test_michi_time test_capability_parity test_pairing_http test_session_http test_discovery_disc)
 
 .PHONY: all test clean
@@ -74,7 +75,7 @@ all: $(TESTS)
 
 test: all
 	@set -e; \
-	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard test_rtp_clock test_michi_button test_michi_button_debounce test_michi_ui test_spiffs_journal test_michi_jb test_michi_profile_logic test_michi_ota_logic; do ./$$t; done; \
+	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard test_rtp_clock test_michi_button test_michi_button_debounce test_michi_ui test_spiffs_journal test_michi_jb test_michi_profile_logic test_michi_ota_logic test_michi_dac; do ./$$t; done; \
 	if [ "$(HAS_CJSON)" = "yes" ]; then \
 	    ./test_json_helpers; \
 	    ./test_http_canonical; \
@@ -387,10 +388,21 @@ test_discovery_disc: $(DISC_SRC) \
 	    $(TIME_INC) $(IDENTITY_DEFS) $(CJSON_CFLAGS) -pthread -o $@ \
 	    $(DISC_SRC) $(IDENTITY_SRC) $(CJSON_LIBS)
 
+DAC_DIR = $(FIRMWARE)/michi_dac
+DAC_SRC = $(DAC_DIR)/dac_manager.c $(DAC_DIR)/dac_registry.c \
+          $(DAC_DIR)/dac_classifier.c $(DAC_DIR)/drivers/pcm5102a.c \
+          $(DAC_DIR)/drivers/pcm512x.c $(DAC_DIR)/drivers/mock_dac.c \
+          shim/nvs_fake.c shim/i2c_master_shim.c shim/esp_system.c
+
+test_michi_dac: test_michi_dac.c $(DAC_SRC) $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(DAC_DIR)/include -I$(DAC_DIR) -o $@ \
+	    test_michi_dac.c $(DAC_SRC)
+
 clean:
 	rm -f test_semver test_pairing_validators test_json_helpers \
 	      test_http_canonical test_michi_identity test_michi_discovery \
 	      test_michi_time test_michi_pairing test_pairing_http \
 	      test_michi_session test_rtp_guard test_session_http \
 	      test_capability_parity test_discovery_disc test_michi_button \
-	      test_michi_button_debounce test_michi_ui render_ui_previews
+	      test_michi_button_debounce test_michi_ui render_ui_previews \
+	      test_michi_dac

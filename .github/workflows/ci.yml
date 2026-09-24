@@ -107,7 +107,7 @@ jobs:
         # this -I list (or from IDF itself) still need --suppress=missingIncludeSystem.
         run: |
           cppcheck --enable=warning,performance,portability \
-            --suppress=missingIncludeSystem --error-exitcode=1 \
+            --suppress=missingIncludeSystem --suppress=normalCheckLevelMaxBranches --error-exitcode=1 \
             -i components/michi_identity/monocypher \
             -i components/michi_identity/blake3 \
             -I components \

@@ -2,6 +2,7 @@
 /* Shim for host-side tests: esp_log.h stand-in. Logs go to stderr.
  * TEST-ONLY: never compiled into firmware. */
 
+#include <inttypes.h>
 #include <stdio.h>
 
 #ifdef __cplusplus
