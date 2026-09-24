@@ -63,6 +63,7 @@
 
 #include "michi_audio.h"
 #include "michi_display.h"
+#include "michi_ota.h"
 #include "michi_session.h"
 #include "michi_state.h"
 #include "michi_volume.h"
@@ -558,13 +559,12 @@ esp_err_t michi_session_start(const michi_session_start_params_t *params,
     }
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
-    /* OTA gate (phase 13): while the FSM is UPDATING no new session may
-     * start. The HTTP layer answers 409 ota_in_progress BEFORE reaching
-     * this call; the gate here is defensive (a race between the busy
-     * check and the update teardown). */
-    if (michi_state_get() == MICHI_STATE_UPDATING) {
+    /* OTA gate (phase 13): while an OTA is busy or the FSM is UPDATING no new session
+     * may start. Checked directly at the subsystem level to prevent race conditions. */
+    if (michi_ota_busy() || michi_state_get() == MICHI_STATE_UPDATING) {
         xSemaphoreGive(s_mutex);
-        ESP_LOGW(TAG, "start: rejected state=UPDATING (ota in progress)");
+        ESP_LOGW(TAG, "start: rejected (ota in progress, busy=%d state=%d)",
+                 (int)michi_ota_busy(), (int)michi_state_get());
         return ESP_ERR_INVALID_STATE;
     }
     /* Lease reconciliation first (mirrors the simulator reference): an

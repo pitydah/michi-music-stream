@@ -146,6 +146,28 @@ esp_err_t michi_dac_get_nvs_profile(char *profile, size_t buf_len);
  */
 esp_err_t michi_dac_set_nvs_profile(const char *profile);
 
+typedef enum {
+    MICHI_DAC_PROFILE_SOURCE_NONE = 0,
+    MICHI_DAC_PROFILE_SOURCE_HW_ID,
+    MICHI_DAC_PROFILE_SOURCE_NVS,
+    MICHI_DAC_PROFILE_SOURCE_KCONFIG,
+    MICHI_DAC_PROFILE_SOURCE_AUTODETECT,
+} michi_dac_profile_source_t;
+
+/**
+ * @brief Authoritative single-source resolver for effective DAC profile.
+ *
+ * Enforces strict precedence:
+ * HW ID source > NVS override > Kconfig default > Autodetect.
+ *
+ * @param[out] out Buffer for the resolved profile string.
+ * @param[in]  out_len Size of buffer.
+ * @param[out] out_source Optional output for resolution source.
+ * @return ESP_OK on success; error code on NVS/HW-ID error.
+ */
+esp_err_t michi_dac_resolve_profile(char *out, size_t out_len,
+                                    michi_dac_profile_source_t *out_source);
+
 #ifdef __cplusplus
 }
 #endif

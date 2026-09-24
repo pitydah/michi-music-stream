@@ -43,6 +43,7 @@
 #include "michi_state.h"
 #include "michi_volume_fake.h"
 #include "michi_display_fake.h"
+#include "michi_ota_fake.h"
 
 static int failures = 0;
 
@@ -443,6 +444,12 @@ static void test_ota_gate_and_abort(void)
     CHECK(michi_session_start(&p, g_token, sizeof(g_token)) ==
               ESP_ERR_INVALID_STATE, "start rejected while UPDATING");
     test_state_set(MICHI_STATE_IDLE);
+
+    /* Subsystem check: rejected if michi_ota_busy() is true even while in IDLE */
+    michi_ota_fake_set_busy(true);
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) ==
+              ESP_ERR_INVALID_STATE, "start rejected while michi_ota_busy() == true");
+    michi_ota_fake_set_busy(false);
 
     CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
           "start ok");

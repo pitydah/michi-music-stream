@@ -15,6 +15,7 @@ CC      ?= cc
 CFLAGS  ?= -std=c11 -O2 -Wall -Wextra -Werror -D_DEFAULT_SOURCE
 CPPFLAGS = -Ishim \
            -I../../firmware/components/michi_ota \
+           -I../../firmware/components/michi_ota/include \
            -I../../firmware/components/michi_pairing \
            -I../../firmware/components/michi_pairing/include \
            -I../../firmware/components/michi_identity/include \
@@ -204,13 +205,14 @@ SESSION_DIR = $(FIRMWARE)/michi_session
 SESSION_SRC = $(SESSION_DIR)/michi_session.c shim/esp_timer.c \
               shim/michi_state.c shim/michi_audio_fake.c \
               shim/michi_volume_fake.c shim/michi_display_fake.c \
+              shim/michi_ota_fake.c \
               shim/freertos/task.c shim/freertos/queue.c
 SESSION_INC = -I$(SESSION_DIR)/include
 
 test_michi_session: test_michi_session.c $(SESSION_SRC) \
                     $(SESSION_DIR)/include/michi_session.h \
                     shim/michi_audio_fake.h shim/michi_volume_fake.h \
-                    shim/michi_display_fake.h $(SHIMS)
+                    shim/michi_display_fake.h shim/michi_ota_fake.h $(SHIMS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SESSION_INC) -pthread -o $@ \
 	    test_michi_session.c $(SESSION_SRC)
 

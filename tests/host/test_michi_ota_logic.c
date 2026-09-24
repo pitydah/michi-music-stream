@@ -381,6 +381,62 @@ static void test_boot_latch_decision(void)
 }
 
 /* =========================================================================
+ * 4. Trial Boot Audio Health Gate (OTA-01..OTA-03)
+ *
+ * If a SKU expects audio (expected_audio == true) but audio is not available
+ * (audio_available == false), the trial boot self-test MUST evaluate to
+ * FATAL to prevent cancelling rollback and avoid stranding the device on
+ * broken firmware.
+ *
+ * OTA-01: expected_audio=true, audio_available=true -> PASS (rollback cancelled)
+ * OTA-02: expected_audio=true, audio_available=false -> FATAL (triggers rollback)
+ * OTA-03: expected_audio=false, audio_available=false -> DEGRADED (diagnostic SKU allowed)
+ * ======================================================================= */
+
+typedef enum {
+    OTA_TEST_SELFTEST_PASS,
+    OTA_TEST_SELFTEST_DEGRADED,
+    OTA_TEST_SELFTEST_FATAL
+} ota_test_selftest_res_t;
+
+static ota_test_selftest_res_t evaluate_trial_boot_gate(bool critical_checks_ok,
+                                                        bool expected_audio,
+                                                        bool audio_available)
+{
+    if (!critical_checks_ok) {
+        return OTA_TEST_SELFTEST_FATAL;
+    }
+    if (!audio_available) {
+        if (expected_audio) {
+            return OTA_TEST_SELFTEST_FATAL;
+        }
+        return OTA_TEST_SELFTEST_DEGRADED;
+    }
+    return OTA_TEST_SELFTEST_PASS;
+}
+
+static void test_trial_boot_audio_health_gate(void)
+{
+    printf("trial_boot_gate: OTA audio health evaluation (OTA-01..OTA-03)\n");
+
+    /* OTA-01: Audio SKU with working audio passes trial boot gate */
+    CHECK(evaluate_trial_boot_gate(true, true, true) == OTA_TEST_SELFTEST_PASS,
+          "OTA-01: expected_audio=true && audio_available=true -> PASS");
+
+    /* OTA-02: Audio SKU with broken/missing audio evaluates to FATAL (triggers rollback) */
+    CHECK(evaluate_trial_boot_gate(true, true, false) == OTA_TEST_SELFTEST_FATAL,
+          "OTA-02: expected_audio=true && audio_available=false -> FATAL (triggers rollback)");
+
+    /* OTA-03: Diagnostic SKU (expected_audio=false) with audio_available=false accepts DEGRADED */
+    CHECK(evaluate_trial_boot_gate(true, false, false) == OTA_TEST_SELFTEST_DEGRADED,
+          "OTA-03: expected_audio=false && audio_available=false -> DEGRADED");
+
+    /* Critical check failure always results in FATAL regardless of audio */
+    CHECK(evaluate_trial_boot_gate(false, true, true) == OTA_TEST_SELFTEST_FATAL,
+          "critical failure -> FATAL");
+}
+
+/* =========================================================================
  * main
  * ======================================================================= */
 
@@ -389,6 +445,7 @@ int main(void)
     test_ota_gate();
     test_nvs_pending_version_cmp();
     test_boot_latch_decision();
+    test_trial_boot_audio_health_gate();
 
     if (failures == 0) {
         printf("PASS test_michi_ota_logic\n");

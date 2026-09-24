@@ -482,15 +482,28 @@ void app_main(void)
      *  2. Cryptographic identity is READY (michi_identity_get_state() == MICHI_IDENTITY_READY)
      *  3. HTTP server initialized (http_err == ESP_OK)
      *  4. State bus initialized and accepted boot events (state_ok && boot_events_ok)
-     * A DIAGNOSTIC profile (no DAC detected) is a legitimate hardware
-     * option and remains acceptable (MICHI_SELFTEST_DEGRADED).
-     * Any fatal failure in trial boot (PENDING_VERIFY) triggers an honest rollback restart. */
+     *  5. Audio availability: if SKU expects audio (configured profile), audio_available
+     *     MUST be true. If audio was expected and failed to initialize, trial boot evaluates
+     *     to FATAL, refusing rollback cancellation and triggering bootloader rollback.
+     *     A pure DIAGNOSTIC SKU (no DAC profile configured) remains acceptable (DEGRADED).
+     */
+    char dac_prof[64] = {0};
+    michi_dac_profile_source_t dac_src = MICHI_DAC_PROFILE_SOURCE_NONE;
+    (void)michi_dac_resolve_profile(dac_prof, sizeof(dac_prof), &dac_src);
+    const bool expected_audio = (dac_prof[0] != '\0');
+
     michi_selftest_result_t st_res;
     if (!st.overall || michi_identity_get_state() != MICHI_IDENTITY_READY ||
         http_err != ESP_OK || !state_ok || !boot_events_ok) {
         st_res = MICHI_SELFTEST_FATAL;
     } else if (!profile->audio_available) {
-        st_res = MICHI_SELFTEST_DEGRADED;
+        if (expected_audio) {
+            ESP_LOGE(TAG, "trial boot gate: audio expected (profile='%s', source=%d) but audio_available=false -> FATAL (triggers rollback)",
+                     dac_prof, (int)dac_src);
+            st_res = MICHI_SELFTEST_FATAL;
+        } else {
+            st_res = MICHI_SELFTEST_DEGRADED;
+        }
     } else {
         st_res = MICHI_SELFTEST_PASS;
     }

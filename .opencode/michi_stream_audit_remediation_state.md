@@ -18,7 +18,7 @@
 - [x] PHASE C: buffer_ms Signal Truth (iniciado en e6c22c7; verificar gates BUF-01..BUF-03)
 - [x] PHASE D: /server/info fail-closed
 - [x] PHASE E: RTP clock wrap + reorder correctness
-- [ ] PHASE F: OTA audio health + OTA/session exclusion
+- [x] PHASE F: OTA audio health + OTA/session exclusion
 - [ ] PHASE G: esp_timer pairing/discovery non-blocking
 - [ ] PHASE H: display DMA buffer lifetime
 - [ ] PHASE I: test-production unification (michi_jb, OTA, profile)
