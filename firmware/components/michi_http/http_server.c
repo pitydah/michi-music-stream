@@ -402,11 +402,17 @@ static esp_err_t info_get_handler(httpd_req_t *req)
     const michi_product_profile_t *p = michi_product_profile_get();
     cJSON *root = cJSON_CreateObject();
     if (root == NULL) {
-        return ESP_ERR_NO_MEM;
+        return michi_http_send_error(req, 500, "out of memory", NULL);
     }
     esp_err_t err = build_info_json(root, p);
     if (err == ESP_OK) {
         err = michi_http_send_json(req, 200, root);
+    } else {
+        cJSON_Delete(root);
+        if (err == ESP_ERR_INVALID_STATE) {
+            return michi_http_send_error(req, 500, "identity not initialized", NULL);
+        }
+        return michi_http_send_error(req, 500, "failed to build server info", NULL);
     }
     cJSON_Delete(root);
     return err;

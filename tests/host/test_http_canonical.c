@@ -367,6 +367,49 @@ static void test_info_profile_invalid_args(void)
     CHECK(build_info_json(NULL, NULL) != ESP_OK, "NULL args rejected");
 }
 
+static void test_info_fail_closed_missing_identity(void)
+{
+    printf("info: fail-closed missing identity (INFO-01..INFO-03)\n");
+    michi_product_profile_t p_std, p_hifi;
+    fill_profile(&p_std, MICHI_PRODUCT_STANDARD, "Michi Music Stream", "0.1.0");
+    fill_profile(&p_hifi, MICHI_PRODUCT_HIFI, "Michi Music Stream HiFi", "0.1.0");
+
+    cJSON *root = cJSON_CreateObject();
+    CHECK(root != NULL, "root created");
+
+    /* INFO-01: server_id missing/empty -> ESP_ERR_INVALID_STATE */
+    CHECK(build_info_json_with_identity(root, &p_std, NULL, TEST_STUB_MICHI_ID, TEST_STUB_PUBKEY_B64) == ESP_ERR_INVALID_STATE,
+          "INFO-01: NULL server_id returns ESP_ERR_INVALID_STATE (STANDARD)");
+    CHECK(build_info_json_with_identity(root, &p_std, "", TEST_STUB_MICHI_ID, TEST_STUB_PUBKEY_B64) == ESP_ERR_INVALID_STATE,
+          "INFO-01: empty server_id returns ESP_ERR_INVALID_STATE (STANDARD)");
+    CHECK(build_info_json_with_identity(root, &p_hifi, NULL, TEST_STUB_MICHI_ID, TEST_STUB_PUBKEY_B64) == ESP_ERR_INVALID_STATE,
+          "INFO-01: NULL server_id returns ESP_ERR_INVALID_STATE (HIFI)");
+    CHECK(build_info_json_with_identity(root, &p_hifi, "", TEST_STUB_MICHI_ID, TEST_STUB_PUBKEY_B64) == ESP_ERR_INVALID_STATE,
+          "INFO-01: empty server_id returns ESP_ERR_INVALID_STATE (HIFI)");
+
+    /* INFO-02: michi_id missing/empty -> ESP_ERR_INVALID_STATE */
+    CHECK(build_info_json_with_identity(root, &p_std, TEST_STUB_SERVER_ID, NULL, TEST_STUB_PUBKEY_B64) == ESP_ERR_INVALID_STATE,
+          "INFO-02: NULL michi_id returns ESP_ERR_INVALID_STATE (STANDARD)");
+    CHECK(build_info_json_with_identity(root, &p_std, TEST_STUB_SERVER_ID, "", TEST_STUB_PUBKEY_B64) == ESP_ERR_INVALID_STATE,
+          "INFO-02: empty michi_id returns ESP_ERR_INVALID_STATE (STANDARD)");
+    CHECK(build_info_json_with_identity(root, &p_hifi, TEST_STUB_SERVER_ID, NULL, TEST_STUB_PUBKEY_B64) == ESP_ERR_INVALID_STATE,
+          "INFO-02: NULL michi_id returns ESP_ERR_INVALID_STATE (HIFI)");
+    CHECK(build_info_json_with_identity(root, &p_hifi, TEST_STUB_SERVER_ID, "", TEST_STUB_PUBKEY_B64) == ESP_ERR_INVALID_STATE,
+          "INFO-02: empty michi_id returns ESP_ERR_INVALID_STATE (HIFI)");
+
+    /* INFO-03: public_key missing/empty -> ESP_ERR_INVALID_STATE */
+    CHECK(build_info_json_with_identity(root, &p_std, TEST_STUB_SERVER_ID, TEST_STUB_MICHI_ID, NULL) == ESP_ERR_INVALID_STATE,
+          "INFO-03: NULL public_key returns ESP_ERR_INVALID_STATE (STANDARD)");
+    CHECK(build_info_json_with_identity(root, &p_std, TEST_STUB_SERVER_ID, TEST_STUB_MICHI_ID, "") == ESP_ERR_INVALID_STATE,
+          "INFO-03: empty public_key returns ESP_ERR_INVALID_STATE (STANDARD)");
+    CHECK(build_info_json_with_identity(root, &p_hifi, TEST_STUB_SERVER_ID, TEST_STUB_MICHI_ID, NULL) == ESP_ERR_INVALID_STATE,
+          "INFO-03: NULL public_key returns ESP_ERR_INVALID_STATE (HIFI)");
+    CHECK(build_info_json_with_identity(root, &p_hifi, TEST_STUB_SERVER_ID, TEST_STUB_MICHI_ID, "") == ESP_ERR_INVALID_STATE,
+          "INFO-03: empty public_key returns ESP_ERR_INVALID_STATE (HIFI)");
+
+    cJSON_Delete(root);
+}
+
 /* Duplicate of request_id_generate to test formatting logic on host */
 #include "esp_random.h"
 #include <inttypes.h>
@@ -417,6 +460,7 @@ int main(void)
     test_info_profile_hifi();
     test_info_profile_diagnostic_maps_standard();
     test_info_profile_invalid_args();
+    test_info_fail_closed_missing_identity();
     test_uuid_format();
 
     if (failures != 0) {

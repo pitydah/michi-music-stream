@@ -19,6 +19,7 @@
 
 #include "michi_discovery.h"
 #include "michi_http.h"
+#include "michi_identity.h"
 #include "michi_product_profile.h"
 
 static int failures = 0;
@@ -116,6 +117,7 @@ static void test_announce_feature_group(void)
 static void test_runtime_parity(void)
 {
     printf("parity: announce and /server/info agree on the common subset\n");
+    michi_identity_init();
 
     /* /server/info: the REAL build_info_json; the capability flags are
      * NOT provided by the caller - they come from the getter. */

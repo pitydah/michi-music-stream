@@ -106,6 +106,13 @@ esp_err_t build_info_json_with_identity(cJSON *root, const michi_product_profile
     if (root == NULL || p == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (p->tier == MICHI_PRODUCT_STANDARD || p->tier == MICHI_PRODUCT_HIFI) {
+        if (server_id == NULL || server_id[0] == '\0' ||
+            michi_id == NULL || michi_id[0] == '\0' ||
+            public_key == NULL || public_key[0] == '\0') {
+            return ESP_ERR_INVALID_STATE;
+        }
+    }
     const char *service = (p->tier == MICHI_PRODUCT_HIFI)
                               ? "michi-stream-hifi"
                               : "michi-stream-standard";

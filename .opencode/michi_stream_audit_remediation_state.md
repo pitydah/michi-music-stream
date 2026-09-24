@@ -15,8 +15,8 @@
 ## Registro de Fases
 - [x] Pre-flight y Baseline completados
 - [x] PHASE B: DAC effective profile resolution (`michi_dac_default_profile`, NVS, compile-time SKU, single authoritative resolution)
-- [ ] PHASE C: buffer_ms Signal Truth (iniciado en e6c22c7; verificar gates BUF-01..BUF-03)
-- [ ] PHASE D: /server/info fail-closed
+- [x] PHASE C: buffer_ms Signal Truth (iniciado en e6c22c7; verificar gates BUF-01..BUF-03)
+- [x] PHASE D: /server/info fail-closed
 - [ ] PHASE E: RTP clock wrap + reorder correctness
 - [ ] PHASE F: OTA audio health + OTA/session exclusion
 - [ ] PHASE G: esp_timer pairing/discovery non-blocking
