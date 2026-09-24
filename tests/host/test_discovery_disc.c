@@ -316,6 +316,11 @@ static bool sent_at_least_one(void)
     return test_socket_sent_count() >= 1;
 }
 
+static bool sent_at_least_two(void)
+{
+    return test_socket_sent_count() >= 2;
+}
+
 static bool wait_for(bool (*cond)(void), int timeout_ms)
 {
     struct timespec ts;
@@ -640,7 +645,7 @@ static void disc10_fresh_nonce_accepted(void)
 
     /* One periodic tick (30 s +-3 s) -> a NEW announce, a NEW nonce. */
     test_esp_timer_advance(40000000);
-    DISC(10, test_socket_sent_count() >= 2,
+    DISC(10, wait_for(sent_at_least_two, 2000),
          "periodic tick emits the next announce");
     DISC(10, disc_fetch(&s_second), "second datagram parses");
     DISC(10, strcmp(s_second.nonce, s_first.nonce) != 0,
@@ -834,6 +839,77 @@ static void disc15_port_equals_real_http_port(void)
     teardown();
 }
 
+/* ── TIMER-02 & Discovery Decoupled Timer Tests ───────────── */
+
+static void test_timer_02_discovery_nonblocking(void)
+{
+    printf("TIMER-02: discovery timer callback performs no blocking work\n");
+    reset_all();
+    boot_time_and_discovery();
+    DISC(16, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+    DISC(16, michi_time_start() == ESP_OK, "time start succeeds");
+    test_esp_timer_set_time(1000000);
+    test_sntp_fire_sync(INJECTED_UNIX);
+    DISC(16, wait_for(sent_at_least_one, 2000), "initial announce emitted");
+
+    const int initial_count = test_socket_sent_count();
+
+    /* Measure callback execution time */
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+
+    /* Advancing timer by 40s fires announce_timer_cb */
+    test_esp_timer_advance(40000000ULL);
+
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    const long elapsed_us = (t1.tv_sec - t0.tv_sec) * 1000000L + (t1.tv_nsec - t0.tv_nsec) / 1000L;
+    DISC(16, elapsed_us < 5000, "TIMER-02: discovery timer callback returned immediately (< 5ms)");
+
+    /* Wait for discovery worker task to drain event and emit next announce */
+    DISC(16, wait_for(sent_at_least_two, 2000), "worker task processed queued announce tick");
+    DISC(16, test_socket_sent_count() > initial_count, "new announce emitted by worker task");
+
+    teardown();
+}
+
+static void test_discovery_timer_coalescing_and_queue_full(void)
+{
+    printf("discovery_timer: event coalescing and queue full safety\n");
+    reset_all();
+    boot_time_and_discovery();
+    DISC(17, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+    DISC(17, michi_time_start() == ESP_OK, "time start succeeds");
+    test_esp_timer_set_time(1000000);
+    test_sntp_fire_sync(INJECTED_UNIX);
+    DISC(17, wait_for(sent_at_least_one, 2000), "initial announce emitted");
+
+    /* Multiple rapid timer ticks past interval - queue coalesces / drops without blocking */
+    for (int i = 0; i < 20; i++) {
+        test_esp_timer_advance(40000000ULL);
+    }
+    DISC(17, wait_for(sent_at_least_two, 2000), "worker task processes coalesced events safely");
+
+    teardown();
+}
+
+static void test_discovery_shutdown_while_event_pending(void)
+{
+    printf("discovery_timer: shutdown while event pending in queue\n");
+    reset_all();
+    boot_time_and_discovery();
+    DISC(18, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+    DISC(18, michi_time_start() == ESP_OK, "time start succeeds");
+    test_esp_timer_set_time(1000000);
+    test_sntp_fire_sync(INJECTED_UNIX);
+
+    /* Advance timer to queue announce tick */
+    test_esp_timer_advance(40000000ULL);
+
+    /* Immediately shutdown before task completes */
+    DISC(18, michi_discovery_shutdown() == ESP_OK, "shutdown succeeds cleanly with pending event");
+    teardown();
+}
+
 /* ------------------------------------------------------------------ */
 
 int main(void)
@@ -853,9 +929,12 @@ int main(void)
     disc13_service_standard_correct();
     disc14_service_hifi_correct();
     disc15_port_equals_real_http_port();
+    test_timer_02_discovery_nonblocking();
+    test_discovery_timer_coalescing_and_queue_full();
+    test_discovery_shutdown_while_event_pending();
 
     if (failures == 0) {
-        printf("test_discovery_disc: all DISC-01..DISC-15 passed\n");
+        printf("test_discovery_disc: all DISC-01..DISC-15 + TIMER-02 passed\n");
         return 0;
     }
     printf("test_discovery_disc: %d check(s) FAILED\n", failures);

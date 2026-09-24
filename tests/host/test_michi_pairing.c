@@ -20,6 +20,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 #include "michi_pairing.h"
 #include "validators.h"
@@ -228,10 +230,13 @@ static void test_window_expiry(void)
       * closes the window with the FSM event. */
      test_esp_timer_advance((uint64_t)CONFIG_MICHI_PAIRING_WINDOW_SECONDS *
                             1000000ULL);
+     for (int i = 0; i < 100 && !test_state_saw_event(MICHI_EVENT_PAIRING_WINDOW_CLOSED); i++) {
+         usleep(1000);
+     }
      CHECK(!michi_pairing_is_window_open(), "window closed after expiry");
-    CHECK(test_state_saw_event(MICHI_EVENT_PAIRING_WINDOW_CLOSED),
-          "PAIRING_WINDOW_CLOSED posted on expiry");
-    CHECK(spy_clear_calls >= 1, "PIN display cleared on expiry");
+     CHECK(test_state_saw_event(MICHI_EVENT_PAIRING_WINDOW_CLOSED),
+           "PAIRING_WINDOW_CLOSED posted on expiry");
+     CHECK(spy_clear_calls >= 1, "PIN display cleared on expiry");
 
     /* The expired session is still answerable with status "expired". */
     char status[12];
@@ -1086,6 +1091,94 @@ static void test_sha256_known_answer(void)
     CHECK(memcmp(out, expect, sizeof(expect)) == 0, "sha256('abc') correct");
 }
 
+/* ── TIMER-01 & Decoupled esp_timer tests ──────────────────── */
+
+static void test_timer_01_pairing_nonblocking(void)
+{
+    printf("TIMER-01: pairing timer callback performs no blocking work\n");
+    pairing_test_reset(0xABCD0001);
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+    CHECK(michi_pairing_is_window_open(), "window active");
+
+    /* Record wall time before advance */
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+
+    /* Advancing timer triggers window_timer_cb directly in caller context */
+    test_esp_timer_advance((uint64_t)CONFIG_MICHI_PAIRING_WINDOW_SECONDS * 1000000ULL);
+
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    const long elapsed_us = (t1.tv_sec - t0.tv_sec) * 1000000L + (t1.tv_nsec - t0.tv_nsec) / 1000L;
+    /* Callback must return immediately (non-blocking xQueueSend, < 5 ms on host) */
+    CHECK(elapsed_us < 5000, "TIMER-01: timer callback returned immediately (< 5ms)");
+
+    /* Wait for pairing worker task to process the queued expiry */
+    for (int i = 0; i < 100 && !test_state_saw_event(MICHI_EVENT_PAIRING_WINDOW_CLOSED); i++) {
+        usleep(1000);
+    }
+    CHECK(!michi_pairing_is_window_open(), "window closed by worker task");
+    CHECK(test_state_saw_event(MICHI_EVENT_PAIRING_WINDOW_CLOSED),
+          "PAIRING_WINDOW_CLOSED posted by worker task");
+
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+}
+
+static void test_pairing_timer_generation_stale(void)
+{
+    printf("pairing_timer: stale generation event discarded\n");
+    pairing_test_reset(0xABCD0002);
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_open_window() == ESP_OK, "window 1 opens");
+
+    /* Advance time near expiration */
+    test_esp_timer_advance((uint64_t)(CONFIG_MICHI_PAIRING_WINDOW_SECONDS - 1) * 1000000ULL);
+
+    /* Re-open window before expiration -> advances generation and resets timer */
+    CHECK(michi_pairing_open_window() == ESP_OK, "window 2 opens (new generation)");
+    CHECK(michi_pairing_is_window_open(), "window 2 is active");
+
+    /* An advance that would have expired window 1 now does not close window 2 early */
+    test_esp_timer_advance(2000000ULL);
+    usleep(10000);
+    CHECK(michi_pairing_is_window_open(), "window 2 remains open (stale event discarded)");
+
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+}
+
+static void test_pairing_timer_coalescing_and_queue_full(void)
+{
+    printf("pairing_timer: event coalescing and queue full safety\n");
+    pairing_test_reset(0xABCD0003);
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+
+    /* Multiple rapid timer advances past expiry - queue coalesces / drops without blocking */
+    for (int i = 0; i < 20; i++) {
+        test_esp_timer_advance(10000000ULL);
+    }
+    for (int i = 0; i < 100 && !test_state_saw_event(MICHI_EVENT_PAIRING_WINDOW_CLOSED); i++) {
+        usleep(1000);
+    }
+    CHECK(!michi_pairing_is_window_open(), "window closed cleanly");
+
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+}
+
+static void test_pairing_shutdown_while_event_pending(void)
+{
+    printf("pairing_timer: shutdown while event pending in queue\n");
+    pairing_test_reset(0xABCD0004);
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+
+    /* Advance timer past expiry to queue event */
+    test_esp_timer_advance((uint64_t)CONFIG_MICHI_PAIRING_WINDOW_SECONDS * 1000000ULL);
+
+    /* Immediately shutdown before/during task processing */
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown while event pending does not crash or hang");
+}
+
 int main(void)
 {
     test_sha256_known_answer();
@@ -1105,6 +1198,10 @@ int main(void)
     test_p104_same_id_different_key_not_replaced();
     test_p104_nvs_write_failure();
     test_p104_registry_full();
+    test_timer_01_pairing_nonblocking();
+    test_pairing_timer_generation_stale();
+    test_pairing_timer_coalescing_and_queue_full();
+    test_pairing_shutdown_while_event_pending();
 
     if (failures == 0) {
         printf("test_michi_pairing: all tests passed\n");

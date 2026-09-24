@@ -41,7 +41,6 @@ BaseType_t xTaskCreate(TaskFunction_t fn, const char *name,
         free(t);
         return pdFALSE;
     }
-    pthread_detach(t->thread);
     *out = t;
     return pdPASS;
 }
@@ -49,9 +48,10 @@ BaseType_t xTaskCreate(TaskFunction_t fn, const char *name,
 void vTaskDelete(TaskHandle_t task)
 {
     if (task == NULL) {
-        /* Self-delete: the creator detached the thread; the handle
-         * struct is intentionally leaked (test-only). */
         pthread_exit(NULL);
+    } else {
+        michi_shim_task_t *t = (michi_shim_task_t *)task;
+        pthread_join(t->thread, NULL);
+        free(t);
     }
-    (void)task;
 }

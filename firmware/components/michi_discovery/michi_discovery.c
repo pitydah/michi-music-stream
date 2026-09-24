@@ -26,6 +26,8 @@
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
 
 #include "esp_err.h"
 #include "esp_log.h"
@@ -52,6 +54,17 @@
 /* IPv4 dotted-quad max ("255.255.255.255" + NUL). */
 #define MICHI_DISCOVERY_IP_MAX 16
 
+typedef enum {
+    DISCOVERY_MSG_ANNOUNCE_TICK = 1,
+    DISCOVERY_MSG_TIME_SYNC,
+    DISCOVERY_MSG_STOP,
+} discovery_msg_type_t;
+
+typedef struct {
+    discovery_msg_type_t type;
+    uint32_t generation;
+} discovery_msg_t;
+
 static bool s_initialized;
 static bool s_active;
 /* Clock gate (P0-02): the defer warning is logged ONCE per transition
@@ -65,6 +78,9 @@ static bool s_server_id_ok;
 static char s_server_id[MICHI_DISCOVERY_UUID_LEN];
 static esp_timer_handle_t s_announce_timer;
 static SemaphoreHandle_t s_announce_mutex;
+static QueueHandle_t s_discovery_queue;
+static TaskHandle_t s_discovery_task;
+static uint32_t s_discovery_generation;
 
 /* ------------------------------------------------------------------ */
 /* Internals (all called with the announce mutex held)                */
@@ -301,39 +317,62 @@ static void arm_announce_timer_locked(void)
 static void announce_timer_cb(void *arg)
 {
     (void)arg;
-    if (s_announce_mutex == NULL ||
-        !xSemaphoreTake(s_announce_mutex,
-                        pdMS_TO_TICKS(MICHI_DISCOVERY_LOCK_MS))) {
-        return; /* contended tick: skipped, never blocked */
+    if (s_discovery_queue == NULL) {
+        return;
     }
-    if (s_initialized && s_active) {
-        /* Self-healing: a GOT_IP that raced the profile build may have
-         * skipped the mDNS advertise - retry it on the periodic tick. */
-        advertise_mdns_locked();
-        announce_now_locked();
-        arm_announce_timer_locked();
-    }
-    xSemaphoreGive(s_announce_mutex);
+    const discovery_msg_t msg = {
+        .type = DISCOVERY_MSG_ANNOUNCE_TICK,
+        .generation = s_discovery_generation,
+    };
+    /* esp_timer callbacks run in the esp_timer service task context.
+     * Strictly non-blocking: no mutex acquisition, no delays, no mDNS
+     * operations, no network sendto. Returns immediately. If the queue
+     * is full, the event is dropped/coalesced without blocking. */
+    (void)xQueueSend(s_discovery_queue, &msg, 0);
 }
 
 /* P0-02: michi_time sync callback (runs in the michi_time sync task
  * context). A fresh wall clock resumes the announce IMMEDIATELY -
- * without waiting for the next 30 s tick. Bounded mutex wait like
- * every other entry point; ignored when discovery is off. */
+ * without waiting for the next 30 s tick. Non-blocking queue send;
+ * ignored when discovery is off. */
 static void on_time_sync_cb(void *ctx)
 {
     (void)ctx;
-    if (!s_initialized || s_announce_mutex == NULL) {
+    if (!s_initialized || s_discovery_queue == NULL) {
         return;
     }
-    if (!xSemaphoreTake(s_announce_mutex,
-                        pdMS_TO_TICKS(MICHI_DISCOVERY_LOCK_MS))) {
-        return; /* contended: the periodic tick covers it */
+    const discovery_msg_t msg = {
+        .type = DISCOVERY_MSG_TIME_SYNC,
+        .generation = s_discovery_generation,
+    };
+    (void)xQueueSend(s_discovery_queue, &msg, 0);
+}
+
+static void discovery_task_func(void *arg)
+{
+    (void)arg;
+    discovery_msg_t msg;
+    while (xQueueReceive(s_discovery_queue, &msg, portMAX_DELAY) == pdTRUE) {
+        if (msg.type == DISCOVERY_MSG_STOP) {
+            break;
+        }
+        if (s_announce_mutex == NULL ||
+            !xSemaphoreTake(s_announce_mutex,
+                            pdMS_TO_TICKS(MICHI_DISCOVERY_LOCK_MS))) {
+            continue;
+        }
+        if (s_initialized && s_active && msg.generation == s_discovery_generation) {
+            if (msg.type == DISCOVERY_MSG_ANNOUNCE_TICK) {
+                advertise_mdns_locked();
+                announce_now_locked();
+                arm_announce_timer_locked();
+            } else if (msg.type == DISCOVERY_MSG_TIME_SYNC) {
+                announce_now_locked();
+            }
+        }
+        xSemaphoreGive(s_announce_mutex);
     }
-    if (s_active) {
-        announce_now_locked();
-    }
-    xSemaphoreGive(s_announce_mutex);
+    vTaskDelete(NULL);
 }
 
 /* ------------------------------------------------------------------ */
@@ -411,6 +450,29 @@ esp_err_t michi_discovery_init(void)
         return ESP_ERR_NO_MEM;
     }
 
+    s_discovery_queue = xQueueCreate(10, sizeof(discovery_msg_t));
+    if (s_discovery_queue == NULL) {
+        ESP_LOGE(TAG, "discovery: announce queue failed");
+        vSemaphoreDelete(s_announce_mutex);
+        s_announce_mutex = NULL;
+        esp_timer_delete(s_announce_timer);
+        s_announce_timer = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
+    if (xTaskCreate(discovery_task_func, "michi_discovery", 4096, NULL, 5,
+                    &s_discovery_task) != pdPASS) {
+        ESP_LOGE(TAG, "discovery: task create failed");
+        vQueueDelete(s_discovery_queue);
+        s_discovery_queue = NULL;
+        vSemaphoreDelete(s_announce_mutex);
+        s_announce_mutex = NULL;
+        esp_timer_delete(s_announce_timer);
+        s_announce_timer = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
+    s_discovery_generation = 0;
     s_initialized = true;
     ESP_LOGI(TAG, "subsystem=discovery state=ok");
     return ESP_OK;
@@ -452,6 +514,7 @@ esp_err_t michi_discovery_start(const char *ipv4)
         result = ESP_FAIL;
         goto out;
     }
+    s_discovery_generation++;
     s_active = true;
 
     advertise_mdns_locked();
@@ -475,6 +538,7 @@ esp_err_t michi_discovery_stop(void)
     }
     if (s_active) {
         s_active = false;
+        s_discovery_generation++;
         /* New network-up cycle: a fresh gate transition may log the
          * defer warning again (once per cycle, never per tick). */
         s_clock_gate_logged = false;
@@ -497,12 +561,30 @@ esp_err_t michi_discovery_shutdown(void)
     if (!s_initialized) {
         return ESP_OK;
     }
-    michi_discovery_stop();
-    mdns_free();
+    s_discovery_generation++;
     if (s_announce_timer != NULL) {
         esp_timer_stop(s_announce_timer);
+    }
+    if (s_discovery_queue != NULL) {
+        const discovery_msg_t stop = {
+            .type = DISCOVERY_MSG_STOP,
+            .generation = 0,
+        };
+        (void)xQueueSend(s_discovery_queue, &stop, 0);
+    }
+    michi_discovery_stop();
+    mdns_free();
+    if (s_discovery_task != NULL) {
+        vTaskDelete(s_discovery_task);
+        s_discovery_task = NULL;
+    }
+    if (s_announce_timer != NULL) {
         esp_timer_delete(s_announce_timer);
         s_announce_timer = NULL;
+    }
+    if (s_discovery_queue != NULL) {
+        vQueueDelete(s_discovery_queue);
+        s_discovery_queue = NULL;
     }
     if (s_announce_mutex != NULL) {
         vSemaphoreDelete(s_announce_mutex);

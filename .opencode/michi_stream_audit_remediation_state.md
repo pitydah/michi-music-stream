@@ -19,7 +19,7 @@
 - [x] PHASE D: /server/info fail-closed
 - [x] PHASE E: RTP clock wrap + reorder correctness
 - [x] PHASE F: OTA audio health + OTA/session exclusion
-- [ ] PHASE G: esp_timer pairing/discovery non-blocking
+- [x] PHASE G: esp_timer pairing/discovery non-blocking
 - [ ] PHASE H: display DMA buffer lifetime
 - [ ] PHASE I: test-production unification (michi_jb, OTA, profile)
 - [ ] PHASE J: jitter/loss metric correctness

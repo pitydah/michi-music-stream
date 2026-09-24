@@ -139,6 +139,7 @@ PAIRING_DIR = $(FIRMWARE)/michi_pairing
 PAIRING_SRC = $(PAIRING_DIR)/michi_pairing.c $(PAIRING_DIR)/validators.c \
               shim/esp_timer.c shim/michi_state.c shim/mbedtls/sha256.c \
               shim/nvs_fake.c \
+              shim/freertos/task.c shim/freertos/queue.c \
               $(IDENTITY_DIR)/michi_identity.c $(IDENTITY_DIR)/identity_nvs.c \
               $(IDENTITY_DIR)/monocypher/monocypher.c \
               $(IDENTITY_DIR)/monocypher/monocypher-ed25519.c \
@@ -334,7 +335,7 @@ test_michi_discovery: test_michi_discovery.c $(DISCOVERY_SRC) \
 TIME_DIR = $(FIRMWARE)/michi_time
 TIME_SRC = $(TIME_DIR)/michi_time.c shim/esp_netif_sntp.c shim/time_shim.c \
            shim/lwip_sockets.c shim/mdns_shim.c shim/esp_mac_shim.c \
-           shim/freertos/task.c shim/esp_timer.c \
+           shim/freertos/task.c shim/freertos/queue.c shim/esp_timer.c \
            shim/michi_product_profile_fake.c
 TIME_INC = -I$(TIME_DIR)/include -I$(TIME_DIR)
 

@@ -10,6 +10,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 
 #include "esp_err.h"
 #include "esp_log.h"
@@ -90,8 +91,21 @@ typedef struct {
     uint32_t count;
 } michi_pairing_ip_slot_t;
 
+typedef enum {
+    PAIRING_MSG_WINDOW_EXPIRED = 1,
+    PAIRING_MSG_STOP,
+} pairing_msg_type_t;
+
+typedef struct {
+    pairing_msg_type_t type;
+    uint32_t generation;
+} pairing_msg_t;
+
 static SemaphoreHandle_t s_mutex;
 static esp_timer_handle_t s_timer;
+static QueueHandle_t s_pairing_queue;
+static TaskHandle_t s_pairing_task;
+static uint32_t s_window_generation;
 static volatile bool s_initialized;
 /* Teardown flag (shutdown): window_timer_cb checks it BEFORE taking the
  * mutex - a callback already dispatched when shutdown runs must return
@@ -391,6 +405,7 @@ static void window_close_locked(const char *reason, bool notify)
     }
     const uint32_t starts = s_starts_per_window;
     esp_timer_stop(s_timer);
+    s_window_generation++;
     s_window_open = false;
     ESP_LOGI(TAG, "pairing: window=closed reason=%s starts=%u", reason,
              (unsigned)starts);
@@ -402,32 +417,51 @@ static void window_close_locked(const char *reason, bool notify)
 static void window_timer_cb(void *arg)
 {
     (void)arg;
-    /* Teardown race (F3): if shutdown is in progress, return WITHOUT
-     * touching the mutex - shutdown stops the timer and deletes the mutex
-     * after this flag is set, and taking a deleted mutex is undefined.
-     * esp_timer_stop on a one-shot timer that already fired is a no-op,
-     * so this check is the ONLY thing between a dispatched callback and
-     * the teardown. */
-    if (s_teardown) {
+    if (s_teardown || s_pairing_queue == NULL) {
         return;
     }
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    /* Stale-callback guard (F4): re-validate the deadline under the mutex.
-     * The window may have been re-opened after this timer fired: if the
-     * deadline has not passed for the CURRENT window, this callback is
-     * stale - it must NOT close the fresh window. */
-    const int64_t deadline =
-        s_window_opened_us +
-        (int64_t)CONFIG_MICHI_PAIRING_WINDOW_SECONDS * 1000000;
-    if (esp_timer_get_time() < deadline) {
-        xSemaphoreGive(s_mutex);
-        return;
+    const pairing_msg_t msg = {
+        .type = PAIRING_MSG_WINDOW_EXPIRED,
+        .generation = s_window_generation,
+    };
+    /* esp_timer callbacks run in the esp_timer service task context.
+     * Strictly non-blocking: no mutex acquisition, no delays, no mDNS
+     * or I/O. Post generation to queue with 0 timeout; if full, the
+     * event is dropped/coalesced without blocking. */
+    (void)xQueueSend(s_pairing_queue, &msg, 0);
+}
+
+static void pairing_task_func(void *arg)
+{
+    (void)arg;
+    pairing_msg_t msg;
+    while (xQueueReceive(s_pairing_queue, &msg, portMAX_DELAY) == pdTRUE) {
+        if (msg.type == PAIRING_MSG_STOP) {
+            break;
+        }
+        if (s_teardown) {
+            continue;
+        }
+        if (msg.type == PAIRING_MSG_WINDOW_EXPIRED) {
+            xSemaphoreTake(s_mutex, portMAX_DELAY);
+            /* Stale-callback guard: verify generation and deadline under mutex */
+            if (s_teardown || !s_window_open || msg.generation != s_window_generation) {
+                xSemaphoreGive(s_mutex);
+                continue;
+            }
+            const int64_t deadline =
+                s_window_opened_us +
+                (int64_t)CONFIG_MICHI_PAIRING_WINDOW_SECONDS * 1000000;
+            if (esp_timer_get_time() < deadline) {
+                xSemaphoreGive(s_mutex);
+                continue;
+            }
+            window_close_locked("expired", true);
+            xSemaphoreGive(s_mutex);
+            pin_display_notify(NULL);
+        }
     }
-    window_close_locked("expired", true);
-    xSemaphoreGive(s_mutex);
-    /* Expiry clears the PIN screen too (the timer task is a regular
-     * task context; the display callback never blocks). */
-    pin_display_notify(NULL);
+    vTaskDelete(NULL);
 }
 
 /* --- rate limiting ---------------------------------------------------- */
@@ -502,6 +536,28 @@ esp_err_t michi_pairing_init(void)
         return err;
     }
 
+    s_pairing_queue = xQueueCreate(10, sizeof(pairing_msg_t));
+    if (s_pairing_queue == NULL) {
+        ESP_LOGE(TAG, "pairing: init queue_failed");
+        esp_timer_delete(s_timer);
+        s_timer = NULL;
+        vSemaphoreDelete(s_mutex);
+        s_mutex = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
+    if (xTaskCreate(pairing_task_func, "michi_pairing", 4096, NULL, 5,
+                    &s_pairing_task) != pdPASS) {
+        ESP_LOGE(TAG, "pairing: init task_failed");
+        vQueueDelete(s_pairing_queue);
+        s_pairing_queue = NULL;
+        esp_timer_delete(s_timer);
+        s_timer = NULL;
+        vSemaphoreDelete(s_mutex);
+        s_mutex = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
     load_blob();
     /* Belt and braces: the version field must ALWAYS be written, on
      * every load path, so the next persist survives the NVS round-trip
@@ -510,6 +566,7 @@ esp_err_t michi_pairing_init(void)
     s_blob.version = MICHI_PAIRING_BLOB_VERSION;
     sessions_clear_locked();
     s_window_open = false;
+    s_window_generation = 0;
     s_initialized = true;
     ESP_LOGI(TAG, "subsystem=pairing state=ok phase=10");
     return ESP_OK;
@@ -529,6 +586,7 @@ esp_err_t michi_pairing_open_window(void)
     }
     /* Contract: "abrir de nuevo reemplaza la ventana previa y elimina
      * sesiones de pairing pendientes". */
+    s_window_generation++;
     sessions_clear_locked();
 
     s_window_open = true;
@@ -1163,16 +1221,38 @@ esp_err_t michi_pairing_shutdown(void)
      * The callback never holds the mutex during teardown, so step 4 can
      * never race a pending take. */
     s_teardown = true;
-    esp_timer_stop(s_timer);
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    /* Silent close: the FSM bus may already be down; the close is still
-     * logged (state=off below plus the window=closed line). */
-    window_close_locked("shutdown", false);
-    esp_timer_delete(s_timer);
-    s_timer = NULL;
-    xSemaphoreGive(s_mutex);
-    vSemaphoreDelete(s_mutex);
-    s_mutex = NULL;
+    s_window_generation++;
+    if (s_timer != NULL) {
+        esp_timer_stop(s_timer);
+    }
+    if (s_pairing_queue != NULL) {
+        const pairing_msg_t stop_msg = {
+            .type = PAIRING_MSG_STOP,
+            .generation = 0,
+        };
+        (void)xQueueSend(s_pairing_queue, &stop_msg, 0);
+    }
+    if (s_mutex != NULL) {
+        xSemaphoreTake(s_mutex, portMAX_DELAY);
+        /* Silent close: the FSM bus may already be down; the close is still
+         * logged (state=off below plus the window=closed line). */
+        window_close_locked("shutdown", false);
+        if (s_timer != NULL) {
+            esp_timer_delete(s_timer);
+            s_timer = NULL;
+        }
+        xSemaphoreGive(s_mutex);
+        vSemaphoreDelete(s_mutex);
+        s_mutex = NULL;
+    }
+    if (s_pairing_task != NULL) {
+        vTaskDelete(s_pairing_task);
+        s_pairing_task = NULL;
+    }
+    if (s_pairing_queue != NULL) {
+        vQueueDelete(s_pairing_queue);
+        s_pairing_queue = NULL;
+    }
     s_initialized = false;
 
     ESP_LOGI(TAG, "subsystem=pairing state=off phase=10");
