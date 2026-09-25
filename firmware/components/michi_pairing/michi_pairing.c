@@ -107,11 +107,10 @@ static QueueHandle_t s_pairing_queue;
 static TaskHandle_t s_pairing_task;
 static uint32_t s_window_generation;
 static volatile bool s_initialized;
-/* Teardown flag (shutdown): window_timer_cb checks it BEFORE taking the
- * mutex - a callback already dispatched when shutdown runs must return
- * without touching the mutex (shutdown deletes it). Set before
- * esp_timer_stop, cleared by a later init. */
 static volatile bool s_teardown;
+static volatile bool s_pairing_timer_pending;
+static volatile bool s_pairing_stop_requested;
+static volatile bool s_pairing_task_done;
 static bool s_window_open;
 /* Window opened at (esp_timer_get_time, us): monotonic reference and the
  * deadline check that keeps the getters honest during the tiny window
@@ -417,35 +416,54 @@ static void window_close_locked(const char *reason, bool notify)
 static void window_timer_cb(void *arg)
 {
     (void)arg;
-    if (s_teardown || s_pairing_queue == NULL) {
+    if (s_teardown || s_pairing_stop_requested) {
         return;
     }
-    const pairing_msg_t msg = {
-        .type = PAIRING_MSG_WINDOW_EXPIRED,
-        .generation = s_window_generation,
-    };
-    /* esp_timer callbacks run in the esp_timer service task context.
-     * Strictly non-blocking: no mutex acquisition, no delays, no mDNS
-     * or I/O. Post generation to queue with 0 timeout; if full, the
-     * event is dropped/coalesced without blocking. */
-    (void)xQueueSend(s_pairing_queue, &msg, 0);
+    /* Atomic pending bit ensures expiry is never lost even if queue is full */
+    s_pairing_timer_pending = true;
+    if (s_pairing_queue != NULL) {
+        const pairing_msg_t msg = {
+            .type = PAIRING_MSG_WINDOW_EXPIRED,
+            .generation = s_window_generation,
+        };
+        (void)xQueueSend(s_pairing_queue, &msg, 0);
+    }
 }
 
 static void pairing_task_func(void *arg)
 {
     (void)arg;
-    pairing_msg_t msg;
-    while (xQueueReceive(s_pairing_queue, &msg, portMAX_DELAY) == pdTRUE) {
-        if (msg.type == PAIRING_MSG_STOP) {
+    while (!s_pairing_stop_requested) {
+        pairing_msg_t msg;
+        BaseType_t r = xQueueReceive(s_pairing_queue, &msg, pdMS_TO_TICKS(50));
+        if (s_pairing_stop_requested) {
             break;
         }
-        if (s_teardown) {
-            continue;
+        bool process_expiry = false;
+        uint32_t gen = 0;
+
+        if (r == pdTRUE) {
+            if (msg.type == PAIRING_MSG_STOP || s_pairing_stop_requested) {
+                break;
+            }
+            if (msg.type == PAIRING_MSG_WINDOW_EXPIRED) {
+                process_expiry = true;
+                gen = msg.generation;
+            }
         }
-        if (msg.type == PAIRING_MSG_WINDOW_EXPIRED) {
+        if (s_pairing_timer_pending) {
+            s_pairing_timer_pending = false;
+            process_expiry = true;
+            gen = s_window_generation;
+        }
+
+        if (process_expiry) {
+            if (s_teardown || s_pairing_stop_requested) {
+                continue;
+            }
             xSemaphoreTake(s_mutex, portMAX_DELAY);
             /* Stale-callback guard: verify generation and deadline under mutex */
-            if (s_teardown || !s_window_open || msg.generation != s_window_generation) {
+            if (s_teardown || s_pairing_stop_requested || !s_window_open || gen != s_window_generation) {
                 xSemaphoreGive(s_mutex);
                 continue;
             }
@@ -461,6 +479,7 @@ static void pairing_task_func(void *arg)
             pin_display_notify(NULL);
         }
     }
+    s_pairing_task_done = true;
     vTaskDelete(NULL);
 }
 
@@ -1204,23 +1223,15 @@ esp_err_t michi_pairing_shutdown(void)
     if (!s_initialized) {
         return ESP_OK;
     }
-    /* Deleting a timer from inside its own callback is not supported:
-     * shutdown must be called from regular task context.
-     *
-     * Teardown order (documented contract, F3):
-     *   1. s_teardown = true FIRST: a window_timer_cb already dispatched
-     *      checks it BEFORE touching the mutex and returns - the callback
-     *      can never block on (or take) a mutex that is about to be
-     *      deleted.
-     *   2. esp_timer_stop: no new callback can fire from here on (stop on
-     *      an already-fired one-shot is a no-op; the dispatched callback
-     *      is neutralized by step 1).
-     *   3. Take the mutex, delete the timer, release the mutex.
-     *   4. ONLY THEN delete the mutex (vSemaphoreDelete) and clear
-     *      s_initialized.
-     * The callback never holds the mutex during teardown, so step 4 can
-     * never race a pending take. */
+    /* Cooperative teardown:
+     *   1. s_teardown = true & s_pairing_stop_requested = true FIRST.
+     *   2. esp_timer_stop: no further callbacks can fire.
+     *   3. Wake worker via stop_msg so it exits loop and sets s_pairing_task_done.
+     *   4. Wait for worker to finish (cooperative join), then join/free task handle.
+     *   5. With worker completely dead, close window and delete timer/mutex/queue safely.
+     */
     s_teardown = true;
+    s_pairing_stop_requested = true;
     s_window_generation++;
     if (s_timer != NULL) {
         esp_timer_stop(s_timer);
@@ -1232,10 +1243,15 @@ esp_err_t michi_pairing_shutdown(void)
         };
         (void)xQueueSend(s_pairing_queue, &stop_msg, 0);
     }
+    if (s_pairing_task != NULL) {
+        for (int i = 0; i < 200 && !s_pairing_task_done; i++) {
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+        vTaskDelete(s_pairing_task);
+        s_pairing_task = NULL;
+    }
     if (s_mutex != NULL) {
         xSemaphoreTake(s_mutex, portMAX_DELAY);
-        /* Silent close: the FSM bus may already be down; the close is still
-         * logged (state=off below plus the window=closed line). */
         window_close_locked("shutdown", false);
         if (s_timer != NULL) {
             esp_timer_delete(s_timer);
@@ -1245,15 +1261,14 @@ esp_err_t michi_pairing_shutdown(void)
         vSemaphoreDelete(s_mutex);
         s_mutex = NULL;
     }
-    if (s_pairing_task != NULL) {
-        vTaskDelete(s_pairing_task);
-        s_pairing_task = NULL;
-    }
     if (s_pairing_queue != NULL) {
         vQueueDelete(s_pairing_queue);
         s_pairing_queue = NULL;
     }
     s_initialized = false;
+    s_pairing_stop_requested = false;
+    s_pairing_timer_pending = false;
+    s_pairing_task_done = false;
 
     ESP_LOGI(TAG, "subsystem=pairing state=off phase=10");
     /* A reboot closes the window: the screen must not keep the PIN. The

@@ -26,11 +26,12 @@ BaseType_t xTaskCreate(TaskFunction_t fn, const char *name,
  * pattern michi_time uses). */
 void vTaskDelete(TaskHandle_t task);
 
-/* No-op stand-in (the pairing component's 50 ms wait only runs on a
- * full event queue, which the fake state bus never has). */
+#include <unistd.h>
+
+/* Real delay for host shim so cooperative yields/waits work. */
 static inline void vTaskDelay(uint32_t ticks)
 {
-    (void)ticks;
+    usleep((useconds_t)ticks * 1000);
 }
 
 #ifdef __cplusplus

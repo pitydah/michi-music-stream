@@ -17,8 +17,8 @@
 - [x] Pre-flight y Baseline R2 completados
 - [x] R2-A: /server/info DIAGNOSTIC fail-closed (wire service contract based)
 - [x] R2-B: independent expected-audio / SKU truth (decoupled from runtime autodetect)
-- [ ] R2-C: pairing/discovery real coalescing (atomic pending / notification, no event loss)
-- [ ] R2-D: pairing/discovery cooperative shutdown (request stop -> wake -> exit -> join -> cleanup)
+- [x] R2-C: pairing/discovery real coalescing (atomic pending / notification, no event loss)
+- [x] R2-D: pairing/discovery cooperative shutdown (request stop -> wake -> exit -> join -> cleanup)
 - [ ] R2-E: buffer_ms recovery + capacity truth (target_buffer_ms in recovery, engine clamp/validation)
 - [ ] R2-F: pause/stop quiesce semantics (michi_audio_output_quiesce, mute, bounded drain)
 - [ ] R2-G: display DMA timeout recovery (quarantine state, no reuse / no UAF)

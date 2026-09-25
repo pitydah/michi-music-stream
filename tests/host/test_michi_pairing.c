@@ -1146,9 +1146,9 @@ static void test_pairing_timer_generation_stale(void)
     CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
 }
 
-static void test_pairing_timer_coalescing_and_queue_full(void)
+static void test_queue_pair_01_coalescing(void)
 {
-    printf("pairing_timer: event coalescing and queue full safety\n");
+    printf("QUEUE-PAIR-01: pairing timer event coalescing without event loss\n");
     pairing_test_reset(0xABCD0003);
     CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
     CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
@@ -1160,23 +1160,39 @@ static void test_pairing_timer_coalescing_and_queue_full(void)
     for (int i = 0; i < 100 && !test_state_saw_event(MICHI_EVENT_PAIRING_WINDOW_CLOSED); i++) {
         usleep(1000);
     }
-    CHECK(!michi_pairing_is_window_open(), "window closed cleanly");
+    CHECK(!michi_pairing_is_window_open(), "QUEUE-PAIR-01: window closed cleanly by worker");
+    CHECK(test_state_saw_event(MICHI_EVENT_PAIRING_WINDOW_CLOSED),
+          "QUEUE-PAIR-01: PAIRING_WINDOW_CLOSED posted after coalesced events");
 
     CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
 }
 
-static void test_pairing_shutdown_while_event_pending(void)
+static void test_shut_pair_01_cooperative_shutdown(void)
 {
-    printf("pairing_timer: shutdown while event pending in queue\n");
+    printf("SHUT-PAIR-01: cooperative shutdown joins worker before deleting resources\n");
+    pairing_test_reset(0xABCD0005);
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+    CHECK(michi_pairing_is_window_open(), "window active");
+
+    /* Normal shutdown joins worker and deletes resources cleanly */
+    CHECK(michi_pairing_shutdown() == ESP_OK, "SHUT-PAIR-01: shutdown succeeds");
+    CHECK(!michi_pairing_is_window_open(), "SHUT-PAIR-01: window is closed after shutdown");
+}
+
+static void test_shut_pair_02_shutdown_while_event_pending(void)
+{
+    printf("SHUT-PAIR-02: cooperative shutdown with pending expiration event\n");
     pairing_test_reset(0xABCD0004);
     CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
     CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
 
-    /* Advance timer past expiry to queue event */
+    /* Advance timer past expiry to queue event / set pending bit */
     test_esp_timer_advance((uint64_t)CONFIG_MICHI_PAIRING_WINDOW_SECONDS * 1000000ULL);
 
     /* Immediately shutdown before/during task processing */
-    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown while event pending does not crash or hang");
+    CHECK(michi_pairing_shutdown() == ESP_OK, "SHUT-PAIR-02: shutdown while event pending does not crash or hang");
+    CHECK(!michi_pairing_is_window_open(), "SHUT-PAIR-02: window closed cleanly");
 }
 
 int main(void)
@@ -1200,11 +1216,12 @@ int main(void)
     test_p104_registry_full();
     test_timer_01_pairing_nonblocking();
     test_pairing_timer_generation_stale();
-    test_pairing_timer_coalescing_and_queue_full();
-    test_pairing_shutdown_while_event_pending();
+    test_queue_pair_01_coalescing();
+    test_shut_pair_01_cooperative_shutdown();
+    test_shut_pair_02_shutdown_while_event_pending();
 
     if (failures == 0) {
-        printf("test_michi_pairing: all tests passed\n");
+        printf("test_michi_pairing: all tests passed (including QUEUE-PAIR-01, SHUT-PAIR-01..02)\n");
         return 0;
     }
     printf("test_michi_pairing: %d check(s) FAILED\n", failures);

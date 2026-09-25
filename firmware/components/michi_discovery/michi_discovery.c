@@ -81,6 +81,10 @@ static SemaphoreHandle_t s_announce_mutex;
 static QueueHandle_t s_discovery_queue;
 static TaskHandle_t s_discovery_task;
 static uint32_t s_discovery_generation;
+static volatile bool s_discovery_tick_pending;
+static volatile bool s_discovery_time_sync_pending;
+static volatile bool s_discovery_stop_requested;
+static volatile bool s_discovery_task_done;
 
 /* ------------------------------------------------------------------ */
 /* Internals (all called with the announce mutex held)                */
@@ -317,18 +321,18 @@ static void arm_announce_timer_locked(void)
 static void announce_timer_cb(void *arg)
 {
     (void)arg;
-    if (s_discovery_queue == NULL) {
+    if (s_discovery_stop_requested) {
         return;
     }
-    const discovery_msg_t msg = {
-        .type = DISCOVERY_MSG_ANNOUNCE_TICK,
-        .generation = s_discovery_generation,
-    };
-    /* esp_timer callbacks run in the esp_timer service task context.
-     * Strictly non-blocking: no mutex acquisition, no delays, no mDNS
-     * operations, no network sendto. Returns immediately. If the queue
-     * is full, the event is dropped/coalesced without blocking. */
-    (void)xQueueSend(s_discovery_queue, &msg, 0);
+    /* Atomic pending bit ensures periodic tick is not lost on queue full */
+    s_discovery_tick_pending = true;
+    if (s_discovery_queue != NULL) {
+        const discovery_msg_t msg = {
+            .type = DISCOVERY_MSG_ANNOUNCE_TICK,
+            .generation = s_discovery_generation,
+        };
+        (void)xQueueSend(s_discovery_queue, &msg, 0);
+    }
 }
 
 /* P0-02: michi_time sync callback (runs in the michi_time sync task
@@ -338,40 +342,75 @@ static void announce_timer_cb(void *arg)
 static void on_time_sync_cb(void *ctx)
 {
     (void)ctx;
-    if (!s_initialized || s_discovery_queue == NULL) {
+    if (!s_initialized || s_discovery_stop_requested) {
         return;
     }
-    const discovery_msg_t msg = {
-        .type = DISCOVERY_MSG_TIME_SYNC,
-        .generation = s_discovery_generation,
-    };
-    (void)xQueueSend(s_discovery_queue, &msg, 0);
+    /* Atomic pending bit ensures time sync trigger is never dropped */
+    s_discovery_time_sync_pending = true;
+    if (s_discovery_queue != NULL) {
+        const discovery_msg_t msg = {
+            .type = DISCOVERY_MSG_TIME_SYNC,
+            .generation = s_discovery_generation,
+        };
+        (void)xQueueSend(s_discovery_queue, &msg, 0);
+    }
 }
 
 static void discovery_task_func(void *arg)
 {
     (void)arg;
-    discovery_msg_t msg;
-    while (xQueueReceive(s_discovery_queue, &msg, portMAX_DELAY) == pdTRUE) {
-        if (msg.type == DISCOVERY_MSG_STOP) {
+    while (!s_discovery_stop_requested) {
+        discovery_msg_t msg;
+        BaseType_t r = xQueueReceive(s_discovery_queue, &msg, pdMS_TO_TICKS(50));
+        if (s_discovery_stop_requested) {
             break;
         }
-        if (s_announce_mutex == NULL ||
-            !xSemaphoreTake(s_announce_mutex,
-                            pdMS_TO_TICKS(MICHI_DISCOVERY_LOCK_MS))) {
-            continue;
-        }
-        if (s_initialized && s_active && msg.generation == s_discovery_generation) {
+        bool do_announce = false;
+        bool do_rearm = false;
+        uint32_t gen = 0;
+
+        if (r == pdTRUE) {
+            if (msg.type == DISCOVERY_MSG_STOP || s_discovery_stop_requested) {
+                break;
+            }
             if (msg.type == DISCOVERY_MSG_ANNOUNCE_TICK) {
-                advertise_mdns_locked();
-                announce_now_locked();
-                arm_announce_timer_locked();
+                do_announce = true;
+                do_rearm = true;
+                gen = msg.generation;
             } else if (msg.type == DISCOVERY_MSG_TIME_SYNC) {
-                announce_now_locked();
+                do_announce = true;
+                gen = msg.generation;
             }
         }
-        xSemaphoreGive(s_announce_mutex);
+        if (s_discovery_tick_pending) {
+            s_discovery_tick_pending = false;
+            do_announce = true;
+            do_rearm = true;
+            gen = s_discovery_generation;
+        }
+        if (s_discovery_time_sync_pending) {
+            s_discovery_time_sync_pending = false;
+            do_announce = true;
+            gen = s_discovery_generation;
+        }
+
+        if (do_announce) {
+            if (s_discovery_stop_requested || s_announce_mutex == NULL) {
+                continue;
+            }
+            if (xSemaphoreTake(s_announce_mutex, pdMS_TO_TICKS(MICHI_DISCOVERY_LOCK_MS)) == pdTRUE) {
+                if (!s_discovery_stop_requested && s_initialized && s_active && gen == s_discovery_generation) {
+                    advertise_mdns_locked();
+                    announce_now_locked();
+                    if (do_rearm) {
+                        arm_announce_timer_locked();
+                    }
+                }
+                xSemaphoreGive(s_announce_mutex);
+            }
+        }
     }
+    s_discovery_task_done = true;
     vTaskDelete(NULL);
 }
 
@@ -561,10 +600,16 @@ esp_err_t michi_discovery_shutdown(void)
     if (!s_initialized) {
         return ESP_OK;
     }
+    /* 1. Request cooperative stop */
+    s_discovery_stop_requested = true;
     s_discovery_generation++;
+
+    /* 2. Stop timer so no new ticks fire */
     if (s_announce_timer != NULL) {
         esp_timer_stop(s_announce_timer);
     }
+
+    /* 3. Wake up worker task */
     if (s_discovery_queue != NULL) {
         const discovery_msg_t stop = {
             .type = DISCOVERY_MSG_STOP,
@@ -572,12 +617,21 @@ esp_err_t michi_discovery_shutdown(void)
         };
         (void)xQueueSend(s_discovery_queue, &stop, 0);
     }
+
+    /* 4. Stop discovery sockets and services */
     michi_discovery_stop();
-    mdns_free();
+
+    /* 5. Cooperative join: wait for worker to exit */
     if (s_discovery_task != NULL) {
+        for (int i = 0; i < 200 && !s_discovery_task_done; i++) {
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
         vTaskDelete(s_discovery_task);
         s_discovery_task = NULL;
     }
+
+    /* 6. Clean up resources */
+    mdns_free();
     if (s_announce_timer != NULL) {
         esp_timer_delete(s_announce_timer);
         s_announce_timer = NULL;
@@ -591,6 +645,11 @@ esp_err_t michi_discovery_shutdown(void)
         s_announce_mutex = NULL;
     }
     s_initialized = false;
+    s_discovery_stop_requested = false;
+    s_discovery_tick_pending = false;
+    s_discovery_time_sync_pending = false;
+    s_discovery_task_done = false;
+
     return ESP_OK;
 }
 

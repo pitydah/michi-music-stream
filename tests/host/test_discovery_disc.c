@@ -872,9 +872,9 @@ static void test_timer_02_discovery_nonblocking(void)
     teardown();
 }
 
-static void test_discovery_timer_coalescing_and_queue_full(void)
+static void test_queue_disc_01_timer_coalescing(void)
 {
-    printf("discovery_timer: event coalescing and queue full safety\n");
+    printf("QUEUE-DISC-01: discovery timer tick coalescing without event loss\n");
     reset_all();
     boot_time_and_discovery();
     DISC(17, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
@@ -887,26 +887,71 @@ static void test_discovery_timer_coalescing_and_queue_full(void)
     for (int i = 0; i < 20; i++) {
         test_esp_timer_advance(40000000ULL);
     }
-    DISC(17, wait_for(sent_at_least_two, 2000), "worker task processes coalesced events safely");
+    DISC(17, wait_for(sent_at_least_two, 2000), "QUEUE-DISC-01: worker task processes coalesced events safely");
 
     teardown();
 }
 
-static void test_discovery_shutdown_while_event_pending(void)
+static void test_queue_disc_02_time_sync_coalescing(void)
 {
-    printf("discovery_timer: shutdown while event pending in queue\n");
+    printf("QUEUE-DISC-02: discovery time sync callback coalescing\n");
     reset_all();
     boot_time_and_discovery();
     DISC(18, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
     DISC(18, michi_time_start() == ESP_OK, "time start succeeds");
     test_esp_timer_set_time(1000000);
+
+    /* Fire multiple sync callbacks rapidly: atomic pending bit prevents event loss */
+    for (int i = 0; i < 5; i++) {
+        test_sntp_fire_sync(INJECTED_UNIX + (int64_t)i);
+    }
+    DISC(18, wait_for(sent_at_least_one, 2000), "QUEUE-DISC-02: announce emitted on time sync coalescing");
+
+    teardown();
+}
+
+static void test_shut_disc_01_cooperative_shutdown(void)
+{
+    printf("SHUT-DISC-01: cooperative discovery shutdown joins worker before deleting resources\n");
+    reset_all();
+    boot_time_and_discovery();
+    DISC(19, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+    DISC(19, michi_discovery_shutdown() == ESP_OK, "SHUT-DISC-01: shutdown succeeds cleanly");
+    teardown();
+}
+
+static void test_shut_disc_02_shutdown_while_tick_pending(void)
+{
+    printf("SHUT-DISC-02: cooperative shutdown with pending announce tick\n");
+    reset_all();
+    boot_time_and_discovery();
+    DISC(20, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+    DISC(20, michi_time_start() == ESP_OK, "time start succeeds");
+    test_esp_timer_set_time(1000000);
     test_sntp_fire_sync(INJECTED_UNIX);
 
-    /* Advance timer to queue announce tick */
+    /* Advance timer to queue announce tick / set pending bit */
     test_esp_timer_advance(40000000ULL);
 
     /* Immediately shutdown before task completes */
-    DISC(18, michi_discovery_shutdown() == ESP_OK, "shutdown succeeds cleanly with pending event");
+    DISC(20, michi_discovery_shutdown() == ESP_OK, "SHUT-DISC-02: shutdown succeeds cleanly with pending tick");
+    teardown();
+}
+
+static void test_shut_disc_03_shutdown_while_sync_pending(void)
+{
+    printf("SHUT-DISC-03: cooperative shutdown with pending time sync\n");
+    reset_all();
+    boot_time_and_discovery();
+    DISC(21, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+    DISC(21, michi_time_start() == ESP_OK, "time start succeeds");
+    test_esp_timer_set_time(1000000);
+
+    /* Fire sync to queue time sync message / set pending bit */
+    test_sntp_fire_sync(INJECTED_UNIX);
+
+    /* Immediately shutdown */
+    DISC(21, michi_discovery_shutdown() == ESP_OK, "SHUT-DISC-03: shutdown succeeds cleanly with pending sync");
     teardown();
 }
 
@@ -930,11 +975,14 @@ int main(void)
     disc14_service_hifi_correct();
     disc15_port_equals_real_http_port();
     test_timer_02_discovery_nonblocking();
-    test_discovery_timer_coalescing_and_queue_full();
-    test_discovery_shutdown_while_event_pending();
+    test_queue_disc_01_timer_coalescing();
+    test_queue_disc_02_time_sync_coalescing();
+    test_shut_disc_01_cooperative_shutdown();
+    test_shut_disc_02_shutdown_while_tick_pending();
+    test_shut_disc_03_shutdown_while_sync_pending();
 
     if (failures == 0) {
-        printf("test_discovery_disc: all DISC-01..DISC-15 + TIMER-02 passed\n");
+        printf("test_discovery_disc: all DISC-01..DISC-15 + TIMER-02 + QUEUE-DISC-01..02 + SHUT-DISC-01..03 passed\n");
         return 0;
     }
     printf("test_discovery_disc: %d check(s) FAILED\n", failures);
