@@ -7,8 +7,8 @@
 | Código | `michi_stream_hifi` |
 | Costo | Medio |
 | MCU | ESP32-S3 |
-| DAC | Propuesto: PCM5122 (TI, SNR 112 dB, 384 kHz máx) |
-| Buffer salida | Propuesto: NE5532 (opamp doble) |
+| DAC | PCM5122 (TI, SNR 112 dB, 384 kHz máx en silicio; 48 kHz / 16-bit validado en firmware) |
+| Buffer salida | Integrado en PCM5122 (DirectPath™ ground-centered, 2.1 Vrms, salida analógica directa) |
 | Salida | RCA estéreo (2 × hembra dorada) |
 | Audio máx. | PCM 16-bit / 48 kHz / 2 canales (certificado hoy) |
 | Codecs | `pcm_s16le` (certificado hoy) |
@@ -20,26 +20,28 @@
 |------------|-----------|--------------|
 | MCU | ESP32-S3-WROOM-1-N16R8 | ESP32-P4 |
 | DAC | PCM5122 (I2S + I2C) | AK4432, ES9023, PCM5242 |
-| Buffer | NE5532 | OPA2134, LM4562 |
+| Buffer | Integrado (DirectPath™ salida directa) | NE5532, OPA2134 (filtro LP activo de 3er orden opcional) |
 | Reg. digital | LM1117-3.3 | — |
 | Reg. analógico | LT1963A-3.3 (bajo ruido) | ADP150, TPS7A47 |
-| Reloj | Cristal 24.576 MHz oscilador dedicado | — |
+| Reloj | PLL interno desde BCK (MCLK=-1) | Cristal / oscilador 24.576 MHz dedicado (modo maestro síncrono futuro) |
 | Antena | U.FL + externa | PCB trace |
 
-> **Advertencia importante:** PCM5122 y NE5532 son propuestas iniciales.
+> **Advertencia importante:**
 > El diseño Hi-Fi requiere validación de:
 > - Ruido de fuente: plano de tierra separado, star ground, ferrita en alimentación.
-> - Calidad del reloj MCLK: jitter excesivo degrada la SNR del DAC.
 > - Aislamiento I2S: rutas digitales cerca de pistas analógicas pueden inducir ruido.
 > - Estabilidad del regulador analógico: LT1963A requiere capacitores de salida
 >   específicos (10 µF tantalio o 22 µF cerámico).
 >
 > No considerar esta BOM como definitiva sin pruebas en PCB real.
 >
-> **Capacidades futuras:** el silicio admite PCM 24-bit / 96 kHz, pero hoy el
-> firmware solo implementa y anuncia `pcm_s16le` 48 kHz / 16 bit / 2 canales.
-> S24LE y Opus son trabajo futuro (ver `docs/ROADMAP.md`); no hay camino
-> implementado ni anunciado.
+> **Capacidades del silicio vs anunciadas en firmware (Sección 18):** el silicio del
+> PCM5122 admite hasta PCM 32-bit / 384 kHz (y SNR 112 dB), pero la capacidad
+> validada y certificada anunciada por el firmware hoy es estrictamente `pcm_s16le`
+> a 48 kHz / 16 bit / 2 canales. El endpoint `/diagnostics` refleja `sample_rate: 48000`
+> y `bit_depth: 16` como baseline activo del perfil, mientras que las capacidades máximas
+> de silicio pertenecen al hardware subyacente. S24LE, S32LE y Opus son trabajo futuro
+> (ver `docs/ROADMAP.md`); no hay camino implementado ni anunciado hoy.
 
 ## Diagrama
 
