@@ -628,3 +628,37 @@ esp_err_t michi_discovery_get_server_id(char *out, size_t out_len)
     memcpy(out, s_server_id, MICHI_DISCOVERY_UUID_LEN);
     return ESP_OK;
 }
+
+/* --- test hooks ------------------------------------------------------- */
+
+__attribute__((weak)) void michi_discovery_test_lock(void)
+{
+    if (s_announce_mutex != NULL) {
+        xSemaphoreTake(s_announce_mutex, portMAX_DELAY);
+    }
+}
+
+__attribute__((weak)) void michi_discovery_test_unlock(void)
+{
+    if (s_announce_mutex != NULL) {
+        xSemaphoreGive(s_announce_mutex);
+    }
+}
+
+__attribute__((weak)) bool michi_discovery_test_is_timer_active(void)
+{
+    return s_announce_timer != NULL && esp_timer_is_active(s_announce_timer);
+}
+
+__attribute__((weak)) bool michi_discovery_test_is_active(void)
+{
+    return s_active;
+}
+
+__attribute__((weak)) void michi_discovery_test_notify_tick(void)
+{
+    if (s_discovery_task != NULL) {
+        xTaskNotify(s_discovery_task, DISCOVERY_NOTIFY_TICK, eSetBits);
+    }
+}
+

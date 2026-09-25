@@ -1146,23 +1146,41 @@ static void test_pairing_timer_generation_stale(void)
     CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
 }
 
-static void test_queue_pair_01_coalescing(void)
+static void test_event_coalesce_pair_01(void)
 {
-    printf("QUEUE-PAIR-01: pairing timer event coalescing without event loss\n");
+    printf("EVENT-COALESCE-PAIR-01: pairing timer event coalescing under worker pressure\n");
     pairing_test_reset(0xABCD0003);
     CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
     CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+    CHECK(michi_pairing_is_window_open(), "window open initially");
 
-    /* Multiple rapid timer advances past expiry - queue coalesces / drops without blocking */
+    /* 1. Deliberately block worker by taking the pairing mutex */
+    michi_pairing_test_lock();
+
+    /* 2. Advance monotonic clock past expiry and fire timer events repeatedly */
+    test_esp_timer_advance(70000000ULL);
     for (int i = 0; i < 20; i++) {
-        test_esp_timer_advance(10000000ULL);
+        michi_pairing_test_notify_expired();
     }
+
+    /* 3. Invariant check: worker is blocked on mutex, so window cannot be closed yet */
+    CHECK(michi_pairing_test_is_window_open_locked(),
+          "EVENT-COALESCE-PAIR-01: window remains open while worker blocked");
+    CHECK(!test_state_saw_event(MICHI_EVENT_PAIRING_WINDOW_CLOSED),
+          "EVENT-COALESCE-PAIR-01: PAIRING_WINDOW_CLOSED not posted while worker blocked");
+
+    /* 4. Release worker */
+    michi_pairing_test_unlock();
+
+    /* 5. Wait for worker to unblock and process coalesced event */
     for (int i = 0; i < 100 && !test_state_saw_event(MICHI_EVENT_PAIRING_WINDOW_CLOSED); i++) {
         usleep(1000);
     }
-    CHECK(!michi_pairing_is_window_open(), "QUEUE-PAIR-01: window closed cleanly by worker");
+
+    /* 6. Verify event was processed at least once, no permanent loss, system in correct state */
+    CHECK(!michi_pairing_is_window_open(), "EVENT-COALESCE-PAIR-01: window closed cleanly by worker");
     CHECK(test_state_saw_event(MICHI_EVENT_PAIRING_WINDOW_CLOSED),
-          "QUEUE-PAIR-01: PAIRING_WINDOW_CLOSED posted after coalesced events");
+          "EVENT-COALESCE-PAIR-01: PAIRING_WINDOW_CLOSED posted after coalesced events");
 
     CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
 }
@@ -1216,12 +1234,12 @@ int main(void)
     test_p104_registry_full();
     test_timer_01_pairing_nonblocking();
     test_pairing_timer_generation_stale();
-    test_queue_pair_01_coalescing();
+    test_event_coalesce_pair_01();
     test_shut_pair_01_cooperative_shutdown();
     test_shut_pair_02_shutdown_while_event_pending();
 
     if (failures == 0) {
-        printf("test_michi_pairing: all tests passed (including QUEUE-PAIR-01, SHUT-PAIR-01..02)\n");
+        printf("test_michi_pairing: all tests passed (including EVENT-COALESCE-PAIR-01, SHUT-PAIR-01..02)\n");
         return 0;
     }
     printf("test_michi_pairing: %d check(s) FAILED\n", failures);

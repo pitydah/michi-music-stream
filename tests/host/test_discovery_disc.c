@@ -872,9 +872,9 @@ static void test_timer_02_discovery_nonblocking(void)
     teardown();
 }
 
-static void test_queue_disc_01_timer_coalescing(void)
+static void test_event_coalesce_disc_01(void)
 {
-    printf("QUEUE-DISC-01: discovery timer tick coalescing without event loss\n");
+    printf("EVENT-COALESCE-DISC-01: discovery timer tick coalescing under worker pressure\n");
     reset_all();
     boot_time_and_discovery();
     DISC(17, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
@@ -883,29 +883,71 @@ static void test_queue_disc_01_timer_coalescing(void)
     test_sntp_fire_sync(INJECTED_UNIX);
     DISC(17, wait_for(sent_at_least_one, 2000), "initial announce emitted");
 
-    /* Multiple rapid timer ticks past interval - queue coalesces / drops without blocking */
+    /* 1. Deliberately block worker by acquiring announce mutex */
+    michi_discovery_test_lock();
+    const int count_before = test_socket_sent_count();
+
+    /* 2. Fire timer events repeatedly while worker is blocked */
     for (int i = 0; i < 20; i++) {
-        test_esp_timer_advance(40000000ULL);
+        michi_discovery_test_notify_tick();
     }
-    DISC(17, wait_for(sent_at_least_two, 2000), "QUEUE-DISC-01: worker task processes coalesced events safely");
+
+    /* 3. Assert worker is blocked: no announce emitted while mutex is held */
+    DISC(17, test_socket_sent_count() == count_before,
+         "EVENT-COALESCE-DISC-01: worker blocked, no announce sent during contention");
+
+    /* 4. Release worker */
+    michi_discovery_test_unlock();
+
+    /* 5. Worker unblocks and processes coalesced events safely */
+    DISC(17, wait_for(sent_at_least_two, 2000),
+         "EVENT-COALESCE-DISC-01: worker task processes coalesced events safely");
+
+    /* 6. Invariant: while discovery active, event processing cannot leave:
+     *    timer inactive AND no pending trigger AND worker idle forever */
+    DISC(17, michi_discovery_test_is_active(), "EVENT-COALESCE-DISC-01: discovery remains active");
+    DISC(17, michi_discovery_test_is_timer_active(),
+         "EVENT-COALESCE-DISC-01: announce timer rearmed and active after processing");
+
+    /* Further verify liveness: advance time past announce interval and verify another packet is emitted */
+    const int count_after_coalesce = test_socket_sent_count();
+    test_esp_timer_advance(40000000ULL);
+    for (int i = 0; i < 100 && test_socket_sent_count() <= count_after_coalesce; i++) {
+        usleep(5000);
+    }
+    DISC(17, test_socket_sent_count() > count_after_coalesce,
+         "EVENT-COALESCE-DISC-01: worker not idle forever, fires subsequent timer tick");
 
     teardown();
 }
 
-static void test_queue_disc_02_time_sync_coalescing(void)
+static void test_event_coalesce_disc_02_time_sync(void)
 {
-    printf("QUEUE-DISC-02: discovery time sync callback coalescing\n");
+    printf("EVENT-COALESCE-DISC-02: discovery time sync callback coalescing under worker pressure\n");
     reset_all();
     boot_time_and_discovery();
     DISC(18, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
     DISC(18, michi_time_start() == ESP_OK, "time start succeeds");
     test_esp_timer_set_time(1000000);
 
-    /* Fire multiple sync callbacks rapidly: atomic pending bit prevents event loss */
+    /* 1. Deliberately block worker by acquiring announce mutex */
+    michi_discovery_test_lock();
+    const int count_before = test_socket_sent_count();
+
+    /* 2. Fire multiple sync callbacks rapidly while worker blocked */
     for (int i = 0; i < 5; i++) {
         test_sntp_fire_sync(INJECTED_UNIX + (int64_t)i);
     }
-    DISC(18, wait_for(sent_at_least_one, 2000), "QUEUE-DISC-02: announce emitted on time sync coalescing");
+
+    /* 3. Assert worker is blocked */
+    DISC(18, test_socket_sent_count() == count_before,
+         "EVENT-COALESCE-DISC-02: worker blocked, no announce sent during time sync pressure");
+
+    /* 4. Release worker */
+    michi_discovery_test_unlock();
+
+    /* 5. Announce emitted on time sync coalescing */
+    DISC(18, wait_for(sent_at_least_one, 2000), "EVENT-COALESCE-DISC-02: announce emitted on time sync coalescing");
 
     teardown();
 }
@@ -975,14 +1017,14 @@ int main(void)
     disc14_service_hifi_correct();
     disc15_port_equals_real_http_port();
     test_timer_02_discovery_nonblocking();
-    test_queue_disc_01_timer_coalescing();
-    test_queue_disc_02_time_sync_coalescing();
+    test_event_coalesce_disc_01();
+    test_event_coalesce_disc_02_time_sync();
     test_shut_disc_01_cooperative_shutdown();
     test_shut_disc_02_shutdown_while_tick_pending();
     test_shut_disc_03_shutdown_while_sync_pending();
 
     if (failures == 0) {
-        printf("test_discovery_disc: all DISC-01..DISC-15 + TIMER-02 + QUEUE-DISC-01..02 + SHUT-DISC-01..03 passed\n");
+        printf("test_discovery_disc: all DISC-01..DISC-15 + TIMER-02 + EVENT-COALESCE-DISC-01..02 + SHUT-DISC-01..03 passed\n");
         return 0;
     }
     printf("test_discovery_disc: %d check(s) FAILED\n", failures);

@@ -1244,3 +1244,32 @@ esp_err_t michi_pairing_shutdown(void)
     pin_display_notify(NULL);
     return ESP_OK;
 }
+
+/* --- test hooks ------------------------------------------------------- */
+
+__attribute__((weak)) void michi_pairing_test_lock(void)
+{
+    if (s_mutex != NULL) {
+        xSemaphoreTake(s_mutex, portMAX_DELAY);
+    }
+}
+
+__attribute__((weak)) void michi_pairing_test_unlock(void)
+{
+    if (s_mutex != NULL) {
+        xSemaphoreGive(s_mutex);
+    }
+}
+
+__attribute__((weak)) bool michi_pairing_test_is_window_open_locked(void)
+{
+    return s_window_open;
+}
+
+__attribute__((weak)) void michi_pairing_test_notify_expired(void)
+{
+    if (s_pairing_task != NULL) {
+        xTaskNotify(s_pairing_task, PAIRING_NOTIFY_EXPIRED, eSetBits);
+    }
+}
+

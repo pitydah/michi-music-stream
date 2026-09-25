@@ -485,6 +485,13 @@ esp_err_t michi_pairing_close_window(void);
  */
 esp_err_t michi_pairing_shutdown(void);
 
+/* Test hooks for deterministic worker pressure and event coalescing verification */
+void michi_pairing_test_lock(void);
+void michi_pairing_test_unlock(void);
+bool michi_pairing_test_is_window_open_locked(void);
+void michi_pairing_test_notify_expired(void);
+
 #ifdef __cplusplus
 }
 #endif
+
