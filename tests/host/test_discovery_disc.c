@@ -999,7 +999,7 @@ static void test_shut_disc_03_shutdown_while_sync_pending(void)
     teardown();
 }
 
-/* ── DISC-LIFE Lifecycle State Machine Tests ──────────────── */
+/* ── DISC-LIFE Lifecycle State Machine Tests (DISC-LIFE-01..07) ── */
 
 static void test_disc_life_01_normal_stop(void)
 {
@@ -1018,32 +1018,38 @@ static void test_disc_life_01_normal_stop(void)
     teardown();
 }
 
-static void *release_discovery_worker_thread(void *arg)
+static void *shutdown_discovery_thread(void *arg)
 {
     (void)arg;
-    usleep(50000); /* 50ms */
-    michi_discovery_test_hold_worker(false);
-    return NULL;
+    return (void *)(intptr_t)michi_discovery_shutdown();
 }
 
-static void test_disc_life_02_delayed_exit(void)
+static void test_disc_life_02_worker_inside_mutex_when_stop_begins(void)
 {
-    printf("DISC-LIFE-02: delayed exit joins cleanly within timeout\n");
+    printf("DISC-LIFE-02: worker/mutex contention when stop begins resolves cleanly\n");
     reset_all();
     test_task_reset_invalid_notify_count();
     test_task_reset_external_delete_count();
     boot_time_and_discovery();
     DISC(23, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
 
-    /* Hold worker */
-    michi_discovery_test_hold_worker(true);
+    /* 1. Acquire announce mutex (simulates active announce work in progress) */
+    michi_discovery_test_lock();
 
-    /* Spawn thread to release worker after 50ms */
+    /* 2. Initiate shutdown in a separate thread while mutex is held */
     pthread_t th;
-    pthread_create(&th, NULL, release_discovery_worker_thread, NULL);
+    pthread_create(&th, NULL, shutdown_discovery_thread, NULL);
 
-    DISC(23, michi_discovery_shutdown() == ESP_OK, "shutdown joins delayed worker within 1s timeout");
-    pthread_join(th, NULL);
+    /* 3. Sleep briefly: shutdown sends stop request and waits for worker/mutex */
+    usleep(50000); /* 50ms */
+
+    /* 4. Release announce mutex */
+    michi_discovery_test_unlock();
+
+    /* 5. Shutdown thread must complete cleanly with ESP_OK */
+    void *ret = NULL;
+    pthread_join(th, &ret);
+    DISC(23, (esp_err_t)(intptr_t)ret == ESP_OK, "shutdown succeeds after mutex released");
 
     DISC(23, michi_discovery_test_worker_state() == 0 /* MICHI_WORKER_STOPPED */, "worker stopped");
     DISC(23, test_task_invalid_notify_count() == 0, "no invalid task notify");
@@ -1051,48 +1057,60 @@ static void test_disc_life_02_delayed_exit(void)
     teardown();
 }
 
-static void test_disc_life_03_exit_just_after_timeout(void)
+static void test_disc_life_03_first_shutdown_timeout_resources_preserved(void)
 {
-    printf("DISC-LIFE-03: worker exit after timeout allows clean retry without double notify\n");
+    printf("DISC-LIFE-03: first shutdown timeout preserves socket/mutex/timer/resources\n");
     reset_all();
     test_task_reset_invalid_notify_count();
     test_task_reset_external_delete_count();
     boot_time_and_discovery();
     DISC(24, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
 
-    /* Hold worker permanently so first shutdown times out */
+    /* Hold worker so shutdown times out */
     michi_discovery_test_hold_worker(true);
 
-    /* First shutdown attempt: should time out after ~1000ms */
     esp_err_t err = michi_discovery_shutdown();
     DISC(24, err == ESP_ERR_TIMEOUT, "shutdown returns ESP_ERR_TIMEOUT on timeout");
-    DISC(24, test_task_external_delete_count() == 0, "worker task not killed externally on timeout");
 
-    /* Now worker finishes delayed cleanup and exits */
+    /* INVARIANT: While worker is alive, destructive cleanup must NOT run */
+    DISC(24, michi_discovery_test_has_mutex(), "DISC-LIFE-03: mutex preserved on timeout");
+    DISC(24, michi_discovery_test_has_timer(), "DISC-LIFE-03: timer preserved on timeout");
+    DISC(24, michi_discovery_test_socket_fd() >= 0, "DISC-LIFE-03: socket preserved on timeout");
+    DISC(24, michi_discovery_test_is_active(), "DISC-LIFE-03: active state preserved on timeout");
+    DISC(24, test_task_external_delete_count() == 0, "worker task not externally killed");
+
+    /* Cleanup for next test */
     michi_discovery_test_hold_worker(false);
-    usleep(50000); /* 50ms: give worker time to execute its self-exit and mark EXITED */
-
-    /* Second shutdown attempt: retry */
-    DISC(24, michi_discovery_shutdown() == ESP_OK, "retry shutdown succeeds cleanly");
-    DISC(24, michi_discovery_test_worker_state() == 0 /* MICHI_WORKER_STOPPED */, "worker stopped after retry");
-    DISC(24, test_task_invalid_notify_count() == 0, "no notification sent to dead worker task");
-    DISC(24, test_task_external_delete_count() == 0, "worker never externally deleted");
+    usleep(50000);
+    michi_discovery_shutdown();
     teardown();
 }
 
-static void test_disc_life_04_repeated_shutdown(void)
+static void test_disc_life_04_worker_exit_after_timeout_retry_succeeds(void)
 {
-    printf("DISC-LIFE-04: repeated shutdown is safe and idempotent\n");
+    printf("DISC-LIFE-04: worker exits after timeout; retry succeeds\n");
     reset_all();
     test_task_reset_invalid_notify_count();
     test_task_reset_external_delete_count();
     boot_time_and_discovery();
     DISC(25, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
-    DISC(25, michi_discovery_shutdown() == ESP_OK, "first shutdown succeeds");
-    DISC(25, michi_discovery_shutdown() == ESP_OK, "second shutdown succeeds (idempotent)");
-    DISC(25, michi_discovery_shutdown() == ESP_OK, "third shutdown succeeds (idempotent)");
-    DISC(25, test_task_invalid_notify_count() == 0, "no invalid task notify across repeated shutdowns");
-    DISC(25, test_task_external_delete_count() == 0, "no external vTaskDelete across repeated shutdowns");
+
+    /* Hold worker */
+    michi_discovery_test_hold_worker(true);
+    DISC(25, michi_discovery_shutdown() == ESP_ERR_TIMEOUT, "first shutdown times out");
+
+    /* Worker exits after timeout */
+    michi_discovery_test_hold_worker(false);
+    usleep(50000); /* 50ms */
+
+    /* Second shutdown attempt: retry */
+    DISC(25, michi_discovery_shutdown() == ESP_OK, "DISC-LIFE-04: retry shutdown succeeds");
+    DISC(25, !michi_discovery_test_has_mutex(), "mutex destroyed after clean retry");
+    DISC(25, !michi_discovery_test_has_timer(), "timer destroyed after clean retry");
+    DISC(25, michi_discovery_test_socket_fd() == -1, "socket closed after clean retry");
+    DISC(25, michi_discovery_test_worker_state() == 0, "worker state stopped");
+    DISC(25, test_task_invalid_notify_count() == 0, "zero notifications to dead worker");
+    DISC(25, test_task_external_delete_count() == 0, "worker never externally deleted");
     teardown();
 }
 
@@ -1114,6 +1132,45 @@ static void test_disc_life_05_time_sync_after_shutdown(void)
 
     DISC(26, test_task_invalid_notify_count() == 0, "no notification sent to dead discovery task");
     DISC(26, test_task_external_delete_count() == 0, "no external vTaskDelete");
+    teardown();
+}
+
+static void test_disc_life_06_timer_callback_racing_shutdown(void)
+{
+    printf("DISC-LIFE-06: timer callback racing shutdown cannot access destroyed state\n");
+    reset_all();
+    test_task_reset_invalid_notify_count();
+    test_task_reset_external_delete_count();
+    boot_time_and_discovery();
+    DISC(27, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+
+    /* Advance timer to trigger callback */
+    test_esp_timer_advance(40000000ULL);
+
+    /* Immediately shutdown */
+    DISC(27, michi_discovery_shutdown() == ESP_OK, "shutdown succeeds cleanly during active timer tick");
+
+    /* Attempt to notify tick after shutdown */
+    michi_discovery_test_notify_tick();
+    test_esp_timer_advance(40000000ULL);
+
+    DISC(27, test_task_invalid_notify_count() == 0, "DISC-LIFE-06: no invalid notify to dead task");
+    teardown();
+}
+
+static void test_disc_life_07_repeated_shutdown_idempotent(void)
+{
+    printf("DISC-LIFE-07: repeated shutdown is idempotent\n");
+    reset_all();
+    test_task_reset_invalid_notify_count();
+    test_task_reset_external_delete_count();
+    boot_time_and_discovery();
+    DISC(28, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+    DISC(28, michi_discovery_shutdown() == ESP_OK, "first shutdown succeeds");
+    DISC(28, michi_discovery_shutdown() == ESP_OK, "second shutdown succeeds (idempotent)");
+    DISC(28, michi_discovery_shutdown() == ESP_OK, "third shutdown succeeds (idempotent)");
+    DISC(28, test_task_invalid_notify_count() == 0, "no invalid task notify across repeated shutdowns");
+    DISC(28, test_task_external_delete_count() == 0, "no external vTaskDelete across repeated shutdowns");
     teardown();
 }
 
@@ -1143,13 +1200,15 @@ int main(void)
     test_shut_disc_02_shutdown_while_tick_pending();
     test_shut_disc_03_shutdown_while_sync_pending();
     test_disc_life_01_normal_stop();
-    test_disc_life_02_delayed_exit();
-    test_disc_life_03_exit_just_after_timeout();
-    test_disc_life_04_repeated_shutdown();
+    test_disc_life_02_worker_inside_mutex_when_stop_begins();
+    test_disc_life_03_first_shutdown_timeout_resources_preserved();
+    test_disc_life_04_worker_exit_after_timeout_retry_succeeds();
     test_disc_life_05_time_sync_after_shutdown();
+    test_disc_life_06_timer_callback_racing_shutdown();
+    test_disc_life_07_repeated_shutdown_idempotent();
 
     if (failures == 0) {
-        printf("test_discovery_disc: all DISC-01..DISC-15 + TIMER-02 + EVENT-COALESCE-DISC-01..02 + SHUT-DISC-01..03 + DISC-LIFE-01..05 passed\n");
+        printf("test_discovery_disc: all DISC-01..DISC-15 + TIMER-02 + EVENT-COALESCE-DISC-01..02 + SHUT-DISC-01..03 + DISC-LIFE-01..07 passed\n");
         return 0;
     }
     printf("test_discovery_disc: %d check(s) FAILED\n", failures);

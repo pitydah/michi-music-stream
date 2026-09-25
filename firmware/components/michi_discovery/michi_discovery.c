@@ -750,5 +750,20 @@ __attribute__((weak)) int michi_discovery_test_worker_state(void)
     portEXIT_CRITICAL(&s_lifecycle_mux);
     return st;
 }
+
+__attribute__((weak)) bool michi_discovery_test_has_mutex(void)
+{
+    return s_announce_mutex != NULL;
+}
+
+__attribute__((weak)) bool michi_discovery_test_has_timer(void)
+{
+    return s_announce_timer != NULL;
+}
+
+__attribute__((weak)) int michi_discovery_test_socket_fd(void)
+{
+    return s_sock;
+}
 #endif
 

@@ -213,6 +213,9 @@ bool michi_discovery_test_is_active(void);
 void michi_discovery_test_notify_tick(void);
 void michi_discovery_test_hold_worker(bool hold);
 int michi_discovery_test_worker_state(void);
+bool michi_discovery_test_has_mutex(void);
+bool michi_discovery_test_has_timer(void);
+int michi_discovery_test_socket_fd(void);
 #endif
 
 #ifdef __cplusplus
