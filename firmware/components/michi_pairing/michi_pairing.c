@@ -94,15 +94,24 @@ typedef struct {
 #define PAIRING_NOTIFY_EXPIRED (1u << 0)
 #define PAIRING_NOTIFY_STOP    (1u << 1)
 
+typedef enum {
+    MICHI_WORKER_STOPPED = 0,
+    MICHI_WORKER_RUNNING,
+    MICHI_WORKER_STOP_REQUESTED,
+    MICHI_WORKER_EXITED,
+} michi_worker_lifecycle_t;
+
 static SemaphoreHandle_t s_mutex;
 static esp_timer_handle_t s_timer;
 static TaskHandle_t s_pairing_task;
 static SemaphoreHandle_t s_pairing_done_sem;
+static portMUX_TYPE s_lifecycle_mux = portMUX_INITIALIZER_UNLOCKED;
+static volatile michi_worker_lifecycle_t s_worker_state = MICHI_WORKER_STOPPED;
+#ifdef MICHI_HOST_TEST
+static volatile bool s_test_hold_worker = false;
+#endif
 static uint32_t s_window_generation;
 static volatile bool s_initialized;
-static volatile bool s_teardown;
-static volatile bool s_pairing_stop_requested;
-static volatile bool s_pairing_task_done;
 static bool s_window_open;
 /* Window opened at (esp_timer_get_time, us): monotonic reference and the
  * deadline check that keeps the getters honest during the tiny window
@@ -408,32 +417,39 @@ static void window_close_locked(const char *reason, bool notify)
 static void window_timer_cb(void *arg)
 {
     (void)arg;
-    if (s_teardown || s_pairing_stop_requested) {
-        return;
-    }
-    /* FreeRTOS task notification bits provide lossless atomic event coalescing */
-    if (s_pairing_task != NULL) {
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    if (s_worker_state == MICHI_WORKER_RUNNING && s_pairing_task != NULL) {
         xTaskNotify(s_pairing_task, PAIRING_NOTIFY_EXPIRED, eSetBits);
     }
+    portEXIT_CRITICAL(&s_lifecycle_mux);
 }
 
 static void pairing_task_func(void *arg)
 {
     (void)arg;
-    while (!s_pairing_stop_requested) {
+    while (1) {
         uint32_t notified_bits = 0;
         BaseType_t r = xTaskNotifyWait(0, UINT32_MAX, &notified_bits, pdMS_TO_TICKS(50));
-        if (s_pairing_stop_requested || (r == pdTRUE && (notified_bits & PAIRING_NOTIFY_STOP))) {
+
+        bool stop = false;
+        portENTER_CRITICAL(&s_lifecycle_mux);
+        if (s_worker_state >= MICHI_WORKER_STOP_REQUESTED ||
+            (r == pdTRUE && (notified_bits & PAIRING_NOTIFY_STOP))) {
+            s_worker_state = MICHI_WORKER_STOP_REQUESTED;
+            stop = true;
+        }
+        portEXIT_CRITICAL(&s_lifecycle_mux);
+        if (stop) {
             break;
         }
 
         if (r == pdTRUE && (notified_bits & PAIRING_NOTIFY_EXPIRED)) {
-            if (s_teardown || s_pairing_stop_requested) {
+            if (s_worker_state >= MICHI_WORKER_STOP_REQUESTED) {
                 continue;
             }
             xSemaphoreTake(s_mutex, portMAX_DELAY);
             /* Stale-callback guard: verify deadline under mutex */
-            if (s_teardown || s_pairing_stop_requested || !s_window_open) {
+            if (s_worker_state >= MICHI_WORKER_STOP_REQUESTED || !s_window_open) {
                 xSemaphoreGive(s_mutex);
                 continue;
             }
@@ -449,7 +465,22 @@ static void pairing_task_func(void *arg)
             pin_display_notify(NULL);
         }
     }
-    s_pairing_task_done = true;
+
+#ifdef MICHI_HOST_TEST
+    while (s_test_hold_worker) {
+        vTaskDelay(10);
+    }
+#endif
+
+    /* Worker exit ownership protocol:
+     * Once DONE semaphore is given, worker will perform NO access to
+     * component-owned mutex/timer/etc. The worker marks EXITED and clears
+     * the live task handle before giving the semaphore. */
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    s_worker_state = MICHI_WORKER_EXITED;
+    s_pairing_task = NULL;
+    portEXIT_CRITICAL(&s_lifecycle_mux);
+
     if (s_pairing_done_sem != NULL) {
         xSemaphoreGive(s_pairing_done_sem);
     }
@@ -505,8 +536,6 @@ esp_err_t michi_pairing_init(void)
     if (s_initialized) {
         return ESP_OK;
     }
-    s_teardown = false;
-
     s_mutex = xSemaphoreCreateMutex();
     if (s_mutex == NULL) {
         ESP_LOGE(TAG, "pairing: init mutex_failed err=%s",
@@ -538,9 +567,17 @@ esp_err_t michi_pairing_init(void)
         return ESP_ERR_NO_MEM;
     }
 
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    s_worker_state = MICHI_WORKER_RUNNING;
+    portEXIT_CRITICAL(&s_lifecycle_mux);
+
     if (xTaskCreate(pairing_task_func, "michi_pairing", 4096, NULL, 5,
                     &s_pairing_task) != pdPASS) {
         ESP_LOGE(TAG, "pairing: init task_failed");
+        portENTER_CRITICAL(&s_lifecycle_mux);
+        s_worker_state = MICHI_WORKER_STOPPED;
+        s_pairing_task = NULL;
+        portEXIT_CRITICAL(&s_lifecycle_mux);
         vSemaphoreDelete(s_pairing_done_sem);
         s_pairing_done_sem = NULL;
         esp_timer_delete(s_timer);
@@ -1196,29 +1233,46 @@ esp_err_t michi_pairing_shutdown(void)
     if (!s_initialized) {
         return ESP_OK;
     }
-    /* Cooperative teardown:
-     *   1. s_teardown = true & s_pairing_stop_requested = true FIRST.
-     *   2. esp_timer_stop: no further callbacks can fire.
-     *   3. Wake worker via stop_msg so it exits loop and sets s_pairing_task_done.
-     *   4. Wait for worker to finish (cooperative join), then join/free task handle.
-     *   5. With worker completely dead, close window and delete timer/mutex/queue safely.
-     */
-    s_teardown = true;
-    s_pairing_stop_requested = true;
+
+    /* 1. Request cooperative stop and notify worker if running */
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    if (s_worker_state == MICHI_WORKER_RUNNING) {
+        s_worker_state = MICHI_WORKER_STOP_REQUESTED;
+        if (s_pairing_task != NULL) {
+            xTaskNotify(s_pairing_task, PAIRING_NOTIFY_STOP, eSetBits);
+        }
+    }
+    portEXIT_CRITICAL(&s_lifecycle_mux);
+
+    /* 2. Stop timer so no further callbacks can fire */
     s_window_generation++;
     if (s_timer != NULL) {
         esp_timer_stop(s_timer);
     }
-    if (s_pairing_task != NULL) {
-        xTaskNotify(s_pairing_task, PAIRING_NOTIFY_STOP, eSetBits);
+
+    /* 3. Wait for worker exit if not already EXITED */
+    if (s_worker_state != MICHI_WORKER_EXITED) {
         if (s_pairing_done_sem != NULL) {
             if (xSemaphoreTake(s_pairing_done_sem, pdMS_TO_TICKS(1000)) != pdTRUE) {
                 ESP_LOGE(TAG, "pairing: worker task join timed out");
+                /* On timeout: preserve valid retriable state. DO NOT destroy resources! */
                 return ESP_ERR_TIMEOUT;
             }
         }
-        s_pairing_task = NULL;
+    } else {
+        /* Worker already exited; drain any pending signal in semaphore */
+        if (s_pairing_done_sem != NULL) {
+            xSemaphoreTake(s_pairing_done_sem, 0);
+        }
     }
+
+    /* 4. With worker confirmed EXITED, transition to STOPPED */
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    s_worker_state = MICHI_WORKER_STOPPED;
+    s_pairing_task = NULL;
+    portEXIT_CRITICAL(&s_lifecycle_mux);
+
+    /* 5. With worker completely dead and no callbacks in flight, clean up resources */
     if (s_mutex != NULL) {
         xSemaphoreTake(s_mutex, portMAX_DELAY);
         window_close_locked("shutdown", false);
@@ -1235,8 +1289,6 @@ esp_err_t michi_pairing_shutdown(void)
         s_pairing_done_sem = NULL;
     }
     s_initialized = false;
-    s_pairing_stop_requested = false;
-    s_pairing_task_done = false;
 
     ESP_LOGI(TAG, "subsystem=pairing state=off phase=10");
     /* A reboot closes the window: the screen must not keep the PIN. The
@@ -1245,6 +1297,7 @@ esp_err_t michi_pairing_shutdown(void)
     return ESP_OK;
 }
 
+#ifdef MICHI_HOST_TEST
 /* --- test hooks ------------------------------------------------------- */
 
 __attribute__((weak)) void michi_pairing_test_lock(void)
@@ -1268,8 +1321,25 @@ __attribute__((weak)) bool michi_pairing_test_is_window_open_locked(void)
 
 __attribute__((weak)) void michi_pairing_test_notify_expired(void)
 {
-    if (s_pairing_task != NULL) {
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    if (s_worker_state == MICHI_WORKER_RUNNING && s_pairing_task != NULL) {
         xTaskNotify(s_pairing_task, PAIRING_NOTIFY_EXPIRED, eSetBits);
     }
+    portEXIT_CRITICAL(&s_lifecycle_mux);
 }
+
+__attribute__((weak)) void michi_pairing_test_hold_worker(bool hold)
+{
+    s_test_hold_worker = hold;
+}
+
+__attribute__((weak)) int michi_pairing_test_worker_state(void)
+{
+    int st;
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    st = (int)s_worker_state;
+    portEXIT_CRITICAL(&s_lifecycle_mux);
+    return st;
+}
+#endif
 

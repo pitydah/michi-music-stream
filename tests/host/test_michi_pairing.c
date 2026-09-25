@@ -22,7 +22,10 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <pthread.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "michi_pairing.h"
 #include "validators.h"
 #include "nvs.h" /* fake NVS shim: test hooks only */
@@ -1213,6 +1216,95 @@ static void test_shut_pair_02_shutdown_while_event_pending(void)
     CHECK(!michi_pairing_is_window_open(), "SHUT-PAIR-02: window closed cleanly");
 }
 
+/* ── PAIR-LIFE Lifecycle State Machine Tests ──────────────── */
+
+static void test_pair_life_01_normal_stop(void)
+{
+    printf("PAIR-LIFE-01: normal stop lifecycle transitions\n");
+    pairing_test_reset(0xABCD1001);
+    test_task_reset_invalid_notify_count();
+    test_task_reset_external_delete_count();
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_test_worker_state() == 1 /* MICHI_WORKER_RUNNING */, "worker is running");
+
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+    CHECK(michi_pairing_test_worker_state() == 0 /* MICHI_WORKER_STOPPED */, "worker stopped cleanly");
+    CHECK(test_task_invalid_notify_count() == 0, "no invalid task notify");
+    CHECK(test_task_external_delete_count() == 0, "no external vTaskDelete");
+}
+
+static void *release_pairing_worker_thread(void *arg)
+{
+    (void)arg;
+    usleep(50000); /* 50ms */
+    michi_pairing_test_hold_worker(false);
+    return NULL;
+}
+
+static void test_pair_life_02_delayed_exit(void)
+{
+    printf("PAIR-LIFE-02: delayed exit joins cleanly within timeout\n");
+    pairing_test_reset(0xABCD1002);
+    test_task_reset_invalid_notify_count();
+    test_task_reset_external_delete_count();
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+
+    /* Hold worker */
+    michi_pairing_test_hold_worker(true);
+
+    /* Spawn thread to release worker after 50ms */
+    pthread_t th;
+    pthread_create(&th, NULL, release_pairing_worker_thread, NULL);
+
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown joins delayed worker within 1s timeout");
+    pthread_join(th, NULL);
+
+    CHECK(michi_pairing_test_worker_state() == 0 /* MICHI_WORKER_STOPPED */, "worker stopped");
+    CHECK(test_task_invalid_notify_count() == 0, "no invalid task notify");
+    CHECK(test_task_external_delete_count() == 0, "no external vTaskDelete");
+}
+
+static void test_pair_life_03_exit_just_after_timeout(void)
+{
+    printf("PAIR-LIFE-03: worker exit after timeout allows clean retry without double notify\n");
+    pairing_test_reset(0xABCD1003);
+    test_task_reset_invalid_notify_count();
+    test_task_reset_external_delete_count();
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+
+    /* Hold worker permanently so first shutdown times out */
+    michi_pairing_test_hold_worker(true);
+
+    /* First shutdown attempt: should time out after ~1000ms */
+    esp_err_t err = michi_pairing_shutdown();
+    CHECK(err == ESP_ERR_TIMEOUT, "shutdown returns ESP_ERR_TIMEOUT on timeout");
+    CHECK(test_task_external_delete_count() == 0, "worker task not killed externally on timeout");
+
+    /* Now worker finishes delayed cleanup and exits */
+    michi_pairing_test_hold_worker(false);
+    usleep(50000); /* 50ms: give worker time to execute its self-exit and mark EXITED */
+
+    /* Second shutdown attempt: retry */
+    CHECK(michi_pairing_shutdown() == ESP_OK, "retry shutdown succeeds cleanly");
+    CHECK(michi_pairing_test_worker_state() == 0 /* MICHI_WORKER_STOPPED */, "worker stopped after retry");
+    CHECK(test_task_invalid_notify_count() == 0, "no notification sent to dead worker task");
+    CHECK(test_task_external_delete_count() == 0, "worker never externally deleted");
+}
+
+static void test_pair_life_04_repeated_shutdown(void)
+{
+    printf("PAIR-LIFE-04: repeated shutdown is safe and idempotent\n");
+    pairing_test_reset(0xABCD1004);
+    test_task_reset_invalid_notify_count();
+    test_task_reset_external_delete_count();
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_shutdown() == ESP_OK, "first shutdown succeeds");
+    CHECK(michi_pairing_shutdown() == ESP_OK, "second shutdown succeeds (idempotent)");
+    CHECK(michi_pairing_shutdown() == ESP_OK, "third shutdown succeeds (idempotent)");
+    CHECK(test_task_invalid_notify_count() == 0, "no invalid task notify across repeated shutdowns");
+    CHECK(test_task_external_delete_count() == 0, "no external vTaskDelete across repeated shutdowns");
+}
+
 int main(void)
 {
     test_sha256_known_answer();
@@ -1237,9 +1329,13 @@ int main(void)
     test_event_coalesce_pair_01();
     test_shut_pair_01_cooperative_shutdown();
     test_shut_pair_02_shutdown_while_event_pending();
+    test_pair_life_01_normal_stop();
+    test_pair_life_02_delayed_exit();
+    test_pair_life_03_exit_just_after_timeout();
+    test_pair_life_04_repeated_shutdown();
 
     if (failures == 0) {
-        printf("test_michi_pairing: all tests passed (including EVENT-COALESCE-PAIR-01, SHUT-PAIR-01..02)\n");
+        printf("test_michi_pairing: all tests passed (including PAIR-LIFE-01..04)\n");
         return 0;
     }
     printf("test_michi_pairing: %d check(s) FAILED\n", failures);

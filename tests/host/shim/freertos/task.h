@@ -56,6 +56,12 @@ static inline void xTaskNotifyGive(TaskHandle_t task)
 
 uint32_t ulTaskNotifyTake(BaseType_t clear_count, TickType_t ticks);
 
+/* Test diagnostic hooks to detect stale task handle usage and external delete */
+uint32_t test_task_invalid_notify_count(void);
+void test_task_reset_invalid_notify_count(void);
+uint32_t test_task_external_delete_count(void);
+void test_task_reset_external_delete_count(void);
+
 #ifdef __cplusplus
 }
 #endif

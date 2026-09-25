@@ -58,6 +58,19 @@
 #define DISCOVERY_NOTIFY_TIME_SYNC (1u << 1)
 #define DISCOVERY_NOTIFY_STOP      (1u << 2)
 
+typedef enum {
+    MICHI_WORKER_STOPPED = 0,
+    MICHI_WORKER_RUNNING,
+    MICHI_WORKER_STOP_REQUESTED,
+    MICHI_WORKER_EXITED,
+} michi_worker_lifecycle_t;
+
+static portMUX_TYPE s_lifecycle_mux = portMUX_INITIALIZER_UNLOCKED;
+static volatile michi_worker_lifecycle_t s_worker_state = MICHI_WORKER_STOPPED;
+#ifdef MICHI_HOST_TEST
+static volatile bool s_test_hold_worker = false;
+#endif
+
 static bool s_initialized;
 static bool s_active;
 /* Clock gate (P0-02): the defer warning is logged ONCE per transition
@@ -74,8 +87,6 @@ static SemaphoreHandle_t s_announce_mutex;
 static SemaphoreHandle_t s_discovery_done_sem;
 static TaskHandle_t s_discovery_task;
 static uint32_t s_discovery_generation;
-static volatile bool s_discovery_stop_requested;
-static volatile bool s_discovery_task_done;
 
 /* ------------------------------------------------------------------ */
 /* Internals (all called with the announce mutex held)                */
@@ -312,13 +323,11 @@ static void arm_announce_timer_locked(void)
 static void announce_timer_cb(void *arg)
 {
     (void)arg;
-    if (s_discovery_stop_requested) {
-        return;
-    }
-    /* FreeRTOS task notification bits provide lossless atomic event coalescing */
-    if (s_discovery_task != NULL) {
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    if (s_worker_state == MICHI_WORKER_RUNNING && s_discovery_task != NULL) {
         xTaskNotify(s_discovery_task, DISCOVERY_NOTIFY_TICK, eSetBits);
     }
+    portEXIT_CRITICAL(&s_lifecycle_mux);
 }
 
 /* P0-02: michi_time sync callback (runs in the michi_time sync task
@@ -328,24 +337,32 @@ static void announce_timer_cb(void *arg)
 static void on_time_sync_cb(void *ctx)
 {
     (void)ctx;
-    if (!s_initialized || s_discovery_stop_requested) {
-        return;
-    }
-    /* FreeRTOS task notification bits provide lossless atomic event coalescing */
-    if (s_discovery_task != NULL) {
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    if (s_worker_state == MICHI_WORKER_RUNNING && s_discovery_task != NULL) {
         xTaskNotify(s_discovery_task, DISCOVERY_NOTIFY_TIME_SYNC, eSetBits);
     }
+    portEXIT_CRITICAL(&s_lifecycle_mux);
 }
 
 static void discovery_task_func(void *arg)
 {
     (void)arg;
-    while (!s_discovery_stop_requested) {
+    while (1) {
         uint32_t notified_bits = 0;
         BaseType_t r = xTaskNotifyWait(0, UINT32_MAX, &notified_bits, pdMS_TO_TICKS(50));
-        if (s_discovery_stop_requested || (r == pdTRUE && (notified_bits & DISCOVERY_NOTIFY_STOP))) {
+
+        bool stop = false;
+        portENTER_CRITICAL(&s_lifecycle_mux);
+        if (s_worker_state >= MICHI_WORKER_STOP_REQUESTED ||
+            (r == pdTRUE && (notified_bits & DISCOVERY_NOTIFY_STOP))) {
+            s_worker_state = MICHI_WORKER_STOP_REQUESTED;
+            stop = true;
+        }
+        portEXIT_CRITICAL(&s_lifecycle_mux);
+        if (stop) {
             break;
         }
+
         bool do_announce = false;
         bool do_rearm = false;
 
@@ -360,11 +377,11 @@ static void discovery_task_func(void *arg)
         }
 
         if (do_announce) {
-            if (s_discovery_stop_requested || s_announce_mutex == NULL) {
+            if (s_worker_state >= MICHI_WORKER_STOP_REQUESTED || s_announce_mutex == NULL) {
                 continue;
             }
             if (xSemaphoreTake(s_announce_mutex, pdMS_TO_TICKS(MICHI_DISCOVERY_LOCK_MS)) == pdTRUE) {
-                if (!s_discovery_stop_requested && s_initialized && s_active) {
+                if (s_worker_state == MICHI_WORKER_RUNNING && s_initialized && s_active) {
                     advertise_mdns_locked();
                     announce_now_locked();
                     if (do_rearm) {
@@ -375,7 +392,18 @@ static void discovery_task_func(void *arg)
             }
         }
     }
-    s_discovery_task_done = true;
+
+#ifdef MICHI_HOST_TEST
+    while (s_test_hold_worker) {
+        vTaskDelay(10);
+    }
+#endif
+
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    s_worker_state = MICHI_WORKER_EXITED;
+    s_discovery_task = NULL;
+    portEXIT_CRITICAL(&s_lifecycle_mux);
+
     if (s_discovery_done_sem != NULL) {
         xSemaphoreGive(s_discovery_done_sem);
     }
@@ -467,9 +495,17 @@ esp_err_t michi_discovery_init(void)
         return ESP_ERR_NO_MEM;
     }
 
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    s_worker_state = MICHI_WORKER_RUNNING;
+    portEXIT_CRITICAL(&s_lifecycle_mux);
+
     if (xTaskCreate(discovery_task_func, "michi_discovery", 4096, NULL, 5,
                     &s_discovery_task) != pdPASS) {
         ESP_LOGE(TAG, "discovery: task create failed");
+        portENTER_CRITICAL(&s_lifecycle_mux);
+        s_worker_state = MICHI_WORKER_STOPPED;
+        s_discovery_task = NULL;
+        portEXIT_CRITICAL(&s_lifecycle_mux);
         vSemaphoreDelete(s_discovery_done_sem);
         s_discovery_done_sem = NULL;
         vSemaphoreDelete(s_announce_mutex);
@@ -479,6 +515,7 @@ esp_err_t michi_discovery_init(void)
         return ESP_ERR_NO_MEM;
     }
 
+    s_clock_gate_logged = false;
     s_discovery_generation = 0;
     s_initialized = true;
     ESP_LOGI(TAG, "subsystem=discovery state=ok");
@@ -568,51 +605,86 @@ esp_err_t michi_discovery_shutdown(void)
     if (!s_initialized) {
         return ESP_OK;
     }
-    /* 1. Request cooperative stop */
-    s_discovery_stop_requested = true;
-    s_discovery_generation++;
 
-    /* 2. Stop timer so no new ticks fire */
+    /* 1. Unregister external time sync callback immediately so SNTP syncs
+     * cannot attempt to access discovery during teardown */
+    (void)michi_time_register_sync_cb(NULL, NULL);
+
+    /* 2. Stop announce timer so no new ticks fire */
+    s_discovery_generation++;
     if (s_announce_timer != NULL) {
         esp_timer_stop(s_announce_timer);
     }
 
-    /* 3. Wake up worker task via notification */
-    if (s_discovery_task != NULL) {
-        xTaskNotify(s_discovery_task, DISCOVERY_NOTIFY_STOP, eSetBits);
+    /* 3. Request cooperative stop and wake up worker if running */
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    if (s_worker_state == MICHI_WORKER_RUNNING) {
+        s_worker_state = MICHI_WORKER_STOP_REQUESTED;
+        if (s_discovery_task != NULL) {
+            xTaskNotify(s_discovery_task, DISCOVERY_NOTIFY_STOP, eSetBits);
+        }
     }
+    portEXIT_CRITICAL(&s_lifecycle_mux);
 
-    /* 4. Stop discovery sockets and services */
-    michi_discovery_stop();
-
-    /* 5. Cooperative join: wait for worker to exit */
-    if (s_discovery_task != NULL) {
+    /* 4. Join worker: wait for worker to exit */
+    if (s_worker_state != MICHI_WORKER_EXITED) {
         if (s_discovery_done_sem != NULL) {
             if (xSemaphoreTake(s_discovery_done_sem, pdMS_TO_TICKS(1000)) != pdTRUE) {
                 ESP_LOGE(TAG, "discovery: worker join timed out");
+                /* On timeout: preserve retriable state, do not destroy resources! */
                 return ESP_ERR_TIMEOUT;
             }
         }
-        s_discovery_task = NULL;
+    } else {
+        if (s_discovery_done_sem != NULL) {
+            xSemaphoreTake(s_discovery_done_sem, 0);
+        }
     }
 
-    /* 6. Clean up resources */
-    mdns_free();
-    if (s_announce_timer != NULL) {
-        esp_timer_delete(s_announce_timer);
-        s_announce_timer = NULL;
-    }
+    /* 5. Worker is guaranteed dead. Caller is now the sole exclusive owner */
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    s_worker_state = MICHI_WORKER_STOPPED;
+    s_discovery_task = NULL;
+    portEXIT_CRITICAL(&s_lifecycle_mux);
+
+    /* 6. Authoritative resource teardown under announce_mutex */
     if (s_announce_mutex != NULL) {
+        xSemaphoreTake(s_announce_mutex, portMAX_DELAY);
+        if (s_active) {
+            s_active = false;
+            retire_mdns_locked();
+        }
+        if (s_sock >= 0) {
+            close(s_sock);
+            s_sock = -1;
+        }
+        s_ip[0] = '\0';
+        s_clock_gate_logged = false;
+        mdns_free();
+        if (s_announce_timer != NULL) {
+            esp_timer_delete(s_announce_timer);
+            s_announce_timer = NULL;
+        }
+        xSemaphoreGive(s_announce_mutex);
         vSemaphoreDelete(s_announce_mutex);
         s_announce_mutex = NULL;
+    } else {
+        s_active = false;
+        s_ip[0] = '\0';
+        s_clock_gate_logged = false;
+        mdns_free();
+        if (s_announce_timer != NULL) {
+            esp_timer_delete(s_announce_timer);
+            s_announce_timer = NULL;
+        }
     }
+
     if (s_discovery_done_sem != NULL) {
         vSemaphoreDelete(s_discovery_done_sem);
         s_discovery_done_sem = NULL;
     }
     s_initialized = false;
-    s_discovery_stop_requested = false;
-    s_discovery_task_done = false;
+    ESP_LOGI(TAG, "subsystem=discovery state=off");
 
     return ESP_OK;
 }
@@ -629,6 +701,7 @@ esp_err_t michi_discovery_get_server_id(char *out, size_t out_len)
     return ESP_OK;
 }
 
+#ifdef MICHI_HOST_TEST
 /* --- test hooks ------------------------------------------------------- */
 
 __attribute__((weak)) void michi_discovery_test_lock(void)
@@ -657,8 +730,25 @@ __attribute__((weak)) bool michi_discovery_test_is_active(void)
 
 __attribute__((weak)) void michi_discovery_test_notify_tick(void)
 {
-    if (s_discovery_task != NULL) {
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    if (s_worker_state == MICHI_WORKER_RUNNING && s_discovery_task != NULL) {
         xTaskNotify(s_discovery_task, DISCOVERY_NOTIFY_TICK, eSetBits);
     }
+    portEXIT_CRITICAL(&s_lifecycle_mux);
 }
+
+__attribute__((weak)) void michi_discovery_test_hold_worker(bool hold)
+{
+    s_test_hold_worker = hold;
+}
+
+__attribute__((weak)) int michi_discovery_test_worker_state(void)
+{
+    int st;
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    st = (int)s_worker_state;
+    portEXIT_CRITICAL(&s_lifecycle_mux);
+    return st;
+}
+#endif
 

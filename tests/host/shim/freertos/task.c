@@ -7,7 +7,14 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 #include <time.h>
+
+typedef enum {
+    SHIM_TASK_ALIVE = 1,
+    SHIM_TASK_SELF_DELETED,
+    SHIM_TASK_JOINED_OR_RETIRED,
+} shim_task_lifecycle_t;
 
 struct michi_shim_task {
     pthread_t thread;
@@ -17,8 +24,31 @@ struct michi_shim_task {
     pthread_cond_t notify_cond;
     uint32_t notify_value;
     bool has_notification;
-    bool self_deleted;
+    shim_task_lifecycle_t state;
 };
+
+static uint32_t s_invalid_notify_count = 0;
+static uint32_t s_external_delete_count = 0;
+
+uint32_t test_task_invalid_notify_count(void)
+{
+    return s_invalid_notify_count;
+}
+
+void test_task_reset_invalid_notify_count(void)
+{
+    s_invalid_notify_count = 0;
+}
+
+uint32_t test_task_external_delete_count(void)
+{
+    return s_external_delete_count;
+}
+
+void test_task_reset_external_delete_count(void)
+{
+    s_external_delete_count = 0;
+}
 
 static __thread michi_shim_task_t *s_current_task = NULL;
 
@@ -55,7 +85,7 @@ BaseType_t xTaskCreate(TaskFunction_t fn, const char *name,
     pthread_cond_init(&t->notify_cond, NULL);
     t->notify_value = 0;
     t->has_notification = false;
-    t->self_deleted = false;
+    t->state = SHIM_TASK_ALIVE;
 
     if (pthread_create(&t->thread, NULL, task_entry, t) != 0) {
         pthread_mutex_destroy(&t->notify_mux);
@@ -74,6 +104,13 @@ BaseType_t xTaskNotify(TaskHandle_t task, uint32_t ulValue, eNotifyAction eActio
     }
     michi_shim_task_t *t = (michi_shim_task_t *)task;
     pthread_mutex_lock(&t->notify_mux);
+    if (t->state != SHIM_TASK_ALIVE) {
+        s_invalid_notify_count++;
+        fprintf(stderr, "HOST SHIM ERROR: xTaskNotify called on stale/dead task %p (state=%d)!\n",
+                (void *)task, (int)t->state);
+        pthread_mutex_unlock(&t->notify_mux);
+        return pdFAIL;
+    }
     if (eAction == eSetBits) {
         t->notify_value |= ulValue;
     } else if (eAction == eSetValueWithOverwrite) {
@@ -173,11 +210,17 @@ void vTaskDelete(TaskHandle_t task)
 {
     if (task == NULL) {
         if (s_current_task != NULL) {
-            s_current_task->self_deleted = true;
+            pthread_mutex_lock(&s_current_task->notify_mux);
+            s_current_task->state = SHIM_TASK_SELF_DELETED;
+            pthread_mutex_unlock(&s_current_task->notify_mux);
         }
         pthread_exit(NULL);
     } else {
+        s_external_delete_count++;
         michi_shim_task_t *t = (michi_shim_task_t *)task;
+        pthread_mutex_lock(&t->notify_mux);
+        t->state = SHIM_TASK_JOINED_OR_RETIRED;
+        pthread_mutex_unlock(&t->notify_mux);
         pthread_join(t->thread, NULL);
         pthread_mutex_destroy(&t->notify_mux);
         pthread_cond_destroy(&t->notify_cond);

@@ -13,7 +13,7 @@
 
 CC      ?= cc
 CFLAGS  ?= -std=c11 -O2 -Wall -Wextra -Werror -D_DEFAULT_SOURCE
-CPPFLAGS = -Ishim \
+CPPFLAGS = -Ishim -DMICHI_HOST_TEST \
            -I../../firmware/components/michi_ota \
            -I../../firmware/components/michi_ota/include \
            -I../../firmware/components/michi_pairing \
