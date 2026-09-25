@@ -64,7 +64,7 @@ IDENTITY_INC = -I$(IDENTITY_DIR)/include -I$(IDENTITY_DIR)/monocypher \
                -I$(IDENTITY_DIR)/blake3
 
 TESTS := test_semver test_pairing_validators test_michi_identity \
-         test_michi_pairing test_michi_session test_rtp_guard test_rtp_clock \
+         test_michi_pairing test_michi_session test_rtp_guard test_rtp_clock test_rtp_jitter \
          test_michi_button test_michi_button_debounce test_michi_ui \
          test_spiffs_journal test_michi_jb test_michi_profile_logic test_michi_ota_logic \
          test_michi_dac test_michi_display_dma \
@@ -76,7 +76,7 @@ all: $(TESTS)
 
 test: all
 	@set -e; \
-	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard test_rtp_clock test_michi_button test_michi_button_debounce test_michi_ui test_spiffs_journal test_michi_jb test_michi_profile_logic test_michi_ota_logic test_michi_dac; do ./$$t; done; \
+	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard test_rtp_clock test_rtp_jitter test_michi_button test_michi_button_debounce test_michi_ui test_spiffs_journal test_michi_jb test_michi_profile_logic test_michi_ota_logic test_michi_dac test_michi_display_dma; do ./$$t; done; \
 	if [ "$(HAS_CJSON)" = "yes" ]; then \
 	    ./test_json_helpers; \
 	    ./test_http_canonical; \
@@ -273,6 +273,10 @@ test_rtp_guard: test_rtp_guard.c $(FIRMWARE)/michi_audio/rtp_guard.c \
 test_rtp_clock: test_rtp_clock.c $(FIRMWARE)/michi_audio/michi_rtp_clock.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(FIRMWARE)/michi_audio -o $@ test_rtp_clock.c
 
+# rtp_jitter: RFC 3550 interarrival jitter and clock offset tracker.
+test_rtp_jitter: test_rtp_jitter.c $(FIRMWARE)/michi_audio/michi_rtp_jitter.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(FIRMWARE)/michi_audio -o $@ test_rtp_jitter.c
+
 # spiffs_journal: first-boot SPIFFS format decision logic (P0-07).
 # Pure-C decision function extracted from michi_log.c; no firmware deps.
 test_spiffs_journal: test_spiffs_journal.c
@@ -424,4 +428,5 @@ clean:
 	      test_capability_parity test_discovery_disc test_michi_button \
 	      test_michi_button_debounce test_michi_ui render_ui_previews \
 	      test_michi_dac test_michi_display_dma test_spiffs_journal \
-	      test_michi_jb test_michi_profile_logic test_michi_ota_logic
+	      test_michi_jb test_michi_profile_logic test_michi_ota_logic \
+	      test_rtp_clock test_rtp_jitter

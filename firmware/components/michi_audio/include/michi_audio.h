@@ -312,8 +312,9 @@ esp_err_t michi_audio_session_get_peer(char *out, size_t out_len);
  */
 typedef struct {
     uint32_t received;
-    uint32_t lost;
-    uint32_t late;
+    uint32_t lost;                      /* confirmed lost (playout deadline passed without arrival) */
+    uint32_t provisionally_missing;     /* in-flight sequence gaps (unconfirmed loss) */
+    uint32_t late;                      /* arrived after playhead elapsed */
     uint32_t duplicate;
     uint32_t reordered;
     uint32_t underruns;
@@ -323,7 +324,9 @@ typedef struct {
     uint32_t drops_ssrc_filtered;
     uint32_t drops_source_ip;
     uint32_t drops_payload_geometry;
-    uint32_t jitter_us;
+    uint32_t jitter_us;                 /* RFC 3550 interarrival jitter in microseconds */
+    uint32_t rtp_interarrival_jitter_us; /* RFC 3550 transit-difference interarrival jitter */
+    int32_t  clock_offset_us;           /* cumulative sender vs receiver arrival drift */
     uint32_t buffer_ms;
     uint32_t packets_in_buffer;
     uint32_t last_seq;

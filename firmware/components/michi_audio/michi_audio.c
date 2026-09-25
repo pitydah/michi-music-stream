@@ -54,6 +54,7 @@
 #include "michi_state.h"
 #include "michi_volume.h"
 #include "michi_rtp_clock.h"
+#include "michi_rtp_jitter.h"
 #include "michi_jb.h"
 #include "rtp_guard.h"
 
@@ -83,7 +84,6 @@
 #define MICHI_AUDIO_JOIN_TIMEOUT_MS     2000      /* session task join window */
 #define MICHI_AUDIO_SESSION_TASK_PRIO   7         /* below the I2S consumer (8) */
 #define MICHI_AUDIO_JITTER_EWMA_SHIFT   4         /* /16 smoothing, RFC 3550 style */
-#define MICHI_AUDIO_JITTER_SAMPLE_CLAMP_US 1000000 /* 1 s: sender stalls are not jitter */
 
 /* Jitter buffer capacity in packets, in 10 ms units (spec convention). */
 #define MICHI_AUDIO_MAX_PACKETS (CONFIG_MICHI_AUDIO_JITTER_MAX_MS / \
@@ -118,6 +118,8 @@ typedef struct {
      * Tracks the monotonic 64-bit form of the RTP timestamp to prevent
      * uint32_t wrap at ~24.85h causing a corrupted jitter reading. */
     michi_rtp_clock_t rtp_clock;
+    michi_rtp_jitter_t rtp_jitter;
+    int32_t  clock_offset_us;
 
     uint16_t buffer_ms;      /* negotiated jitter target (50..500 ms) */
     jitter_buffer_t jb;
@@ -154,7 +156,25 @@ static void m_add(uint32_t *field, uint32_t v)
     portEXIT_CRITICAL(&s_lock);
 }
 
+static void m_sub(uint32_t *field, uint32_t v)
+{
+    portENTER_CRITICAL(&s_lock);
+    if (*field >= v) {
+        *field -= v;
+    } else {
+        *field = 0;
+    }
+    portEXIT_CRITICAL(&s_lock);
+}
+
 static void m_set(uint32_t *field, uint32_t v)
+{
+    portENTER_CRITICAL(&s_lock);
+    *field = v;
+    portEXIT_CRITICAL(&s_lock);
+}
+
+static void m_set_i32(int32_t *field, int32_t v)
 {
     portENTER_CRITICAL(&s_lock);
     *field = v;
@@ -274,9 +294,13 @@ static bool stream_policy(session_t *s, const michi_rtp_guard_packet_t *pkt)
         s->last_seq = pkt->seq;
         s->base_ts  = pkt->timestamp;
         s->base_time_us = esp_timer_get_time();
+        m_set(&s_metrics.provisionally_missing, 0);
         /* michi_rtp_clock_feed seeds .extended and .base on first call. */
         michi_rtp_clock_reset(&s->rtp_clock);
         michi_rtp_clock_feed(&s->rtp_clock, pkt->timestamp);
+        michi_rtp_jitter_reset(&s->rtp_jitter);
+        michi_rtp_jitter_feed(&s->rtp_jitter, s->base_time_us, pkt->timestamp,
+                              MICHI_AUDIO_SAMPLE_RATE);
         (void)jb_insert(s, s->playhead, pkt);
         return true;
     }
@@ -286,8 +310,8 @@ static bool stream_policy(session_t *s, const michi_rtp_guard_packet_t *pkt)
     if (diff_p > max_pkts) {
         /* Ahead of the playhead by more than the window: stream
          * discontinuity (sender restart). Flush + resync; the buffered
-         * packets are obsolete.  Reset the 64-bit extended clock so the
-         * new epoch does not carry the old base (P0-02). */
+         * packets are obsolete.  Reset the 64-bit extended clock and jitter filter
+         * so the new epoch does not carry the old base (P0-02). */
         ESP_LOGW(TAG, "seq %u ahead of playhead %u by more than the window: "
                       "buffer flush + resync",
                  (unsigned)pkt->seq, (unsigned)s->playhead);
@@ -297,31 +321,26 @@ static bool stream_policy(session_t *s, const michi_rtp_guard_packet_t *pkt)
         s->last_played_ts = 0;
         s->base_ts  = pkt->timestamp;
         s->base_time_us = esp_timer_get_time();
-        /* Reset extended clock for the new sender epoch. */
+        m_set(&s_metrics.provisionally_missing, 0);
+        /* Reset extended clock and jitter filter for the new sender epoch. */
         michi_rtp_clock_reset(&s->rtp_clock);
         michi_rtp_clock_feed(&s->rtp_clock, pkt->timestamp);
+        michi_rtp_jitter_reset(&s->rtp_jitter);
+        michi_rtp_jitter_feed(&s->rtp_jitter, s->base_time_us, pkt->timestamp,
+                              MICHI_AUDIO_SAMPLE_RATE);
         (void)jb_insert(s, s->playhead, pkt);
         return true;
     }
-    if (diff_p < -max_pkts) {
-        m_add(&s_metrics.late, 1); /* behind the playhead by > window */
-        return false;
-    }
     if (diff_p < 0) {
-        /* Behind the playhead within the window: already
-         * reproduced/passed. diff_p == 0 (seq == playhead) is the NEXT
-         * EXPECTED packet - never dropped here: it is usually not queued
-         * (it is the gap the buffer is waiting for), so jb_insert must
-         * decide. jb_find_seq detects the real duplicate (INVALID_STATE
-         * -> duplicate below). */
-        m_add(&s_metrics.duplicate, 1); /* already reproduced/passed */
+        /* Behind the playhead: arrived after its playout deadline -> late */
+        m_add(&s_metrics.late, 1);
         return false;
     }
 
     const int16_t diff_l = (int16_t)(pkt->seq - s->last_seq);
-    const uint32_t lost = michi_rtp_guard_lost_delta(s->last_seq, pkt->seq);
-    if (lost != 0) {
-        m_add(&s_metrics.lost, lost);
+    const uint32_t missing = michi_rtp_guard_lost_delta(s->last_seq, pkt->seq);
+    if (missing != 0) {
+        m_add(&s_metrics.provisionally_missing, missing);
     }
     const bool reordered = (diff_l <= 0); /* out of order, still playable */
 
@@ -329,6 +348,7 @@ static bool stream_policy(session_t *s, const michi_rtp_guard_packet_t *pkt)
     if (err == ESP_OK) {
         if (reordered) {
             m_add(&s_metrics.reordered, 1);
+            m_sub(&s_metrics.provisionally_missing, 1);
         }
         /* The received high-water mark only advances on in-order
          * arrivals; a reordered packet (diff_l <= 0) must never lower
@@ -408,23 +428,22 @@ static void session_recv(session_t *s)
     m_set(&s_metrics.last_timestamp, pkt.timestamp);
     metrics_live(s);
 
-    /* Jitter EWMA (no RTCP in this phase): expected arrival = first
-     * arrival + (ts_extended - base) / sample_rate.
-     * Using the 64-bit extended clock (P0-02) prevents uint32_t wrap
-     * at 2^32 samples (~24.85h at 48kHz) from corrupting the reading. */
+    const int64_t now_us = esp_timer_get_time();
+
+    /* RFC 3550 transit-difference interarrival jitter filter */
+    s->jitter_us = michi_rtp_jitter_feed(&s->rtp_jitter, now_us, pkt.timestamp,
+                                         MICHI_AUDIO_SAMPLE_RATE);
+    m_set(&s_metrics.jitter_us, s->jitter_us);
+    m_set(&s_metrics.rtp_interarrival_jitter_us, s->jitter_us);
+
+    /* Clock offset tracking (cumulative sender vs receiver drift) */
     michi_rtp_clock_feed(&s->rtp_clock, pkt.timestamp);
     const uint64_t ts_delta_64 = michi_rtp_clock_delta(&s->rtp_clock);
-    const int64_t expected_us  = s->base_time_us +
-                                 (int64_t)(ts_delta_64 * 1000000u /
-                                           MICHI_AUDIO_SAMPLE_RATE);
-    const int64_t sample_signed = esp_timer_get_time() - expected_us;
-    uint64_t sample_us = sample_signed < 0 ? (uint64_t)(-sample_signed)
-                                           : (uint64_t)sample_signed;
-    if (sample_us > MICHI_AUDIO_JITTER_SAMPLE_CLAMP_US) {
-        sample_us = MICHI_AUDIO_JITTER_SAMPLE_CLAMP_US;
-    }
-    s->jitter_us = (uint32_t)(((uint64_t)s->jitter_us * 15 + sample_us) / 16);
-    m_set(&s_metrics.jitter_us, s->jitter_us);
+    const int32_t offset_us = michi_rtp_clock_offset_us(now_us, s->base_time_us,
+                                                         ts_delta_64,
+                                                         MICHI_AUDIO_SAMPLE_RATE);
+    s->clock_offset_us = offset_us;
+    m_set_i32(&s_metrics.clock_offset_us, offset_us);
 }
 
 /* ------------------------------------------------------------------
@@ -514,6 +533,9 @@ static bool session_drain(session_t *s)
     }
 
     if (pkt->seq != s->playhead) {
+        const uint32_t skipped = (uint32_t)(uint16_t)(pkt->seq - s->playhead);
+        m_add(&s_metrics.lost, skipped);
+        m_sub(&s_metrics.provisionally_missing, skipped);
         const uint32_t gap = gap_samples(s, pkt);
         ESP_LOGD(TAG, "gap: playhead=%u next=%u silence=%" PRIu32 " samples",
                  (unsigned)s->playhead, (unsigned)pkt->seq, gap);
@@ -593,6 +615,7 @@ static void session_task(void *arg)
             s->stream_seeded = false;
             s->last_played_ts = 0;
             s->in_underrun = false;
+            m_set(&s_metrics.provisionally_missing, 0);
             metrics_live(s);
             session_fill(s, MICHI_AUDIO_PREFILL_DEADLINE_MS);
             continue;
@@ -623,6 +646,11 @@ static void session_task(void *arg)
             if (s->jb.count > 0) {
                 jb_entry_t *oldest = jb_oldest(&s->jb, s->playhead);
                 if (oldest != NULL) {
+                    if (oldest->seq != s->playhead) {
+                        const uint32_t skipped = (uint32_t)(uint16_t)(oldest->seq - s->playhead);
+                        m_add(&s_metrics.lost, skipped);
+                        m_sub(&s_metrics.provisionally_missing, skipped);
+                    }
                     s->playhead = oldest->seq; /* resync: no gap silence */
                     s->last_played_ts = 0;
                 }

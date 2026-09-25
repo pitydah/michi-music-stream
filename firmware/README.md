@@ -1549,7 +1549,7 @@ Field contract (the RTP metrics keep living under `audio`, not `rtp`):
 | `wifi.ssid` | `michi_wifi_get_ssid()` | Network NAME only (intentional exposure, see above); `""` when unprovisioned |
 | `wifi.rssi_dbm` | `michi_wifi_get_rssi()` | Omitted when not connected |
 | `wifi.reconnects` | `michi_wifi_get_reconnect_count()` | Backoff attempts armed this boot (monotonic, not reset on link-up) |
-| `audio.*` | `michi_audio_get_metrics()` | RTP engine counters (received/lost/late/duplicate/reordered/underruns/overruns/drops_*/jitter_us/buffer_ms/packets_in_buffer/last_seq/last_timestamp) + `session_active`, `ssrc`; keep name for phase 11/12 clients |
+| `audio.*` | `michi_audio_get_metrics()` | RTP engine counters (received/lost/provisionally_missing/late/duplicate/reordered/underruns/overruns/drops_*/jitter_us/rtp_interarrival_jitter_us/clock_offset_us/buffer_ms/packets_in_buffer/last_seq/last_timestamp) + `session_active`, `ssrc`; keep name for phase 11/12 clients |
 | `session` | `michi_session_get_info()` | `{active:false}` when no session; else `session_id`, `codec`, `sample_rate`, `bit_depth`, `channels`, `stream_port`, `buffer_ms` (clamped), `volume` (applied), `paused`, `ssrc`, `source_addr`. The session TOKEN is never exposed |
 | `i2s_errors` | `michi_audio_output_get_error_count()` | `i2s_channel_write` (transient drop) + `i2s_channel_disable` failures |
 | `dac.model` / `detected` / `initialized` | `michi_dac_get_caps()` | |

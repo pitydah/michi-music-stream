@@ -1316,6 +1316,7 @@ static esp_err_t diagnostics_get_handler(httpd_req_t *req)
                  cJSON_AddNumberToObject(audio, "ssrc", (double)ssrc) == NULL) ||
                 cJSON_AddNumberToObject(audio, "received", m.received) == NULL ||
                 cJSON_AddNumberToObject(audio, "lost", m.lost) == NULL ||
+                cJSON_AddNumberToObject(audio, "provisionally_missing", m.provisionally_missing) == NULL ||
                 cJSON_AddNumberToObject(audio, "late", m.late) == NULL ||
                 cJSON_AddNumberToObject(audio, "duplicate", m.duplicate) == NULL ||
                 cJSON_AddNumberToObject(audio, "reordered", m.reordered) == NULL ||
@@ -1327,6 +1328,8 @@ static esp_err_t diagnostics_get_handler(httpd_req_t *req)
                 cJSON_AddNumberToObject(audio, "drops_source_ip", m.drops_source_ip) == NULL ||
                 cJSON_AddNumberToObject(audio, "drops_payload_geometry", m.drops_payload_geometry) == NULL ||
                 cJSON_AddNumberToObject(audio, "jitter_us", m.jitter_us) == NULL ||
+                cJSON_AddNumberToObject(audio, "rtp_interarrival_jitter_us", m.rtp_interarrival_jitter_us) == NULL ||
+                cJSON_AddNumberToObject(audio, "clock_offset_us", (double)m.clock_offset_us) == NULL ||
                 cJSON_AddNumberToObject(audio, "buffer_ms", m.buffer_ms) == NULL ||
                 cJSON_AddNumberToObject(audio, "packets_in_buffer", m.packets_in_buffer) == NULL ||
                 cJSON_AddNumberToObject(audio, "last_seq", m.last_seq) == NULL ||

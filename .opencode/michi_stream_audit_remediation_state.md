@@ -22,7 +22,7 @@
 - [x] PHASE G: esp_timer pairing/discovery non-blocking
 - [x] PHASE H: display DMA buffer lifetime (HARDWARE_DISPLAY_PASS: PENDING)
 - [x] PHASE I: test-production unification (michi_jb, OTA, profile; JB-01 verified)
-- [ ] PHASE J: jitter/loss metric correctness
+- [x] PHASE J: jitter/loss metric correctness
 - [ ] PHASE K: hardware docs consistency
 - [ ] PHASE L: CI full closure (cppcheck clean)
 - [ ] PHASE M: E2E re-certification

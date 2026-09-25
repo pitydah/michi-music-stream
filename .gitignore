@@ -32,4 +32,7 @@ __pycache__/
 /tests/host/test_michi_ota_logic
 /tests/host/test_michi_profile_logic
 /tests/host/test_rtp_clock
+/tests/host/test_rtp_jitter
+/tests/host/test_michi_dac
+/tests/host/test_michi_display_dma
 /tests/host/test_spiffs_journal
