@@ -25,5 +25,5 @@
 - [x] PHASE J: jitter/loss metric correctness
 - [x] PHASE K: hardware docs consistency
 - [x] PHASE L: CI full closure (cppcheck clean)
-- [ ] PHASE M: E2E re-certification
+- [x] PHASE M: E2E re-certification
 - [ ] PHASE N: final audit
