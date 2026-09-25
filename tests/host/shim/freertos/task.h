@@ -34,19 +34,27 @@ static inline void vTaskDelay(uint32_t ticks)
     usleep((useconds_t)ticks * 1000);
 }
 
+typedef enum {
+    eNoAction = 0,
+    eSetBits,
+    eIncrement,
+    eSetValueWithOverwrite,
+    eSetValueWithoutOverwrite
+} eNotifyAction;
+
+BaseType_t xTaskNotify(TaskHandle_t xTaskToNotify, uint32_t ulValue, eNotifyAction eAction);
+BaseType_t xTaskNotifyFromISR(TaskHandle_t xTaskToNotify, uint32_t ulValue, eNotifyAction eAction,
+                              BaseType_t *pxHigherPriorityTaskWoken);
+BaseType_t xTaskNotifyWait(uint32_t ulBitsToClearOnEntry, uint32_t ulBitsToClearOnExit,
+                           uint32_t *pulNotificationValue, TickType_t xTicksToWait);
+TaskHandle_t xTaskGetCurrentTaskHandle(void);
+
 static inline void xTaskNotifyGive(TaskHandle_t task)
 {
-    (void)task;
+    (void)xTaskNotify(task, 0, eIncrement);
 }
 
-static inline uint32_t ulTaskNotifyTake(BaseType_t clear_count, uint32_t ticks)
-{
-    (void)clear_count;
-    if (ticks > 0) {
-        usleep((useconds_t)(ticks > 5 ? 5 : ticks) * 1000);
-    }
-    return 1;
-}
+uint32_t ulTaskNotifyTake(BaseType_t clear_count, TickType_t ticks);
 
 #ifdef __cplusplus
 }

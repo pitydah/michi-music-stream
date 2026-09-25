@@ -7,18 +7,32 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 struct michi_shim_task {
     pthread_t thread;
     TaskFunction_t fn;
     void *arg;
+    pthread_mutex_t notify_mux;
+    pthread_cond_t notify_cond;
+    uint32_t notify_value;
+    bool has_notification;
+    bool self_deleted;
 };
+
+static __thread michi_shim_task_t *s_current_task = NULL;
 
 static void *task_entry(void *arg)
 {
     michi_shim_task_t *t = (michi_shim_task_t *)arg;
+    s_current_task = t;
     t->fn(t->arg);
     return NULL;
+}
+
+TaskHandle_t xTaskGetCurrentTaskHandle(void)
+{
+    return s_current_task;
 }
 
 BaseType_t xTaskCreate(TaskFunction_t fn, const char *name,
@@ -37,7 +51,15 @@ BaseType_t xTaskCreate(TaskFunction_t fn, const char *name,
     }
     t->fn = fn;
     t->arg = arg;
+    pthread_mutex_init(&t->notify_mux, NULL);
+    pthread_cond_init(&t->notify_cond, NULL);
+    t->notify_value = 0;
+    t->has_notification = false;
+    t->self_deleted = false;
+
     if (pthread_create(&t->thread, NULL, task_entry, t) != 0) {
+        pthread_mutex_destroy(&t->notify_mux);
+        pthread_cond_destroy(&t->notify_cond);
         free(t);
         return pdFALSE;
     }
@@ -45,13 +67,120 @@ BaseType_t xTaskCreate(TaskFunction_t fn, const char *name,
     return pdPASS;
 }
 
+BaseType_t xTaskNotify(TaskHandle_t task, uint32_t ulValue, eNotifyAction eAction)
+{
+    if (task == NULL) {
+        return pdFAIL;
+    }
+    michi_shim_task_t *t = (michi_shim_task_t *)task;
+    pthread_mutex_lock(&t->notify_mux);
+    if (eAction == eSetBits) {
+        t->notify_value |= ulValue;
+    } else if (eAction == eSetValueWithOverwrite) {
+        t->notify_value = ulValue;
+    } else if (eAction == eIncrement) {
+        t->notify_value++;
+    }
+    t->has_notification = true;
+    pthread_cond_broadcast(&t->notify_cond);
+    pthread_mutex_unlock(&t->notify_mux);
+    return pdPASS;
+}
+
+BaseType_t xTaskNotifyFromISR(TaskHandle_t task, uint32_t ulValue, eNotifyAction eAction,
+                              BaseType_t *pxHigherPriorityTaskWoken)
+{
+    if (pxHigherPriorityTaskWoken) {
+        *pxHigherPriorityTaskWoken = pdFALSE;
+    }
+    return xTaskNotify(task, ulValue, eAction);
+}
+
+BaseType_t xTaskNotifyWait(uint32_t ulBitsToClearOnEntry, uint32_t ulBitsToClearOnExit,
+                           uint32_t *pulNotificationValue, TickType_t xTicksToWait)
+{
+    michi_shim_task_t *t = s_current_task;
+    if (t == NULL) {
+        return pdFALSE;
+    }
+    pthread_mutex_lock(&t->notify_mux);
+    if (ulBitsToClearOnEntry != 0) {
+        t->notify_value &= ~ulBitsToClearOnEntry;
+    }
+
+    if (!t->has_notification && xTicksToWait > 0) {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        uint64_t ns = (uint64_t)ts.tv_nsec + (uint64_t)xTicksToWait * 1000000ULL;
+        ts.tv_sec += (time_t)(ns / 1000000000ULL);
+        ts.tv_nsec = (long)(ns % 1000000000ULL);
+        while (!t->has_notification) {
+            int rc = pthread_cond_timedwait(&t->notify_cond, &t->notify_mux, &ts);
+            if (rc != 0) {
+                break;
+            }
+        }
+    }
+
+    BaseType_t res = pdFALSE;
+    if (t->has_notification) {
+        if (pulNotificationValue != NULL) {
+            *pulNotificationValue = t->notify_value;
+        }
+        t->notify_value &= ~ulBitsToClearOnExit;
+        t->has_notification = (t->notify_value != 0);
+        res = pdTRUE;
+    }
+    pthread_mutex_unlock(&t->notify_mux);
+    return res;
+}
+
+uint32_t ulTaskNotifyTake(BaseType_t clear_count, TickType_t ticks)
+{
+    michi_shim_task_t *t = s_current_task;
+    if (t == NULL) {
+        return 0;
+    }
+    pthread_mutex_lock(&t->notify_mux);
+    if (!t->has_notification && ticks > 0) {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        uint64_t ns = (uint64_t)ts.tv_nsec + (uint64_t)ticks * 1000000ULL;
+        ts.tv_sec += (time_t)(ns / 1000000000ULL);
+        ts.tv_nsec = (long)(ns % 1000000000ULL);
+        while (!t->has_notification) {
+            int rc = pthread_cond_timedwait(&t->notify_cond, &t->notify_mux, &ts);
+            if (rc != 0) {
+                break;
+            }
+        }
+    }
+    uint32_t res = t->notify_value;
+    if (res > 0) {
+        if (clear_count) {
+            t->notify_value = 0;
+            t->has_notification = false;
+        } else {
+            t->notify_value--;
+            t->has_notification = (t->notify_value != 0);
+        }
+    }
+    pthread_mutex_unlock(&t->notify_mux);
+    return res;
+}
+
 void vTaskDelete(TaskHandle_t task)
 {
     if (task == NULL) {
+        if (s_current_task != NULL) {
+            s_current_task->self_deleted = true;
+        }
         pthread_exit(NULL);
     } else {
         michi_shim_task_t *t = (michi_shim_task_t *)task;
         pthread_join(t->thread, NULL);
+        pthread_mutex_destroy(&t->notify_mux);
+        pthread_cond_destroy(&t->notify_cond);
         free(t);
     }
 }

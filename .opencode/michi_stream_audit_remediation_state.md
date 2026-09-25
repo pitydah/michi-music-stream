@@ -11,7 +11,7 @@ GLOBAL_STATUS: IN_PROGRESS
 |---|---|---|---|---|---|---|---|
 | R3-00 | PASS | YES | YES | N/A | YES | FAIL (reproduced) | - |
 | R3-01 | PASS | YES | YES | YES | YES | PASS | c653914 |
-| R3-02 | TODO | NO | NO | NO | NO | NO | - |
+| R3-02 | PASS | YES | YES | YES | YES | PASS | pending_commit |
 | R3-03 | TODO | NO | NO | NO | NO | NO | - |
 | R3-04 | TODO | NO | NO | NO | NO | NO | - |
 | R3-05 | TODO | NO | NO | NO | NO | NO | - |
@@ -50,3 +50,8 @@ GLOBAL_STATUS: IN_PROGRESS
 - Reproduction: ESP-IDF release-v5.3 docker build failed at [1233/1253].
 - Patch: Closed block comment at app_main.c:489 before char dac_prof[64].
 - Verification: ESP-IDF release-v5.3 docker build passed 100%, binary size 1626656 bytes (<= 4194304), sdkconfig assertions pass, host tests pass, cppcheck passes with 0 warnings.
+
+## R3-02 Evidence
+- Defect: Pairing and discovery worker tasks relied on volatile bool pending flags described as "atomic" which could race and lose events.
+- Patch: Replaced volatile flags with FreeRTOS native task notification bits (PAIRING_NOTIFY_EXPIRED, PAIRING_NOTIFY_STOP, DISCOVERY_NOTIFY_TICK, DISCOVERY_NOTIFY_TIME_SYNC, DISCOVERY_NOTIFY_STOP). Implemented xTaskNotify, xTaskNotifyFromISR, and xTaskNotifyWait in host task shim.
+- Verification: Host tests test_michi_pairing and test_discovery_disc pass 100%. ESP-IDF release-v5.3 docker firmware build passes 100%. Cppcheck passes with 0 warnings.

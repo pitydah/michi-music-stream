@@ -54,16 +54,9 @@
 /* IPv4 dotted-quad max ("255.255.255.255" + NUL). */
 #define MICHI_DISCOVERY_IP_MAX 16
 
-typedef enum {
-    DISCOVERY_MSG_ANNOUNCE_TICK = 1,
-    DISCOVERY_MSG_TIME_SYNC,
-    DISCOVERY_MSG_STOP,
-} discovery_msg_type_t;
-
-typedef struct {
-    discovery_msg_type_t type;
-    uint32_t generation;
-} discovery_msg_t;
+#define DISCOVERY_NOTIFY_TICK      (1u << 0)
+#define DISCOVERY_NOTIFY_TIME_SYNC (1u << 1)
+#define DISCOVERY_NOTIFY_STOP      (1u << 2)
 
 static bool s_initialized;
 static bool s_active;
@@ -78,11 +71,9 @@ static bool s_server_id_ok;
 static char s_server_id[MICHI_DISCOVERY_UUID_LEN];
 static esp_timer_handle_t s_announce_timer;
 static SemaphoreHandle_t s_announce_mutex;
-static QueueHandle_t s_discovery_queue;
+static SemaphoreHandle_t s_discovery_done_sem;
 static TaskHandle_t s_discovery_task;
 static uint32_t s_discovery_generation;
-static volatile bool s_discovery_tick_pending;
-static volatile bool s_discovery_time_sync_pending;
 static volatile bool s_discovery_stop_requested;
 static volatile bool s_discovery_task_done;
 
@@ -324,20 +315,15 @@ static void announce_timer_cb(void *arg)
     if (s_discovery_stop_requested) {
         return;
     }
-    /* Atomic pending bit ensures periodic tick is not lost on queue full */
-    s_discovery_tick_pending = true;
-    if (s_discovery_queue != NULL) {
-        const discovery_msg_t msg = {
-            .type = DISCOVERY_MSG_ANNOUNCE_TICK,
-            .generation = s_discovery_generation,
-        };
-        (void)xQueueSend(s_discovery_queue, &msg, 0);
+    /* FreeRTOS task notification bits provide lossless atomic event coalescing */
+    if (s_discovery_task != NULL) {
+        xTaskNotify(s_discovery_task, DISCOVERY_NOTIFY_TICK, eSetBits);
     }
 }
 
 /* P0-02: michi_time sync callback (runs in the michi_time sync task
  * context). A fresh wall clock resumes the announce IMMEDIATELY -
- * without waiting for the next 30 s tick. Non-blocking queue send;
+ * without waiting for the next 30 s tick. Non-blocking notify;
  * ignored when discovery is off. */
 static void on_time_sync_cb(void *ctx)
 {
@@ -345,14 +331,9 @@ static void on_time_sync_cb(void *ctx)
     if (!s_initialized || s_discovery_stop_requested) {
         return;
     }
-    /* Atomic pending bit ensures time sync trigger is never dropped */
-    s_discovery_time_sync_pending = true;
-    if (s_discovery_queue != NULL) {
-        const discovery_msg_t msg = {
-            .type = DISCOVERY_MSG_TIME_SYNC,
-            .generation = s_discovery_generation,
-        };
-        (void)xQueueSend(s_discovery_queue, &msg, 0);
+    /* FreeRTOS task notification bits provide lossless atomic event coalescing */
+    if (s_discovery_task != NULL) {
+        xTaskNotify(s_discovery_task, DISCOVERY_NOTIFY_TIME_SYNC, eSetBits);
     }
 }
 
@@ -360,38 +341,22 @@ static void discovery_task_func(void *arg)
 {
     (void)arg;
     while (!s_discovery_stop_requested) {
-        discovery_msg_t msg;
-        BaseType_t r = xQueueReceive(s_discovery_queue, &msg, pdMS_TO_TICKS(50));
-        if (s_discovery_stop_requested) {
+        uint32_t notified_bits = 0;
+        BaseType_t r = xTaskNotifyWait(0, UINT32_MAX, &notified_bits, pdMS_TO_TICKS(50));
+        if (s_discovery_stop_requested || (r == pdTRUE && (notified_bits & DISCOVERY_NOTIFY_STOP))) {
             break;
         }
         bool do_announce = false;
         bool do_rearm = false;
-        uint32_t gen = 0;
 
         if (r == pdTRUE) {
-            if (msg.type == DISCOVERY_MSG_STOP || s_discovery_stop_requested) {
-                break;
-            }
-            if (msg.type == DISCOVERY_MSG_ANNOUNCE_TICK) {
+            if (notified_bits & DISCOVERY_NOTIFY_TICK) {
                 do_announce = true;
                 do_rearm = true;
-                gen = msg.generation;
-            } else if (msg.type == DISCOVERY_MSG_TIME_SYNC) {
-                do_announce = true;
-                gen = msg.generation;
             }
-        }
-        if (s_discovery_tick_pending) {
-            s_discovery_tick_pending = false;
-            do_announce = true;
-            do_rearm = true;
-            gen = s_discovery_generation;
-        }
-        if (s_discovery_time_sync_pending) {
-            s_discovery_time_sync_pending = false;
-            do_announce = true;
-            gen = s_discovery_generation;
+            if (notified_bits & DISCOVERY_NOTIFY_TIME_SYNC) {
+                do_announce = true;
+            }
         }
 
         if (do_announce) {
@@ -399,7 +364,7 @@ static void discovery_task_func(void *arg)
                 continue;
             }
             if (xSemaphoreTake(s_announce_mutex, pdMS_TO_TICKS(MICHI_DISCOVERY_LOCK_MS)) == pdTRUE) {
-                if (!s_discovery_stop_requested && s_initialized && s_active && gen == s_discovery_generation) {
+                if (!s_discovery_stop_requested && s_initialized && s_active) {
                     advertise_mdns_locked();
                     announce_now_locked();
                     if (do_rearm) {
@@ -411,6 +376,9 @@ static void discovery_task_func(void *arg)
         }
     }
     s_discovery_task_done = true;
+    if (s_discovery_done_sem != NULL) {
+        xSemaphoreGive(s_discovery_done_sem);
+    }
     vTaskDelete(NULL);
 }
 
@@ -489,9 +457,9 @@ esp_err_t michi_discovery_init(void)
         return ESP_ERR_NO_MEM;
     }
 
-    s_discovery_queue = xQueueCreate(10, sizeof(discovery_msg_t));
-    if (s_discovery_queue == NULL) {
-        ESP_LOGE(TAG, "discovery: announce queue failed");
+    s_discovery_done_sem = xSemaphoreCreateBinary();
+    if (s_discovery_done_sem == NULL) {
+        ESP_LOGE(TAG, "discovery: done semaphore failed");
         vSemaphoreDelete(s_announce_mutex);
         s_announce_mutex = NULL;
         esp_timer_delete(s_announce_timer);
@@ -502,8 +470,8 @@ esp_err_t michi_discovery_init(void)
     if (xTaskCreate(discovery_task_func, "michi_discovery", 4096, NULL, 5,
                     &s_discovery_task) != pdPASS) {
         ESP_LOGE(TAG, "discovery: task create failed");
-        vQueueDelete(s_discovery_queue);
-        s_discovery_queue = NULL;
+        vSemaphoreDelete(s_discovery_done_sem);
+        s_discovery_done_sem = NULL;
         vSemaphoreDelete(s_announce_mutex);
         s_announce_mutex = NULL;
         esp_timer_delete(s_announce_timer);
@@ -609,13 +577,9 @@ esp_err_t michi_discovery_shutdown(void)
         esp_timer_stop(s_announce_timer);
     }
 
-    /* 3. Wake up worker task */
-    if (s_discovery_queue != NULL) {
-        const discovery_msg_t stop = {
-            .type = DISCOVERY_MSG_STOP,
-            .generation = 0,
-        };
-        (void)xQueueSend(s_discovery_queue, &stop, 0);
+    /* 3. Wake up worker task via notification */
+    if (s_discovery_task != NULL) {
+        xTaskNotify(s_discovery_task, DISCOVERY_NOTIFY_STOP, eSetBits);
     }
 
     /* 4. Stop discovery sockets and services */
@@ -623,10 +587,12 @@ esp_err_t michi_discovery_shutdown(void)
 
     /* 5. Cooperative join: wait for worker to exit */
     if (s_discovery_task != NULL) {
-        for (int i = 0; i < 200 && !s_discovery_task_done; i++) {
-            vTaskDelay(pdMS_TO_TICKS(5));
+        if (s_discovery_done_sem != NULL) {
+            if (xSemaphoreTake(s_discovery_done_sem, pdMS_TO_TICKS(1000)) != pdTRUE) {
+                ESP_LOGE(TAG, "discovery: worker join timed out");
+                return ESP_ERR_TIMEOUT;
+            }
         }
-        vTaskDelete(s_discovery_task);
         s_discovery_task = NULL;
     }
 
@@ -636,18 +602,16 @@ esp_err_t michi_discovery_shutdown(void)
         esp_timer_delete(s_announce_timer);
         s_announce_timer = NULL;
     }
-    if (s_discovery_queue != NULL) {
-        vQueueDelete(s_discovery_queue);
-        s_discovery_queue = NULL;
-    }
     if (s_announce_mutex != NULL) {
         vSemaphoreDelete(s_announce_mutex);
         s_announce_mutex = NULL;
     }
+    if (s_discovery_done_sem != NULL) {
+        vSemaphoreDelete(s_discovery_done_sem);
+        s_discovery_done_sem = NULL;
+    }
     s_initialized = false;
     s_discovery_stop_requested = false;
-    s_discovery_tick_pending = false;
-    s_discovery_time_sync_pending = false;
     s_discovery_task_done = false;
 
     return ESP_OK;

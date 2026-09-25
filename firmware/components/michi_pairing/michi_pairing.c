@@ -91,24 +91,16 @@ typedef struct {
     uint32_t count;
 } michi_pairing_ip_slot_t;
 
-typedef enum {
-    PAIRING_MSG_WINDOW_EXPIRED = 1,
-    PAIRING_MSG_STOP,
-} pairing_msg_type_t;
-
-typedef struct {
-    pairing_msg_type_t type;
-    uint32_t generation;
-} pairing_msg_t;
+#define PAIRING_NOTIFY_EXPIRED (1u << 0)
+#define PAIRING_NOTIFY_STOP    (1u << 1)
 
 static SemaphoreHandle_t s_mutex;
 static esp_timer_handle_t s_timer;
-static QueueHandle_t s_pairing_queue;
 static TaskHandle_t s_pairing_task;
+static SemaphoreHandle_t s_pairing_done_sem;
 static uint32_t s_window_generation;
 static volatile bool s_initialized;
 static volatile bool s_teardown;
-static volatile bool s_pairing_timer_pending;
 static volatile bool s_pairing_stop_requested;
 static volatile bool s_pairing_task_done;
 static bool s_window_open;
@@ -419,14 +411,9 @@ static void window_timer_cb(void *arg)
     if (s_teardown || s_pairing_stop_requested) {
         return;
     }
-    /* Atomic pending bit ensures expiry is never lost even if queue is full */
-    s_pairing_timer_pending = true;
-    if (s_pairing_queue != NULL) {
-        const pairing_msg_t msg = {
-            .type = PAIRING_MSG_WINDOW_EXPIRED,
-            .generation = s_window_generation,
-        };
-        (void)xQueueSend(s_pairing_queue, &msg, 0);
+    /* FreeRTOS task notification bits provide lossless atomic event coalescing */
+    if (s_pairing_task != NULL) {
+        xTaskNotify(s_pairing_task, PAIRING_NOTIFY_EXPIRED, eSetBits);
     }
 }
 
@@ -434,36 +421,19 @@ static void pairing_task_func(void *arg)
 {
     (void)arg;
     while (!s_pairing_stop_requested) {
-        pairing_msg_t msg;
-        BaseType_t r = xQueueReceive(s_pairing_queue, &msg, pdMS_TO_TICKS(50));
-        if (s_pairing_stop_requested) {
+        uint32_t notified_bits = 0;
+        BaseType_t r = xTaskNotifyWait(0, UINT32_MAX, &notified_bits, pdMS_TO_TICKS(50));
+        if (s_pairing_stop_requested || (r == pdTRUE && (notified_bits & PAIRING_NOTIFY_STOP))) {
             break;
         }
-        bool process_expiry = false;
-        uint32_t gen = 0;
 
-        if (r == pdTRUE) {
-            if (msg.type == PAIRING_MSG_STOP || s_pairing_stop_requested) {
-                break;
-            }
-            if (msg.type == PAIRING_MSG_WINDOW_EXPIRED) {
-                process_expiry = true;
-                gen = msg.generation;
-            }
-        }
-        if (s_pairing_timer_pending) {
-            s_pairing_timer_pending = false;
-            process_expiry = true;
-            gen = s_window_generation;
-        }
-
-        if (process_expiry) {
+        if (r == pdTRUE && (notified_bits & PAIRING_NOTIFY_EXPIRED)) {
             if (s_teardown || s_pairing_stop_requested) {
                 continue;
             }
             xSemaphoreTake(s_mutex, portMAX_DELAY);
-            /* Stale-callback guard: verify generation and deadline under mutex */
-            if (s_teardown || s_pairing_stop_requested || !s_window_open || gen != s_window_generation) {
+            /* Stale-callback guard: verify deadline under mutex */
+            if (s_teardown || s_pairing_stop_requested || !s_window_open) {
                 xSemaphoreGive(s_mutex);
                 continue;
             }
@@ -480,6 +450,9 @@ static void pairing_task_func(void *arg)
         }
     }
     s_pairing_task_done = true;
+    if (s_pairing_done_sem != NULL) {
+        xSemaphoreGive(s_pairing_done_sem);
+    }
     vTaskDelete(NULL);
 }
 
@@ -555,9 +528,9 @@ esp_err_t michi_pairing_init(void)
         return err;
     }
 
-    s_pairing_queue = xQueueCreate(10, sizeof(pairing_msg_t));
-    if (s_pairing_queue == NULL) {
-        ESP_LOGE(TAG, "pairing: init queue_failed");
+    s_pairing_done_sem = xSemaphoreCreateBinary();
+    if (s_pairing_done_sem == NULL) {
+        ESP_LOGE(TAG, "pairing: init done_sem_failed");
         esp_timer_delete(s_timer);
         s_timer = NULL;
         vSemaphoreDelete(s_mutex);
@@ -568,8 +541,8 @@ esp_err_t michi_pairing_init(void)
     if (xTaskCreate(pairing_task_func, "michi_pairing", 4096, NULL, 5,
                     &s_pairing_task) != pdPASS) {
         ESP_LOGE(TAG, "pairing: init task_failed");
-        vQueueDelete(s_pairing_queue);
-        s_pairing_queue = NULL;
+        vSemaphoreDelete(s_pairing_done_sem);
+        s_pairing_done_sem = NULL;
         esp_timer_delete(s_timer);
         s_timer = NULL;
         vSemaphoreDelete(s_mutex);
@@ -1236,18 +1209,14 @@ esp_err_t michi_pairing_shutdown(void)
     if (s_timer != NULL) {
         esp_timer_stop(s_timer);
     }
-    if (s_pairing_queue != NULL) {
-        const pairing_msg_t stop_msg = {
-            .type = PAIRING_MSG_STOP,
-            .generation = 0,
-        };
-        (void)xQueueSend(s_pairing_queue, &stop_msg, 0);
-    }
     if (s_pairing_task != NULL) {
-        for (int i = 0; i < 200 && !s_pairing_task_done; i++) {
-            vTaskDelay(pdMS_TO_TICKS(5));
+        xTaskNotify(s_pairing_task, PAIRING_NOTIFY_STOP, eSetBits);
+        if (s_pairing_done_sem != NULL) {
+            if (xSemaphoreTake(s_pairing_done_sem, pdMS_TO_TICKS(1000)) != pdTRUE) {
+                ESP_LOGE(TAG, "pairing: worker task join timed out");
+                return ESP_ERR_TIMEOUT;
+            }
         }
-        vTaskDelete(s_pairing_task);
         s_pairing_task = NULL;
     }
     if (s_mutex != NULL) {
@@ -1261,13 +1230,12 @@ esp_err_t michi_pairing_shutdown(void)
         vSemaphoreDelete(s_mutex);
         s_mutex = NULL;
     }
-    if (s_pairing_queue != NULL) {
-        vQueueDelete(s_pairing_queue);
-        s_pairing_queue = NULL;
+    if (s_pairing_done_sem != NULL) {
+        vSemaphoreDelete(s_pairing_done_sem);
+        s_pairing_done_sem = NULL;
     }
     s_initialized = false;
     s_pairing_stop_requested = false;
-    s_pairing_timer_pending = false;
     s_pairing_task_done = false;
 
     ESP_LOGI(TAG, "subsystem=pairing state=off phase=10");
