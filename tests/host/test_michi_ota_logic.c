@@ -1,32 +1,19 @@
 /* Host-side pure-logic tests for michi_ota component.
  *
- * These tests intentionally do NOT compile michi_ota.c itself
- * (it pulls in esp_https_ota, esp_ota_ops, FreeRTOS, NVS, cJSON, mbedTLS,
- * etc. - none of which are available on the host). Instead, the firmware
- * logic that can be extracted as self-contained pure functions is
- * reimplemented verbatim (or close enough) here and tested directly.
+ * Compiles and tests the REAL production sources:
+ *   - semver.c / semver.h
+ *   - michi_ota_logic.c / michi_ota_logic.h
  *
- * Three areas covered:
- *
- *   1. OTA-start gate  – the ota_spawn_task() guard is modelled as
- *      ota_gate_check(task_running, is_pending_verify). All four input
- *      combinations are exercised, with priority ordering verified.
- *
- *   2. NVS pending_version comparison – simulate loading a version string
- *      from NVS, parsing it with the real semver_parse(), comparing it
- *      to a "running" version with the real semver_cmp().  Covers cases
- *      not present in test_semver.c: the NVS value is NEWER, EQUAL, and
- *      OLDER than the running firmware, and a truncated NVS value edge-case.
- *
- *   3. Boot-time latch decision – the decision function that answers
- *      "should a new OTA of target_version be blocked because
- *      pending_version in NVS already covers it or is newer?" is modelled
- *      as latch_should_block(pending_version, running_version,
- *      target_version) and tested exhaustively.
- *
- * The REAL semver.c / semver.h from firmware/components/michi_ota are
- * linked (same as test_semver.c), so the parsing and comparison results
- * are production-identical.
+ * Areas covered:
+ *   1. OTA-start gate – ota_gate_check(task_running, is_pending_verify)
+ *      All four input combinations are exercised, with priority ordering verified.
+ *   2. NVS pending_version comparison – nvs_version_cmp_to_running()
+ *      Validates parsing and comparison against running firmware version.
+ *   3. Boot-time latch decision – latch_should_block()
+ *      Exhaustive anti-downgrade and latch idempotency testing.
+ *   4. Decoupled expected_audio decision – michi_ota_decide_expected_audio()
+ *      Ensures OTA health check expects audio according to static/configured profile
+ *      or SKU, decoupled from runtime autodetect.
  */
 
 #include <stdbool.h>
