@@ -1,8 +1,8 @@
 # Michi Stream KILLCRITIC — Round 3
 
 START_HEAD: a44ea3c803a2bd62cfac772cd9d1463f80523c5c
-LAST_IMPLEMENTATION_HEAD: fba00bc9581561009efb4ca6d588523c914c62c3
-LAST_VERIFIED_HEAD: fba00bc9581561009efb4ca6d588523c914c62c3
+LAST_IMPLEMENTATION_HEAD: ad47c89f5bc396d2466f2178ff42ef4847e1ff68
+LAST_VERIFIED_HEAD: ad47c89f5bc396d2466f2178ff42ef4847e1ff68
 BRANCH: fix/ui-device-gaps
 WORKTREE_STATUS: clean
 
@@ -16,7 +16,7 @@ GLOBAL_STATUS: IN_PROGRESS
 | R3-03 | PASS | YES | YES | YES | YES | PASS | 824815e |
 | R3-04 | PASS | YES | YES | YES | YES | PASS | e985918 |
 | R3-05 | PASS | YES | YES | YES | YES | PASS | fba00bc |
-| R3-06 | TODO | NO | NO | NO | NO | NO | - |
+| R3-06 | PASS | YES | YES | YES | YES | PASS | ad47c89 |
 | R3-07 | TODO | NO | NO | NO | NO | NO | - |
 | R3-08 | TODO | NO | NO | NO | NO | NO | - |
 | R3-09 | TODO | NO | NO | NO | NO | NO | - |
@@ -99,4 +99,24 @@ GLOBAL_STATUS: IN_PROGRESS
   - Added `test_pair_inv_05_no_double_post_closed`
   - Added `test_pair_inv_06_pin_display_cb_lifecycle`
 - Verification: Host tests pass 100% (including all PAIR-INV-01..06). Cppcheck 47/47 clean (0 warnings). ESP-IDF release-v5.3 docker firmware build passes 100% (binary size 1627040 bytes <= 4194304).
+
+## R3-06 Evidence
+- Discovery Shutdown Architecture:
+  1. `michi_time_register_sync_cb(NULL, NULL)` called immediately at shutdown start to detach external SNTP callback.
+  2. `esp_timer_stop(s_announce_timer)` and generation bump prevents timer work.
+  3. Lifecycle state transitions to `MICHI_WORKER_STOP_REQUESTED`, sends `DISCOVERY_NOTIFY_STOP` to worker task.
+  4. Cooperative join on `s_discovery_done_sem` with 1000ms timeout. If timed out, preserves mutex, timer, socket, active state, and returns `ESP_ERR_TIMEOUT` without destructive cleanup.
+  5. Worker confirms exit, marks `MICHI_WORKER_EXITED`, clears `s_discovery_task = NULL`, signals done semaphore, and calls `vTaskDelete(NULL)`.
+  6. Caller acquires sole exclusive ownership under `s_announce_mutex`, tears down socket, retires mDNS, deletes timer and mutex.
+- Invariants & Tests (`DISC-LIFE-01..07`):
+  - `DISC-LIFE-01`: Normal shutdown lifecycle transitions.
+  - `DISC-LIFE-02`: Worker/mutex contention when stop begins resolves cleanly.
+  - `DISC-LIFE-03`: First shutdown timeout preserves socket, mutex, timer, and active resources.
+  - `DISC-LIFE-04`: Worker exit after timeout allows clean retry without double notification or leaks.
+  - `DISC-LIFE-05`: Time-sync callback after shutdown cannot access discovery.
+  - `DISC-LIFE-06`: Timer callback racing shutdown cannot access destroyed state.
+  - `DISC-LIFE-07`: Repeated shutdown is idempotent.
+- Test Hooks Isolated:
+  - Added `#ifdef MICHI_HOST_TEST` guards in `michi_discovery.h` and `michi_discovery.c` for test hooks (`has_mutex`, `has_timer`, `socket_fd`).
+- Verification: Host tests pass 100% (including DISC-LIFE-01..07). Cppcheck 47/47 files clean (0 warnings). ESP-IDF release-v5.3 docker firmware build passes 100% (binary size 1627040 bytes <= 4194304, SPIRAM OCT 16MB verified).
 
