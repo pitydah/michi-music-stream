@@ -1,8 +1,8 @@
 # Michi Stream KILLCRITIC — Round 3
 
 START_HEAD: a44ea3c803a2bd62cfac772cd9d1463f80523c5c
-LAST_IMPLEMENTATION_HEAD: e985918bb12caecce104d49a60e0a5c48b04a896
-LAST_VERIFIED_HEAD: e985918bb12caecce104d49a60e0a5c48b04a896
+LAST_IMPLEMENTATION_HEAD: fba00bc9581561009efb4ca6d588523c914c62c3
+LAST_VERIFIED_HEAD: fba00bc9581561009efb4ca6d588523c914c62c3
 BRANCH: fix/ui-device-gaps
 WORKTREE_STATUS: clean
 
@@ -15,7 +15,7 @@ GLOBAL_STATUS: IN_PROGRESS
 | R3-02 | PASS | YES | YES | YES | YES | PASS | 3276953 |
 | R3-03 | PASS | YES | YES | YES | YES | PASS | 824815e |
 | R3-04 | PASS | YES | YES | YES | YES | PASS | e985918 |
-| R3-05 | TODO | NO | NO | NO | NO | NO | - |
+| R3-05 | PASS | YES | YES | YES | YES | PASS | fba00bc |
 | R3-06 | TODO | NO | NO | NO | NO | NO | - |
 | R3-07 | TODO | NO | NO | NO | NO | NO | - |
 | R3-08 | TODO | NO | NO | NO | NO | NO | - |
@@ -79,4 +79,24 @@ GLOBAL_STATUS: IN_PROGRESS
   - `PAIR-LIFE-01..04`: Normal stop, delayed worker exit joining within timeout, join timeout preserving state followed by clean retry without notifying dead handle, and repeated idempotent shutdown.
   - `DISC-LIFE-01..05`: Normal stop, delayed worker exit joining within timeout, join timeout preserving state followed by clean retry without notifying dead handle, repeated idempotent shutdown, and late SNTP time sync callback after shutdown without notify to dead task.
 - Verification: Host tests pass 100%. Cppcheck 47/47 files clean (0 warnings). ESP-IDF release-v5.3 docker firmware build passes 100% (binary size 1627040 bytes <= 4194304, SPIRAM OCT 16MB verified).
+
+## R3-05 Evidence
+- Invariants Enforced:
+  - `PAIR-INV-01`: No callback may act after teardown begins (esp_timer_stop + generation bump + lifecycle state check in window_timer_cb prevents timer callback execution during/after shutdown).
+  - `PAIR-INV-02`: No worker access after mutex deletion (worker exit ownership confirmed and task handle cleared before mutex deletion; timeout preserves mutex while worker alive).
+  - `PAIR-INV-03`: No stale TaskHandle_t notification (worker state EXITED clears task handle under lifecycle mux; notifications to retired tasks prevented).
+  - `PAIR-INV-04`: Join timeout leaves subsystem retryable without leaking/destroying resources, permitting clean subsequent retry.
+  - `PAIR-INV-05`: `PAIRING_WINDOW_CLOSED` is never double-posted (closed status checked under mutex; shutdown closes window without posting event; manual close or late expiry on closed window exits early).
+  - `PAIR-INV-06`: PIN display callback invoked with `NULL` under mutex prior to resource teardown to clear screen PIN; callback function pointer and context cleared to `NULL` so late calls never invoke invalid targets.
+- Implementation:
+  - Cleaned up shutdown sequence in `firmware/components/michi_pairing/michi_pairing.c`: invoke `pin_display_notify(NULL)` before deleting mutex, zero out `s_pin_display_cb` and `s_pin_display_ctx` under mutex.
+  - Added test hook `michi_pairing_test_has_mutex()`.
+- Falsification Tests:
+  - Added `test_pair_inv_01_no_callback_after_teardown`
+  - Added `test_pair_inv_02_no_worker_access_after_mutex_delete`
+  - Added `test_pair_inv_03_no_stale_task_notification`
+  - Added `test_pair_inv_04_timeout_leaves_retryable`
+  - Added `test_pair_inv_05_no_double_post_closed`
+  - Added `test_pair_inv_06_pin_display_cb_lifecycle`
+- Verification: Host tests pass 100% (including all PAIR-INV-01..06). Cppcheck 47/47 clean (0 warnings). ESP-IDF release-v5.3 docker firmware build passes 100% (binary size 1627040 bytes <= 4194304).
 
