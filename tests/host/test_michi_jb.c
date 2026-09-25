@@ -1,8 +1,5 @@
 /* Host-side tests for the jitter-buffer insertion logic (P0-08, PR M).
  *
- * The michi_jb.h header-only module re-exposes jb_insert() / jb_oldest()
- * from michi_audio.c without PSRAM or FreeRTOS dependencies.
- *
  * Contracts under test:
  *   JB-1: Normal insert fills slots, count increments.
  *   JB-2: Duplicate seq is ignored (DUPLICATE, count unchanged).
@@ -14,6 +11,7 @@
  *   JB-8: michi_jb_oldest() on an empty buffer returns NULL.
  *   JB-9: Insert after flush succeeds (buffer reusable).
  *   JB-10: 32 packets fill the buffer exactly (no phantom full at 31).
+ *   JB-11: michi_jb_init with custom pool & entries, payload copy, and release.
  */
 
 #include <inttypes.h>
@@ -38,7 +36,7 @@ static int failures = 0;
 static void test_normal_insert(void)
 {
     printf("jb: normal insert fills slots\n");
-    michi_jb_t jb;
+    michi_jb_t jb = {0};
     michi_jb_flush(&jb);
 
     for (uint16_t i = 0; i < 10; i++) {
@@ -53,7 +51,7 @@ static void test_normal_insert(void)
 static void test_duplicate(void)
 {
     printf("jb: duplicate seq ignored\n");
-    michi_jb_t jb;
+    michi_jb_t jb = {0};
     michi_jb_flush(&jb);
 
     michi_jb_insert(&jb, 0, 10, 0, 1920);
@@ -67,7 +65,7 @@ static void test_duplicate(void)
 static void test_overrun_evicts_oldest(void)
 {
     printf("jb: overrun evicts oldest (relative to playhead)\n");
-    michi_jb_t jb;
+    michi_jb_t jb = {0};
     michi_jb_flush(&jb);
 
     /* Fill buffer: seq 1000..1031 (32 packets), playhead = 1000. */
@@ -88,7 +86,7 @@ static void test_overrun_evicts_oldest(void)
 static void test_wrap_oldest(void)
 {
     printf("jb: 16-bit seq wrap: oldest uses signed diff\n");
-    michi_jb_t jb;
+    michi_jb_t jb = {0};
     michi_jb_flush(&jb);
 
     /* Playhead at 0xFFF8. Packets: 0xFFF8, 0xFFF9, 0xFFFA, 0x0000 (wrapped). */
@@ -107,7 +105,7 @@ static void test_wrap_oldest(void)
 static void test_flush(void)
 {
     printf("jb: flush empties buffer\n");
-    michi_jb_t jb;
+    michi_jb_t jb = {0};
     michi_jb_flush(&jb);
     for (uint16_t i = 0; i < 10; i++) michi_jb_insert(&jb, 0, i, 0, 1920);
     michi_jb_flush(&jb);
@@ -119,7 +117,7 @@ static void test_flush(void)
 static void test_oldest_empty(void)
 {
     printf("jb: oldest on empty buffer returns NULL\n");
-    michi_jb_t jb;
+    michi_jb_t jb = {0};
     michi_jb_flush(&jb);
     CHECK(michi_jb_oldest(&jb, 100) == NULL, "NULL on empty buffer");
 }
@@ -128,7 +126,7 @@ static void test_oldest_empty(void)
 static void test_reuse_after_flush(void)
 {
     printf("jb: buffer reusable after flush\n");
-    michi_jb_t jb;
+    michi_jb_t jb = {0};
     michi_jb_flush(&jb);
     michi_jb_insert(&jb, 0, 1, 0, 1920);
     michi_jb_flush(&jb);
@@ -142,7 +140,7 @@ static void test_exact_capacity(void)
 {
     printf("jb: exactly %u packets fill buffer, %u+1 triggers overrun\n",
            MICHI_JB_TEST_MAX_PACKETS, MICHI_JB_TEST_MAX_PACKETS);
-    michi_jb_t jb;
+    michi_jb_t jb = {0};
     michi_jb_flush(&jb);
     for (uint16_t i = 0; i < MICHI_JB_TEST_MAX_PACKETS; i++) {
         michi_jb_insert_result_t r = michi_jb_insert(&jb, 0, i, i * 480u, 1920);
@@ -155,6 +153,33 @@ static void test_exact_capacity(void)
     CHECK(r == MICHI_JB_INSERT_OVERRUN_EVICTED, "capacity+1 triggers eviction");
 }
 
+/* ---- JB-11: payload pool and release (production path) ---- */
+static void test_payload_pool(void)
+{
+    printf("jb: payload pool write and read with release (production path)\n");
+    michi_jb_t jb = {0};
+    uint8_t pool[4 * 1920];
+    michi_jb_entry_t entries[4];
+    michi_jb_init(&jb, entries, pool, 4, 1920);
+
+    uint8_t sample_data[1920];
+    memset(sample_data, 0xAB, sizeof(sample_data));
+    uint16_t evicted = 0;
+    michi_jb_insert_result_t r = michi_jb_insert_packet(&jb, 10, 10, 1000, sample_data, 1920, &evicted);
+    CHECK(r == MICHI_JB_INSERT_OK, "insert with payload OK");
+    CHECK(jb.count == 1, "count == 1");
+
+    michi_jb_entry_t *found = michi_jb_find(&jb, 10);
+    CHECK(found != NULL, "found seq 10");
+    uint8_t *payload = michi_jb_entry_payload(&jb, found);
+    CHECK(payload != NULL, "payload not NULL");
+    CHECK(memcmp(payload, sample_data, 1920) == 0, "payload matches");
+
+    michi_jb_release(&jb, found);
+    CHECK(jb.count == 0, "count == 0 after release");
+    CHECK(michi_jb_find(&jb, 10) == NULL, "seq 10 gone after release");
+}
+
 int main(void)
 {
     test_normal_insert();
@@ -165,6 +190,7 @@ int main(void)
     test_oldest_empty();
     test_reuse_after_flush();
     test_exact_capacity();
+    test_payload_pool();
 
     if (failures == 0) {
         printf("PASS test_michi_jb\n");

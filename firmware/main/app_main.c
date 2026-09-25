@@ -23,6 +23,7 @@
 #include "michi_led.h"
 #include "michi_log.h"
 #include "michi_ota.h"
+#include "michi_ota_logic.h"
 #include "michi_pairing.h"
 #include "michi_product_profile.h"
 #include "michi_sd.h"
@@ -492,18 +493,22 @@ void app_main(void)
     (void)michi_dac_resolve_profile(dac_prof, sizeof(dac_prof), &dac_src);
     const bool expected_audio = (dac_prof[0] != '\0');
 
+    const bool critical_ok = st.overall &&
+                             (michi_identity_get_state() == MICHI_IDENTITY_READY) &&
+                             (http_err == ESP_OK) &&
+                             state_ok &&
+                             boot_events_ok;
+    const ota_selftest_res_t trial_res = evaluate_trial_boot_gate(
+        critical_ok, expected_audio, profile->audio_available);
     michi_selftest_result_t st_res;
-    if (!st.overall || michi_identity_get_state() != MICHI_IDENTITY_READY ||
-        http_err != ESP_OK || !state_ok || !boot_events_ok) {
-        st_res = MICHI_SELFTEST_FATAL;
-    } else if (!profile->audio_available) {
-        if (expected_audio) {
+    if (trial_res == OTA_SELFTEST_FATAL) {
+        if (critical_ok && expected_audio && !profile->audio_available) {
             ESP_LOGE(TAG, "trial boot gate: audio expected (profile='%s', source=%d) but audio_available=false -> FATAL (triggers rollback)",
                      dac_prof, (int)dac_src);
-            st_res = MICHI_SELFTEST_FATAL;
-        } else {
-            st_res = MICHI_SELFTEST_DEGRADED;
         }
+        st_res = MICHI_SELFTEST_FATAL;
+    } else if (trial_res == OTA_SELFTEST_DEGRADED) {
+        st_res = MICHI_SELFTEST_DEGRADED;
     } else {
         st_res = MICHI_SELFTEST_PASS;
     }

@@ -1,86 +1,28 @@
 /*
  * test_michi_profile_logic.c
  *
- * Pure-C, self-contained host-side tests for the two decision functions
- * extracted from michi_product_profile.c.  No firmware includes, no
- * ESP-IDF, no linking against the real component.
+ * Host-side tests for the two decision functions compiled directly from
+ * firmware/components/michi_product_profile/profile_logic.c.
  *
- * Logic under test (verbatim from michi_product_profile.c):
- *
- *   Tier (line 86):
- *     p.tier = caps->detected ? caps->tier : MICHI_PRODUCT_DIAGNOSTIC;
- *
- *   audio_available (lines 90-92):
- *     p.audio_available = (p.tier == MICHI_PRODUCT_HIFI ||
- *                          p.tier == MICHI_PRODUCT_STANDARD)
- *                         && caps->initialized;
- *
- *   Initial state guard (michi_product_profile.c line 47-49):
- *     static michi_product_profile_t s_profile = {
- *         .tier = MICHI_PRODUCT_DIAGNOSTIC,
- *     };
- *
- * Compile:
- *   cc -std=c11 -O2 -Wall -Wextra -Werror -D_DEFAULT_SOURCE \
- *      -o /tmp/test_profile_check tests/host/test_michi_profile_logic.c
+ * Logic under test:
+ *   michi_profile_decide_tier()
+ *   michi_profile_decide_audio_available()
  */
 
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 
-/* -----------------------------------------------------------------------
- * Inline type/enum definitions mirroring michi_dac_types.h and
- * michi_product_profile.h — only what the extracted functions need.
- * ----------------------------------------------------------------------- */
-
-/* Mirror of michi_product_tier_t (michi_product_profile.h). */
-typedef enum {
-    MICHI_PRODUCT_STANDARD   = 0,  /* enum 0 — the zeroed/default case */
-    MICHI_PRODUCT_HIFI       = 1,
-    MICHI_PRODUCT_DIAGNOSTIC = 2,
-} michi_product_tier_t;
+#include "michi_profile_logic.h"
 
 /*
- * Minimal caps struct: only the fields consumed by the two functions under
- * test.  The full michi_dac_caps_t has more fields; we don't need them.
+ * Minimal caps struct for test convenience: holds the fields under test.
  */
 typedef struct {
     bool                 detected;
     bool                 initialized;
     michi_product_tier_t tier;   /* tier reported by the DAC driver */
 } test_caps_t;
-
-/* -----------------------------------------------------------------------
- * Extracted pure functions (verbatim transcription of .c logic).
- * ----------------------------------------------------------------------- */
-
-/*
- * decide_tier() — from michi_product_profile.c line 86:
- *
- *   p.tier = caps->detected ? caps->tier : MICHI_PRODUCT_DIAGNOSTIC;
- */
-static michi_product_tier_t decide_tier(const test_caps_t *caps)
-{
-    return caps->detected ? caps->tier : MICHI_PRODUCT_DIAGNOSTIC;
-}
-
-/*
- * decide_audio_available() — from michi_product_profile.c lines 90-92:
- *
- *   p.audio_available = (p.tier == MICHI_PRODUCT_HIFI ||
- *                        p.tier == MICHI_PRODUCT_STANDARD)
- *                       && caps->initialized;
- *
- * Receives the already-resolved tier (output of decide_tier) so the
- * dependency chain is explicit and testable independently.
- */
-static bool decide_audio_available(michi_product_tier_t tier,
-                                   const test_caps_t   *caps)
-{
-    return (tier == MICHI_PRODUCT_HIFI || tier == MICHI_PRODUCT_STANDARD) &&
-           caps->initialized;
-}
 
 /* -----------------------------------------------------------------------
  * Test harness.
@@ -112,7 +54,7 @@ static void test_tier_classification(void)
     {
         test_caps_t caps = {.detected = true, .initialized = false,
                             .tier = MICHI_PRODUCT_HIFI};
-        CHECK(decide_tier(&caps) == MICHI_PRODUCT_HIFI,
+        CHECK(michi_profile_decide_tier(caps.detected, caps.tier) == MICHI_PRODUCT_HIFI,
               "detected=true, driver=HIFI  → HIFI");
     }
 
@@ -120,7 +62,7 @@ static void test_tier_classification(void)
     {
         test_caps_t caps = {.detected = true, .initialized = false,
                             .tier = MICHI_PRODUCT_STANDARD};
-        CHECK(decide_tier(&caps) == MICHI_PRODUCT_STANDARD,
+        CHECK(michi_profile_decide_tier(caps.detected, caps.tier) == MICHI_PRODUCT_STANDARD,
               "detected=true, driver=STANDARD → STANDARD");
     }
 
@@ -129,7 +71,7 @@ static void test_tier_classification(void)
     {
         test_caps_t caps = {.detected = true, .initialized = false,
                             .tier = MICHI_PRODUCT_DIAGNOSTIC};
-        CHECK(decide_tier(&caps) == MICHI_PRODUCT_DIAGNOSTIC,
+        CHECK(michi_profile_decide_tier(caps.detected, caps.tier) == MICHI_PRODUCT_DIAGNOSTIC,
               "detected=true, driver=DIAGNOSTIC → DIAGNOSTIC (driver-degraded)");
     }
 
@@ -137,10 +79,9 @@ static void test_tier_classification(void)
      * With no driver bound the zeroed caps->tier reads STANDARD (enum 0),
      * but the profile must re-raise DIAGNOSTIC because !detected. */
     {
-        /* Simulate what the real code sees: zeroed caps, tier==STANDARD */
         test_caps_t caps = {.detected = false, .initialized = false,
                             .tier = MICHI_PRODUCT_STANDARD};
-        CHECK(decide_tier(&caps) == MICHI_PRODUCT_DIAGNOSTIC,
+        CHECK(michi_profile_decide_tier(caps.detected, caps.tier) == MICHI_PRODUCT_DIAGNOSTIC,
               "detected=false, zeroed caps (tier=STANDARD) → DIAGNOSTIC (re-raised)");
     }
 }
@@ -186,13 +127,6 @@ static void test_initial_state_guard(void)
 /* -----------------------------------------------------------------------
  * Test 3: audio_available — all 8 combinations of
  *   {detected, initialized, driver_tier ∈ {HIFI, STANDARD, DIAGNOSTIC}}.
- *
- * Rule (verbatim from the .c):
- *   audio_available = (tier == HIFI || tier == STANDARD) && initialized
- *
- * Where tier = decide_tier(caps), so the effective rule is:
- *   audio_available = detected && (driver_tier != DIAGNOSTIC) && initialized
- * --- but we exercise the two-step chain to mirror the real code.
  * ----------------------------------------------------------------------- */
 static void test_audio_available(void)
 {
@@ -237,8 +171,8 @@ static void test_audio_available(void)
             .initialized = cases[i].initialized,
             .tier        = cases[i].driver_tier,
         };
-        michi_product_tier_t resolved = decide_tier(&caps);
-        bool got = decide_audio_available(resolved, &caps);
+        michi_product_tier_t resolved = michi_profile_decide_tier(caps.detected, caps.tier);
+        bool got = michi_profile_decide_audio_available(resolved, caps.initialized);
         CHECK(got == cases[i].want, cases[i].label);
     }
 }

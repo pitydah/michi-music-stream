@@ -73,6 +73,7 @@
 #include "michi_ota.h"
 #include "michi_ota_pubkey.h"
 #include "semver.h"
+#include "michi_ota_logic.h"
 #include "michi_product_profile.h"
 #include "michi_sd.h"
 #include "michi_session.h"
@@ -1467,20 +1468,26 @@ static esp_err_t ota_force_close_session(void)
 static esp_err_t ota_spawn_task(TaskFunction_t task_fn, void *arg)
 {
     xSemaphoreTake(s_ctx.mutex, portMAX_DELAY);
-    if (s_ctx.task != NULL) {
-        xSemaphoreGive(s_ctx.mutex);
-        ESP_LOGW(TAG, "ota: start_rejected reason=busy");
-        return ESP_ERR_INVALID_STATE;
-    }
+    const bool task_running = (s_ctx.task != NULL);
+    bool is_pending_verify = false;
     const esp_partition_t *running = esp_ota_get_running_partition();
     if (running != NULL) {
         esp_ota_img_states_t st = ESP_OTA_IMG_UNDEFINED;
         if (esp_ota_get_state_partition(running, &st) == ESP_OK &&
             st == ESP_OTA_IMG_PENDING_VERIFY) {
-            xSemaphoreGive(s_ctx.mutex);
-            ESP_LOGW(TAG, "ota: start_rejected reason=pending_verify");
-            return ESP_ERR_NOT_ALLOWED;
+            is_pending_verify = true;
         }
+    }
+    const ota_start_gate_t gate = ota_gate_check(task_running, is_pending_verify);
+    if (gate == OTA_START_BUSY) {
+        xSemaphoreGive(s_ctx.mutex);
+        ESP_LOGW(TAG, "ota: start_rejected reason=busy");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (gate == OTA_START_PENDING_VERIFY) {
+        xSemaphoreGive(s_ctx.mutex);
+        ESP_LOGW(TAG, "ota: start_rejected reason=pending_verify");
+        return ESP_ERR_NOT_ALLOWED;
     }
     s_ctx.err[0] = '\0';
     s_ctx.state = MICHI_OTA_IDLE;

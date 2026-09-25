@@ -54,6 +54,7 @@
 #include "michi_state.h"
 #include "michi_volume.h"
 #include "michi_rtp_clock.h"
+#include "michi_jb.h"
 #include "rtp_guard.h"
 
 #define TAG "michi_audio"
@@ -90,18 +91,8 @@
 
 #define MICHI_AUDIO_RX_BUF_BYTES CONFIG_MICHI_AUDIO_RX_BUF_BYTES
 
-typedef struct {
-    uint16_t seq;      /* RTP sequence */
-    uint32_t timestamp; /* RTP timestamp */
-    uint16_t len;      /* payload bytes (canonical: 1920) */
-    bool     used;
-} jb_entry_t;
-
-typedef struct {
-    jb_entry_t *entries;      /* MICHI_AUDIO_MAX_PACKETS descriptors */
-    uint8_t    *pool;         /* MICHI_AUDIO_MAX_PACKETS * RX_BUF bytes (PSRAM) */
-    uint32_t    count;        /* packets currently buffered */
-} jitter_buffer_t;
+typedef michi_jb_entry_t jb_entry_t;
+typedef michi_jb_t jitter_buffer_t;
 
 /* Per-session state, owned by the session task (allocated in
  * michi_audio_session_start, freed by the task on exit). */
@@ -196,52 +187,29 @@ static void metrics_live(const session_t *s)
  * Jitter buffer (packet level, ordered by 16-bit seq)
  * ------------------------------------------------------------------ */
 
-static jb_entry_t *jb_slot_by_index(jitter_buffer_t *jb, uint32_t idx)
+static inline jb_entry_t *jb_slot_by_index(jitter_buffer_t *jb, uint32_t idx)
 {
-    return &jb->entries[idx];
+    return michi_jb_entry_by_index(jb, idx);
 }
 
-static uint32_t jb_index(const jitter_buffer_t *jb, const jb_entry_t *e)
+static inline uint32_t jb_index(const jitter_buffer_t *jb, const jb_entry_t *e)
 {
-    return (uint32_t)(e - jb->entries);
+    return michi_jb_entry_index(jb, e);
 }
 
-static jb_entry_t *jb_find_seq(jitter_buffer_t *jb, uint16_t seq)
+static inline jb_entry_t *jb_find_seq(jitter_buffer_t *jb, uint16_t seq)
 {
-    for (uint32_t i = 0; i < MICHI_AUDIO_MAX_PACKETS; i++) {
-        if (jb->entries[i].used && jb->entries[i].seq == seq) {
-            return &jb->entries[i];
-        }
-    }
-    return NULL;
+    return michi_jb_find(jb, seq);
 }
 
-/* Oldest pending packet: the entry with the smallest non-negative
- * (int16_t)(seq - playhead). NULL when the buffer is empty. */
-static jb_entry_t *jb_oldest(jitter_buffer_t *jb, uint16_t playhead)
+static inline jb_entry_t *jb_oldest(jitter_buffer_t *jb, uint16_t playhead)
 {
-    jb_entry_t *best = NULL;
-    int16_t best_diff = INT16_MAX;
-    for (uint32_t i = 0; i < MICHI_AUDIO_MAX_PACKETS; i++) {
-        jb_entry_t *e = &jb->entries[i];
-        if (!e->used) {
-            continue;
-        }
-        int16_t diff = (int16_t)(e->seq - playhead);
-        if (diff >= 0 && diff < best_diff) {
-            best = e;
-            best_diff = diff;
-        }
-    }
-    return best;
+    return michi_jb_oldest(jb, playhead);
 }
 
-static void jb_flush(jitter_buffer_t *jb)
+static inline void jb_flush(jitter_buffer_t *jb)
 {
-    for (uint32_t i = 0; i < MICHI_AUDIO_MAX_PACKETS; i++) {
-        jb->entries[i].used = false;
-    }
-    jb->count = 0;
+    michi_jb_flush(jb);
 }
 
 /* Insert a copy of the payload. Returns ESP_ERR_INVALID_STATE when the seq
@@ -252,38 +220,27 @@ static void jb_flush(jitter_buffer_t *jb)
 static esp_err_t jb_insert(session_t *s, uint16_t playhead,
                            const michi_rtp_guard_packet_t *pkt)
 {
-    jitter_buffer_t *jb = &s->jb;
-    if (jb_find_seq(jb, pkt->seq) != NULL) {
+    uint16_t evicted_seq = 0;
+    michi_jb_insert_result_t res = michi_jb_insert_packet(
+        &s->jb, playhead, pkt->seq, pkt->timestamp,
+        pkt->payload, pkt->payload_len, &evicted_seq);
+
+    if (res == MICHI_JB_INSERT_DUPLICATE) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (jb->count >= MICHI_AUDIO_MAX_PACKETS) {
-        jb_entry_t *oldest = jb_oldest(jb, playhead);
-        if (oldest == NULL) {
-            DROP_LOG(s, "jitter buffer full but no evictable packet: "
-                        "seq=%u dropped", (unsigned)pkt->seq);
-            m_add(&s_metrics.overruns, 1);
-            return ESP_ERR_NO_MEM; /* defensive: count said full */
-        }
+    if (res == MICHI_JB_INSERT_OVERRUN_EVICTED) {
         ESP_LOGW(TAG, "jitter buffer full: dropped oldest seq=%u",
-                 (unsigned)oldest->seq);
+                 (unsigned)evicted_seq);
         m_add(&s_metrics.overruns, 1);
-        oldest->used = false;
-        jb->count--;
+        return ESP_OK;
     }
-    for (uint32_t i = 0; i < MICHI_AUDIO_MAX_PACKETS; i++) {
-        jb_entry_t *slot = jb_slot_by_index(jb, i);
-        if (!slot->used) {
-            memcpy(jb->pool + (size_t)i * MICHI_AUDIO_RX_BUF_BYTES,
-                   pkt->payload, pkt->payload_len);
-            slot->seq = pkt->seq;
-            slot->timestamp = pkt->timestamp;
-            slot->len = pkt->payload_len;
-            slot->used = true;
-            jb->count++;
-            return ESP_OK;
-        }
+    if (res == MICHI_JB_INSERT_OVERRUN_DROPPED) {
+        DROP_LOG(s, "jitter buffer full but no evictable packet: "
+                    "seq=%u dropped", (unsigned)pkt->seq);
+        m_add(&s_metrics.overruns, 1);
+        return ESP_ERR_NO_MEM;
     }
-    return ESP_ERR_NO_MEM; /* defensive: count said there was room */
+    return ESP_OK;
 }
 
 /* ------------------------------------------------------------------
@@ -577,8 +534,7 @@ static bool session_drain(session_t *s)
     }
     s->last_played_ts = pkt->timestamp;
     s->playhead = (uint16_t)(pkt->seq + 1);
-    pkt->used = false;
-    s->jb.count--;
+    michi_jb_release(&s->jb, pkt);
     metrics_live(s);
     return true;
 }
@@ -962,6 +918,8 @@ esp_err_t michi_audio_session_start(uint32_t port, uint32_t ssrc,
         free(s);
         return ESP_ERR_NO_MEM;
     }
+    michi_jb_init(&s->jb, s->jb.entries, s->jb.pool, MICHI_AUDIO_MAX_PACKETS,
+                  MICHI_AUDIO_RX_BUF_BYTES);
 
     /* Bind BEFORE any task exists: a bind/socket failure is reported to
      * the caller and NOTHING of the session survives - the caller rolls

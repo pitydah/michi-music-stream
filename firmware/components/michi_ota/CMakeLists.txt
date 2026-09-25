@@ -1,6 +1,6 @@
 idf_component_register(
-    SRCS "michi_ota.c" "semver.c"
-    INCLUDE_DIRS "include"
+    SRCS "michi_ota.c" "semver.c" "michi_ota_logic.c"
+    INCLUDE_DIRS "include" "."
     # michi_sd dependency (review F3): the boot-time local check waits on
     # michi_sd_mounted() (async mount flag) with a bounded timeout. The
     # update files themselves are still read through the VFS (/sdcard/<n>)

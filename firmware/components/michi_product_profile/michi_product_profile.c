@@ -35,6 +35,7 @@
 #include "michi_board.h"
 #include "michi_dac.h"
 #include "michi_product_profile.h"
+#include "michi_profile_logic.h"
 #include "michi_version.h"
 
 #define MICHI_PROFILE_VALIDATED_SAMPLE_RATE 48000
@@ -83,13 +84,11 @@ esp_err_t michi_product_profile_refresh(void)
      * driver linked (nothing probed on the I2C bus) the classifier returns
      * zeroed caps whose tier field reads STANDARD (enum value 0), so re-raise
      * DIAGNOSTIC here when nothing was detected. */
-    p.tier = caps->detected ? caps->tier : MICHI_PRODUCT_DIAGNOSTIC;
+    p.tier = michi_profile_decide_tier(caps->detected, caps->tier);
     copy_str(p.product_name, sizeof(p.product_name),
              p.tier == MICHI_PRODUCT_HIFI ? "Michi Music Stream HiFi"
                                           : "Michi Music Stream");
-    p.audio_available = (p.tier == MICHI_PRODUCT_HIFI ||
-                         p.tier == MICHI_PRODUCT_STANDARD) &&
-                        caps->initialized;
+    p.audio_available = michi_profile_decide_audio_available(p.tier, caps->initialized);
 
     copy_str(p.dac_vendor, sizeof(p.dac_vendor), caps->vendor);
     copy_str(p.dac_model, sizeof(p.dac_model), caps->model);

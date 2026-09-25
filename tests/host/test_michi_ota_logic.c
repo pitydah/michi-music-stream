@@ -35,6 +35,7 @@
 #include <string.h>
 
 #include "semver.h"
+#include "michi_ota_logic.h"
 
 /* -------------------------------------------------------------------------
  * Minimal test framework (mirrors test_semver.c style)
@@ -49,33 +50,6 @@ static int failures = 0;
             failures++;                                                     \
         }                                                                   \
     } while (0)
-
-/* =========================================================================
- * 1. OTA-start gate (extracted from ota_spawn_task)
- *
- * The real firmware gate in ota_spawn_task() checks (in order):
- *   a) if an OTA task is already running -> ESP_ERR_INVALID_STATE ("busy")
- *   b) if the running partition is PENDING_VERIFY -> ESP_ERR_NOT_ALLOWED
- *   c) otherwise create the task (OK)
- *
- * We model this as a pure function requiring zero firmware headers.
- * ======================================================================= */
-
-typedef enum {
-    OTA_START_OK,
-    OTA_START_BUSY,
-    OTA_START_PENDING_VERIFY
-} ota_start_gate_t;
-
-/* Extracted verbatim from the task specification and matches the priority
- * ordering inside ota_spawn_task() (busy is checked first, PENDING_VERIFY
- * second). */
-static ota_start_gate_t ota_gate_check(bool task_running, bool is_pending_verify)
-{
-    if (task_running)      return OTA_START_BUSY;
-    if (is_pending_verify) return OTA_START_PENDING_VERIFY;
-    return OTA_START_OK;
-}
 
 static void test_ota_gate(void)
 {
@@ -121,21 +95,6 @@ static void test_ota_gate(void)
  *   d) NVS pending string truncated to 15 chars still parses as valid semver
  *   e) NVS pending string is corrupt / empty -> semver_parse fails gracefully
  * ======================================================================= */
-
-/* Sentinel: semver_parse() failed for at least one of the two inputs. */
-#define PARSE_FAILED (-999)
-
-/* Simulates: read NVS string `nvs_ver`, parse it, compare to `running_ver`.
- * Returns semver_cmp result (<0, 0, >0), or PARSE_FAILED on parse failure. */
-static int nvs_version_cmp_to_running(const char *nvs_ver,
-                                      const char *running_ver)
-{
-    semver_t pend, run;
-    if (!semver_parse(nvs_ver, &pend) || !semver_parse(running_ver, &run)) {
-        return PARSE_FAILED;
-    }
-    return semver_cmp(&pend, &run);
-}
 
 static void test_nvs_pending_version_cmp(void)
 {
@@ -228,38 +187,6 @@ static void test_nvs_pending_version_cmp(void)
  *     AND semver_cmp(target, pending) <= 0    (target is not newer than staged)
  *
  * ======================================================================= */
-
-/* Returns true when the OTA start should be blocked. */
-static bool latch_should_block(const char *pending_version,
-                               const char *running_version,
-                               const char *target_version)
-{
-    semver_t running, target;
-    if (!semver_parse(running_version, &running) ||
-        !semver_parse(target_version, &target)) {
-        /* Unparseable version strings: be conservative and block. */
-        return true;
-    }
-
-    /* Basic anti-downgrade: target must be strictly newer than running. */
-    if (semver_cmp(&target, &running) <= 0) {
-        return true;
-    }
-
-    /* Latch idempotency guard: if the latch records a version we are already
-     * running (pending == running), and the target is not strictly newer than
-     * that, block (we already have it). */
-    semver_t pending;
-    if (semver_parse(pending_version, &pending)) {
-        if (semver_cmp(&pending, &running) == 0 &&
-            semver_cmp(&target, &pending) <= 0) {
-            return true;
-        }
-    }
-    /* Unparseable pending: no latch active, basic rules are sufficient. */
-
-    return false;
-}
 
 static void test_boot_latch_decision(void)
 {
@@ -392,28 +319,6 @@ static void test_boot_latch_decision(void)
  * OTA-02: expected_audio=true, audio_available=false -> FATAL (triggers rollback)
  * OTA-03: expected_audio=false, audio_available=false -> DEGRADED (diagnostic SKU allowed)
  * ======================================================================= */
-
-typedef enum {
-    OTA_TEST_SELFTEST_PASS,
-    OTA_TEST_SELFTEST_DEGRADED,
-    OTA_TEST_SELFTEST_FATAL
-} ota_test_selftest_res_t;
-
-static ota_test_selftest_res_t evaluate_trial_boot_gate(bool critical_checks_ok,
-                                                        bool expected_audio,
-                                                        bool audio_available)
-{
-    if (!critical_checks_ok) {
-        return OTA_TEST_SELFTEST_FATAL;
-    }
-    if (!audio_available) {
-        if (expected_audio) {
-            return OTA_TEST_SELFTEST_FATAL;
-        }
-        return OTA_TEST_SELFTEST_DEGRADED;
-    }
-    return OTA_TEST_SELFTEST_PASS;
-}
 
 static void test_trial_boot_audio_health_gate(void)
 {

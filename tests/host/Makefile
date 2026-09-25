@@ -279,23 +279,30 @@ test_spiffs_journal: test_spiffs_journal.c
 	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -D_DEFAULT_SOURCE \
 	    -o $@ test_spiffs_journal.c
 
-# michi_jb: jitter-buffer insert/evict/wrap logic (P0-08, PR M).
-# header-only michi_jb.h extracted from michi_audio.c; no PSRAM deps.
-test_michi_jb: test_michi_jb.c $(FIRMWARE)/michi_audio/michi_jb.h
-	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -D_DEFAULT_SOURCE \
-	    -I$(FIRMWARE)/michi_audio -o $@ test_michi_jb.c
+# michi_jb: jitter-buffer insert/evict/wrap logic (P0-08, PR M, JB-01).
+# Compiles the SAME michi_jb.c production source.
+test_michi_jb: test_michi_jb.c $(FIRMWARE)/michi_audio/michi_jb.c \
+               $(FIRMWARE)/michi_audio/include/michi_jb.h $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(FIRMWARE)/michi_audio -o $@ test_michi_jb.c \
+	    $(FIRMWARE)/michi_audio/michi_jb.c
 
 # michi_profile_logic: tier + audio_available decision functions (P0-08, PR M).
-# Pure-C extraction from michi_product_profile.c; no firmware deps.
-test_michi_profile_logic: test_michi_profile_logic.c
-	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -D_DEFAULT_SOURCE \
-	    -o $@ test_michi_profile_logic.c
+# Compiles the SAME profile_logic.c production source.
+test_michi_profile_logic: test_michi_profile_logic.c \
+                          $(FIRMWARE)/michi_product_profile/profile_logic.c \
+                          $(FIRMWARE)/michi_product_profile/include/michi_profile_logic.h \
+                          $(FIRMWARE)/michi_dac/include/michi_dac_types.h $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ test_michi_profile_logic.c \
+	    $(FIRMWARE)/michi_product_profile/profile_logic.c
 
 # michi_ota_logic: OTA state machine and gate checks (P0-08, PR M).
+# Compiles the SAME semver.c and michi_ota_logic.c production sources.
 test_michi_ota_logic: test_michi_ota_logic.c $(FIRMWARE)/michi_ota/semver.c \
-                      $(FIRMWARE)/michi_ota/semver.h
-	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -D_DEFAULT_SOURCE \
-	    -I$(FIRMWARE)/michi_ota -o $@ test_michi_ota_logic.c $(FIRMWARE)/michi_ota/semver.c
+                      $(FIRMWARE)/michi_ota/semver.h \
+                      $(FIRMWARE)/michi_ota/michi_ota_logic.c \
+                      $(FIRMWARE)/michi_ota/include/michi_ota_logic.h $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ test_michi_ota_logic.c \
+	    $(FIRMWARE)/michi_ota/semver.c $(FIRMWARE)/michi_ota/michi_ota_logic.c
 
 # Session HTTP body gates: the SAME json_helpers.c + validators.c the
 # firmware builds (cJSON-gated like the other HTTP tests).
@@ -416,4 +423,5 @@ clean:
 	      test_michi_session test_rtp_guard test_session_http \
 	      test_capability_parity test_discovery_disc test_michi_button \
 	      test_michi_button_debounce test_michi_ui render_ui_previews \
-	      test_michi_dac test_michi_display_dma
+	      test_michi_dac test_michi_display_dma test_spiffs_journal \
+	      test_michi_jb test_michi_profile_logic test_michi_ota_logic
