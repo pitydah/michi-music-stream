@@ -24,6 +24,6 @@
 - [x] PHASE I: test-production unification (michi_jb, OTA, profile; JB-01 verified)
 - [x] PHASE J: jitter/loss metric correctness
 - [x] PHASE K: hardware docs consistency
-- [ ] PHASE L: CI full closure (cppcheck clean)
+- [x] PHASE L: CI full closure (cppcheck clean)
 - [ ] PHASE M: E2E re-certification
 - [ ] PHASE N: final audit
