@@ -1,7 +1,8 @@
 # Michi Stream KILLCRITIC — Round 3
 
 START_HEAD: a44ea3c803a2bd62cfac772cd9d1463f80523c5c
-CURRENT_HEAD: 824815e61bf969543e33e9d8e578c772e2cf631b
+LAST_IMPLEMENTATION_HEAD: e985918bb12caecce104d49a60e0a5c48b04a896
+LAST_VERIFIED_HEAD: e985918bb12caecce104d49a60e0a5c48b04a896
 BRANCH: fix/ui-device-gaps
 WORKTREE_STATUS: clean
 
@@ -13,7 +14,7 @@ GLOBAL_STATUS: IN_PROGRESS
 | R3-01 | PASS | YES | YES | YES | YES | PASS | c653914 |
 | R3-02 | PASS | YES | YES | YES | YES | PASS | 3276953 |
 | R3-03 | PASS | YES | YES | YES | YES | PASS | 824815e |
-| R3-04 | TODO | NO | NO | NO | NO | NO | - |
+| R3-04 | PASS | YES | YES | YES | YES | PASS | e985918 |
 | R3-05 | TODO | NO | NO | NO | NO | NO | - |
 | R3-06 | TODO | NO | NO | NO | NO | NO | - |
 | R3-07 | TODO | NO | NO | NO | NO | NO | - |
@@ -64,4 +65,18 @@ GLOBAL_STATUS: IN_PROGRESS
   - EVENT-COALESCE-DISC-01: Locks announce mutex, fires 20 announce ticks while worker is blocked, verifies no announce sent while contention persists, unlocks mutex, verifies worker emits announce. Proves discovery invariant: while discovery active, event processing cannot leave timer inactive and worker idle forever (verifies timer rearmed & active, advances past next period and verifies subsequent announce emitted).
   - EVENT-COALESCE-DISC-02: Locks announce mutex, fires 5 rapid SNTP time syncs while worker is blocked, verifies no packet emitted while locked, unlocks mutex, verifies announce emitted on coalesced sync.
 - Verification: Host tests pass 100%. Cppcheck 47/47 files clean (0 warnings). ESP-IDF release-v5.3 docker firmware build passes 100% (binary size 1626800 bytes <= 4194304).
+
+## R3-04 Evidence
+- Defect: Pairing and discovery worker tasks could be accessed or notified after teardown; join timeout during shutdown destroyed resources leaving corrupted state; subsequent shutdown retry could double-notify dead task handle; time sync callback could fire into discovery during/after teardown.
+- Invariant & Implementation:
+  - Synchronized worker lifecycle state machine (`michi_worker_lifecycle_t`: `MICHI_WORKER_STOPPED`, `MICHI_WORKER_RUNNING`, `MICHI_WORKER_STOP_REQUESTED`, `MICHI_WORKER_EXITED`) under critical section `s_lifecycle_mux`.
+  - Worker tasks manage their own exit lifecycle: mark `MICHI_WORKER_EXITED`, clear `s_task = NULL`, signal binary done semaphore, and call `vTaskDelete(NULL)`. No external `vTaskDelete` is performed.
+  - Shutdown join timeout preserves resources and returns `ESP_ERR_TIMEOUT`, maintaining retriable state.
+  - Subsequent retry recognizes `s_worker_state == MICHI_WORKER_EXITED`, skips notifying the dead task handle, drains semaphore, and tears down authoritatively.
+  - Discovery shutdown unregisters SNTP time sync callback immediately before teardown.
+  - Host task shim instrumented with task lifecycle states, `pthread_mutex_t`-backed critical sections, and diagnostic counters (`test_task_invalid_notify_count()`, `test_task_external_delete_count()`).
+- Falsification Tests:
+  - `PAIR-LIFE-01..04`: Normal stop, delayed worker exit joining within timeout, join timeout preserving state followed by clean retry without notifying dead handle, and repeated idempotent shutdown.
+  - `DISC-LIFE-01..05`: Normal stop, delayed worker exit joining within timeout, join timeout preserving state followed by clean retry without notifying dead handle, repeated idempotent shutdown, and late SNTP time sync callback after shutdown without notify to dead task.
+- Verification: Host tests pass 100%. Cppcheck 47/47 files clean (0 warnings). ESP-IDF release-v5.3 docker firmware build passes 100% (binary size 1627040 bytes <= 4194304, SPIRAM OCT 16MB verified).
 
