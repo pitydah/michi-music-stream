@@ -67,7 +67,7 @@ TESTS := test_semver test_pairing_validators test_michi_identity \
          test_michi_pairing test_michi_session test_rtp_guard test_rtp_clock test_rtp_jitter \
          test_michi_button test_michi_button_debounce test_michi_ui \
          test_spiffs_journal test_michi_jb test_michi_profile_logic test_michi_ota_logic \
-         test_michi_dac test_michi_display_dma test_michi_audio_buffer \
+         test_michi_dac test_michi_display_dma test_michi_audio_buffer test_michi_audio_output \
          $(if $(filter yes,$(HAS_CJSON)),test_json_helpers test_http_canonical test_michi_discovery test_michi_time test_capability_parity test_pairing_http test_session_http test_discovery_disc)
 
 .PHONY: all test clean
@@ -76,7 +76,7 @@ all: $(TESTS)
 
 test: all
 	@set -e; \
-	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard test_rtp_clock test_rtp_jitter test_michi_button test_michi_button_debounce test_michi_ui test_spiffs_journal test_michi_jb test_michi_profile_logic test_michi_ota_logic test_michi_dac test_michi_display_dma test_michi_audio_buffer; do ./$$t; done; \
+	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard test_rtp_clock test_rtp_jitter test_michi_button test_michi_button_debounce test_michi_ui test_spiffs_journal test_michi_jb test_michi_profile_logic test_michi_ota_logic test_michi_dac test_michi_display_dma test_michi_audio_buffer test_michi_audio_output; do ./$$t; done; \
 	if [ "$(HAS_CJSON)" = "yes" ]; then \
 	    ./test_json_helpers; \
 	    ./test_http_canonical; \
@@ -433,6 +433,15 @@ test_michi_audio_buffer: test_michi_audio_buffer.c \
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ test_michi_audio_buffer.c \
 	    $(FIRMWARE)/michi_audio/michi_audio_buffer.c
 
+AUDIO_OUT_DIR = $(FIRMWARE)/michi_audio_output
+AUDIO_OUT_SRC = $(AUDIO_OUT_DIR)/michi_audio_output.c shim/i2s_shim.c shim/esp_system.c \
+                shim/michi_volume_fake.c shim/freertos/task.c
+
+test_michi_audio_output: test_michi_audio_output.c $(AUDIO_OUT_SRC) \
+                         $(AUDIO_OUT_DIR)/include/michi_audio_output.h $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(AUDIO_OUT_DIR)/include -pthread -o $@ \
+	    test_michi_audio_output.c $(AUDIO_OUT_SRC)
+
 clean:
 	rm -f test_semver test_pairing_validators test_json_helpers \
 	      test_http_canonical test_michi_identity test_michi_discovery \
@@ -442,4 +451,4 @@ clean:
 	      test_michi_button_debounce test_michi_ui render_ui_previews \
 	      test_michi_dac test_michi_display_dma test_spiffs_journal \
 	      test_michi_jb test_michi_profile_logic test_michi_ota_logic \
-	      test_rtp_clock test_rtp_jitter test_michi_audio_buffer
+	      test_rtp_clock test_rtp_jitter test_michi_audio_buffer test_michi_audio_output

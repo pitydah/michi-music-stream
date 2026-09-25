@@ -1007,7 +1007,7 @@ esp_err_t michi_audio_session_stop(void)
         return ESP_OK; /* idempotent */
     }
     s_session_run = false;
-    (void)michi_audio_output_flush();
+    (void)michi_audio_output_quiesce();
     /* The task wakes within its 100 ms socket timeout or after the
      * completed blocking ring write; it tears down its own resources. */
     int waited_ms = 0;
@@ -1042,7 +1042,9 @@ void michi_audio_session_set_paused(bool paused)
     s_paused = paused;
     portEXIT_CRITICAL(&s_lock);
     if (paused) {
-        (void)michi_audio_output_flush();
+        (void)michi_audio_output_quiesce();
+    } else {
+        (void)michi_audio_output_resume();
     }
 }
 

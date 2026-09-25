@@ -147,6 +147,34 @@ esp_err_t michi_audio_output_write(const uint8_t *data, size_t len);
 esp_err_t michi_audio_output_flush(void);
 
 /**
+ * @brief Quiesce the audio output pipeline sample-clean.
+ *
+ * Stops consumer acceptance, flushes the SPSC ring buffer, zeroes out any
+ * in-flight chunk buffer, and pushes explicit digital silence through the DMA
+ * channel to clear in-flight hardware FIFOs without tearing down clocks.
+ * While quiesced, any write() call returns ESP_ERR_INVALID_STATE immediately.
+ *
+ * @return ESP_OK; ESP_ERR_INVALID_STATE when not initialized.
+ */
+esp_err_t michi_audio_output_quiesce(void);
+
+/**
+ * @brief Resume audio output after quiescing.
+ *
+ * Re-enables consumer acceptance and allows write() calls again.
+ *
+ * @return ESP_OK; ESP_ERR_INVALID_STATE when not initialized.
+ */
+esp_err_t michi_audio_output_resume(void);
+
+/**
+ * @brief Check if the audio pipeline is currently quiesced.
+ *
+ * @return true if quiesced, false otherwise.
+ */
+bool michi_audio_output_is_quiesced(void);
+
+/**
  * @brief Cooperative stop: flag + notify + i2s_channel_disable + join
  *        with timeout. The channel is DISABLED but NOT deleted (it is
  *        deleted only by deinit()). Idempotent when not running.

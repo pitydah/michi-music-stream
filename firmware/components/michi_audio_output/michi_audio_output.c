@@ -64,6 +64,7 @@ static volatile bool s_run = false;       /* cooperative: read by the task */
 static volatile bool s_task_done = false; /* set by the task before self-delete */
 static volatile bool s_consumer_sleeping = false; /* set by the task before sleep,
                                                    * read by the producer (F9) */
+static volatile bool s_quiesced = false;          /* sample-clean pause/stop quiesce */
 
 static size_t s_prefill_bytes = 0;
 static uint8_t s_bit_depth = 16;
@@ -155,6 +156,7 @@ static size_t ring_read(ring_t *r, uint8_t *out, size_t len)
 
 static void i2s_task(void *arg)
 {
+    (void)arg;
     /* Prefill: do not start DMA until buffer_ms of audio is buffered
      * (avoids the first underruns on session start). s_run is already
      * true when the task starts (start() sets it first); if stop()
@@ -177,6 +179,15 @@ static void i2s_task(void *arg)
     }
 
     while (s_run) {
+        if (s_quiesced) {
+            s_consumer_sleeping = true;
+            uint32_t notified = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50));
+            s_consumer_sleeping = false;
+            if (notified > 0 && !s_run) {
+                break;
+            }
+            continue;
+        }
         size_t n = ring_read(&s_ring, s_chunk, sizeof(s_chunk));
         if (n == 0) {
             /* Ring empty: sleep on the notification (stop() uses it too;
@@ -367,6 +378,7 @@ esp_err_t michi_audio_output_start(void)
      *    very first wake. */
     s_run = true;
     s_running = true;
+    s_quiesced = false;
     /* 3) Enable the LIVE channel (created at init, deleted only at
      *    deinit): start() after stop() re-enables it, no delete, no UAF. */
     esp_err_t err = i2s_channel_enable(s_tx);
@@ -397,14 +409,13 @@ esp_err_t michi_audio_output_write(const uint8_t *data, size_t len)
     if (data == NULL || len == 0) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (!s_running) {
+    if (!s_running || s_quiesced) {
         return ESP_ERR_INVALID_STATE;
     }
     size_t off = 0;
     while (off < len) {
-        if (!s_running) {
-            return ESP_ERR_INVALID_STATE; /* stopped mid-write: no partial
-                                           * success lies */
+        if (!s_running || s_quiesced) {
+            return ESP_ERR_INVALID_STATE; /* stopped or quiesced mid-write */
         }
         size_t n = ring_write(&s_ring, data + off, len - off);
         off += n;
@@ -431,11 +442,56 @@ esp_err_t michi_audio_output_flush(void)
     return ESP_OK;
 }
 
+esp_err_t michi_audio_output_quiesce(void)
+{
+    if (!s_inited) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* Stop consumer acceptance immediately */
+    s_quiesced = true;
+
+    /* Flush ring buffer */
+    portENTER_CRITICAL(&s_ring_lock);
+    s_ring.head = 0;
+    s_ring.tail = 0;
+    s_ring.used = 0;
+    portEXIT_CRITICAL(&s_ring_lock);
+
+    /* Zero out intermediate chunk buffer */
+    memset(s_chunk, 0, sizeof(s_chunk));
+
+    /* Push explicit digital silence through DMA to flush existing hardware FIFO samples */
+    if (s_tx != NULL && s_running) {
+        size_t written = 0;
+        (void)i2s_channel_write(s_tx, s_chunk, sizeof(s_chunk), &written,
+                                pdMS_TO_TICKS(50));
+    }
+    return ESP_OK;
+}
+
+esp_err_t michi_audio_output_resume(void)
+{
+    if (!s_inited) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_quiesced = false;
+    if (s_task != NULL) {
+        xTaskNotifyGive(s_task);
+    }
+    return ESP_OK;
+}
+
+bool michi_audio_output_is_quiesced(void)
+{
+    return s_quiesced;
+}
+
 esp_err_t michi_audio_output_stop(void)
 {
     if (!s_inited) {
         return ESP_ERR_INVALID_STATE;
     }
+    s_quiesced = true;
     if (!s_running) {
         return ESP_OK; /* idempotent */
     }

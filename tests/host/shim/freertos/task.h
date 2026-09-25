@@ -34,6 +34,20 @@ static inline void vTaskDelay(uint32_t ticks)
     usleep((useconds_t)ticks * 1000);
 }
 
+static inline void xTaskNotifyGive(TaskHandle_t task)
+{
+    (void)task;
+}
+
+static inline uint32_t ulTaskNotifyTake(BaseType_t clear_count, uint32_t ticks)
+{
+    (void)clear_count;
+    if (ticks > 0) {
+        usleep((useconds_t)(ticks > 5 ? 5 : ticks) * 1000);
+    }
+    return 1;
+}
+
 #ifdef __cplusplus
 }
 #endif
