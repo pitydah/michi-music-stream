@@ -55,7 +55,8 @@ esp_err_t michi_audio_session_start(uint32_t port, uint32_t ssrc,
     if (s_fake.start_err != ESP_OK) {
         return s_fake.start_err; /* bind/buffer/pipeline failure */
     }
-    if (ssrc == 0 || source_ip == NULL || source_ip[0] == '\0') {
+    if (ssrc == 0 || source_ip == NULL || source_ip[0] == '\0' ||
+        michi_audio_validate_buffer_ms(buffer_ms) != ESP_OK) {
         return ESP_ERR_INVALID_ARG;
     }
     s_fake.port_requested = port;

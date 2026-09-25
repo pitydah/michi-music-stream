@@ -360,7 +360,7 @@ bool michi_http_json_get_session_create(const cJSON *obj,
     }
     int buffer_ms = 0;
     if (!michi_http_json_get_int(obj, "buffer_ms", &buffer_ms) ||
-        buffer_ms < 50 || buffer_ms > 500) {
+        michi_audio_validate_buffer_ms((uint16_t)buffer_ms) != ESP_OK) {
         snprintf(err_field, err_field_len, "%s", "buffer_ms");
         return false;
     }

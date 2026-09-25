@@ -193,8 +193,8 @@ esp_err_t build_info_json_with_identity(cJSON *root, const michi_product_profile
         !add_number_array(audio, "channels", (const double[]){2}, 1) ||
         !add_number_array(audio, "packet_ms", (const double[]){10}, 1) ||
         !add_number_array(audio, "payload_types", (const double[]){97}, 1) ||
-        cJSON_AddNumberToObject(audio, "buffer_ms_min", 50) == NULL ||
-        cJSON_AddNumberToObject(audio, "buffer_ms_max", 500) == NULL) {
+        cJSON_AddNumberToObject(audio, "buffer_ms_min", MICHI_AUDIO_BUFFER_MS_MIN) == NULL ||
+        cJSON_AddNumberToObject(audio, "buffer_ms_max", MICHI_AUDIO_BUFFER_MS_MAX) == NULL) {
         return ESP_ERR_NO_MEM;
     }
 

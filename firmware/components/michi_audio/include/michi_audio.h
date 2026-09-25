@@ -194,6 +194,51 @@ const michi_audio_output_ops_t *michi_audio_get_output_ops(void);
  */
 esp_err_t michi_audio_init(void);
 
+#define MICHI_AUDIO_BUFFER_MS_MIN 50
+#define MICHI_AUDIO_BUFFER_MS_MAX 500
+
+/**
+ * @brief Validate that buffer_ms is within canonical limits (50..500 ms).
+ *
+ * @param buffer_ms Buffer depth in milliseconds.
+ * @return ESP_OK if valid, ESP_ERR_INVALID_ARG otherwise.
+ */
+esp_err_t michi_audio_validate_buffer_ms(uint16_t buffer_ms);
+
+/**
+ * @brief Calculate the prefill target in packets for a given buffer_ms.
+ *        Pure function implementing ceil(buffer_ms / packet_ms) clamped to
+ *        capacity.
+ *
+ * @param buffer_ms Negotiated buffer depth in ms (50..500).
+ * @return Number of 10 ms packets required to satisfy buffer_ms.
+ */
+uint32_t michi_audio_calculate_prefill_target(uint16_t buffer_ms);
+
+/**
+ * @brief Calculate prefill target with explicit packet capacity limit.
+ */
+uint32_t michi_audio_calculate_prefill_target_ext(uint16_t buffer_ms, uint32_t max_packets);
+
+/**
+ * @brief Calculate the recovery deadline in ms for a given buffer_ms.
+ *        Ensures deadline >= buffer_ms so natural packet delivery can satisfy
+ *        the target before premature timeout.
+ *
+ * @param buffer_ms Negotiated buffer depth in ms (50..500).
+ * @return Timeout deadline in milliseconds.
+ */
+uint32_t michi_audio_recovery_deadline_ms(uint16_t buffer_ms);
+
+/**
+ * @brief Verify that engine jitter buffer capacity satisfies the advertised contract.
+ *
+ * @param jitter_max_ms Build jitter buffer capacity in ms.
+ * @param advertised_max_ms Advertised contract max buffer in ms.
+ * @return ESP_OK if capacity >= advertised_max_ms, ESP_ERR_INVALID_STATE otherwise.
+ */
+esp_err_t michi_audio_check_capacity_invariant(uint32_t jitter_max_ms, uint16_t advertised_max_ms);
+
 /**
  * @brief Start the canonical RTP/UDP session. ALL-OR-NOTHING.
  *
@@ -221,8 +266,8 @@ esp_err_t michi_audio_init(void);
  * @param buffer_ms Negotiated jitter buffer target in milliseconds (50..500 ms).
  * @return ESP_OK; ESP_ERR_INVALID_STATE before init, while a session
  *         task exists, or when the audio pipeline is not running;
- *         ESP_ERR_INVALID_ARG for an unusable SSRC/source_ip or when
- *         port is outside 49152..65535 (and not 0);
+ *         ESP_ERR_INVALID_ARG for an unusable SSRC/source_ip, buffer_ms outside
+ *         50..500, or when port is outside 49152..65535 (and not 0);
  *         ESP_ERR_NO_MEM when the session buffers or the task cannot
  *         be allocated; ESP_FAIL on socket/bind failure.
  */

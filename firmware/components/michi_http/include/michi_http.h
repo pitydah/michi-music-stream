@@ -10,6 +10,7 @@
 
 #include "michi_product_profile.h"
 #include "michi_session.h"
+#include "michi_audio.h"
 
 #ifdef __cplusplus
 extern "C" {

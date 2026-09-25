@@ -453,21 +453,9 @@ static void session_recv(session_t *s)
 /* Prefill target in packets (ceil of prefill_ms / packet duration). */
 static uint32_t prefill_target(const session_t *s)
 {
-    uint32_t prefill_ms = (s != NULL && s->buffer_ms > 0) ? s->buffer_ms
-                                                           : CONFIG_MICHI_AUDIO_PREFILL_MS;
-    if (prefill_ms > CONFIG_MICHI_AUDIO_JITTER_MAX_MS) {
-        prefill_ms = CONFIG_MICHI_AUDIO_JITTER_MAX_MS;
-    }
-    if (s == NULL || s->samples_per_packet == 0) {
-        return 1; /* defensive: canonical geometry is fixed at 480 */
-    }
-    uint32_t packet_ms = (uint32_t)((uint64_t)s->samples_per_packet * 1000 /
-                                    MICHI_AUDIO_SAMPLE_RATE);
-    if (packet_ms == 0) {
-        packet_ms = 1;
-    }
-    uint32_t target = (prefill_ms + packet_ms - 1) / packet_ms;
-    return target > MICHI_AUDIO_MAX_PACKETS ? MICHI_AUDIO_MAX_PACKETS : target;
+    uint16_t ms = (s != NULL && s->buffer_ms > 0) ? s->buffer_ms
+                                                   : CONFIG_MICHI_AUDIO_PREFILL_MS;
+    return michi_audio_calculate_prefill_target_ext(ms, MICHI_AUDIO_MAX_PACKETS);
 }
 
 /* Receive + insert until the buffer holds prefill_target(s) packets, the
@@ -642,7 +630,12 @@ static void session_task(void *arg)
                 self_end = true;
                 break;
             }
-            session_fill(s, MICHI_AUDIO_REPREFILL_MS);
+            const uint32_t recovery_deadline = michi_audio_recovery_deadline_ms(s->buffer_ms);
+            session_fill(s, recovery_deadline);
+            if (s->jb.count < prefill_target(s)) {
+                ESP_LOGW(TAG, "underrun: degraded recovery - filled %u/%u packets within %u ms deadline",
+                         (unsigned)s->jb.count, (unsigned)prefill_target(s), (unsigned)recovery_deadline);
+            }
             if (s->jb.count > 0) {
                 jb_entry_t *oldest = jb_oldest(&s->jb, s->playhead);
                 if (oldest != NULL) {
@@ -772,6 +765,11 @@ esp_err_t michi_audio_init(void)
                  CONFIG_MICHI_AUDIO_JITTER_MAX_MS);
         return ESP_ERR_INVALID_ARG;
     }
+    if (michi_audio_check_capacity_invariant(CONFIG_MICHI_AUDIO_JITTER_MAX_MS, MICHI_AUDIO_BUFFER_MS_MAX) != ESP_OK) {
+        ESP_LOGE(TAG, "init: CONFIG_MICHI_AUDIO_JITTER_MAX_MS=%d < MICHI_AUDIO_BUFFER_MS_MAX=%d violates contract",
+                 CONFIG_MICHI_AUDIO_JITTER_MAX_MS, MICHI_AUDIO_BUFFER_MS_MAX);
+        return ESP_ERR_INVALID_STATE;
+    }
     if (CONFIG_MICHI_AUDIO_PREFILL_MS > CONFIG_MICHI_AUDIO_JITTER_MAX_MS) {
         ESP_LOGW(TAG, "init: prefill %d ms > jitter capacity %d ms - prefill "
                       "clamped at runtime",
@@ -845,6 +843,12 @@ esp_err_t michi_audio_session_start(uint32_t port, uint32_t ssrc,
 {
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
+    }
+    if (michi_audio_validate_buffer_ms(buffer_ms) != ESP_OK) {
+        ESP_LOGW(TAG, "session start: buffer_ms %u outside %d..%d",
+                 (unsigned)buffer_ms, MICHI_AUDIO_BUFFER_MS_MIN,
+                 MICHI_AUDIO_BUFFER_MS_MAX);
+        return ESP_ERR_INVALID_ARG;
     }
     if (ssrc == 0) {
         ESP_LOGW(TAG, "session start: SSRC 0 is not negotiable");
