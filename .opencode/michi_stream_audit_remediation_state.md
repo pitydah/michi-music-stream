@@ -26,4 +26,4 @@
 - [x] PHASE K: hardware docs consistency
 - [x] PHASE L: CI full closure (cppcheck clean)
 - [x] PHASE M: E2E re-certification
-- [ ] PHASE N: final audit
+- [x] PHASE N: final audit
