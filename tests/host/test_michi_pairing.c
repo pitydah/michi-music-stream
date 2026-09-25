@@ -1305,6 +1305,153 @@ static void test_pair_life_04_repeated_shutdown(void)
     CHECK(test_task_external_delete_count() == 0, "no external vTaskDelete across repeated shutdowns");
 }
 
+/* ── PAIR-INV-01..06 Pairing Shutdown Invariant Tests ──────── */
+
+static void test_pair_inv_01_no_callback_after_teardown(void)
+{
+    printf("PAIR-INV-01: no callback may act after teardown begins\n");
+    pairing_test_reset(0xABCD2001);
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+
+    /* Shut pairing down */
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+    CHECK(!michi_pairing_is_window_open(), "window closed");
+
+    /* Advance timer past original window expiry */
+    const size_t events_before = test_state_post_count(MICHI_EVENT_PAIRING_WINDOW_CLOSED);
+    test_esp_timer_advance((uint64_t)CONFIG_MICHI_PAIRING_WINDOW_SECONDS * 1000000ULL);
+
+    /* Callback must not act: no events posted, no invalid task notification */
+    CHECK(test_state_post_count(MICHI_EVENT_PAIRING_WINDOW_CLOSED) == events_before,
+          "PAIR-INV-01: no event posted after teardown begins");
+    CHECK(test_task_invalid_notify_count() == 0,
+          "PAIR-INV-01: no invalid task notify after teardown");
+}
+
+static void test_pair_inv_02_no_worker_access_after_mutex_delete(void)
+{
+    printf("PAIR-INV-02: no worker access after mutex deletion\n");
+    pairing_test_reset(0xABCD2002);
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_test_has_mutex(), "mutex exists after init");
+
+    /* Hold worker so shutdown times out */
+    michi_pairing_test_hold_worker(true);
+    esp_err_t err = michi_pairing_shutdown();
+    CHECK(err == ESP_ERR_TIMEOUT, "shutdown times out while worker held");
+
+    /* INVARIANT: While worker is still alive, mutex MUST NOT be deleted! */
+    CHECK(michi_pairing_test_has_mutex(), "PAIR-INV-02: mutex preserved while worker running");
+
+    /* Release worker, let it exit cleanly */
+    michi_pairing_test_hold_worker(false);
+    usleep(50000);
+
+    /* Retry shutdown */
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown retry succeeds");
+    /* Mutex deleted ONLY after worker has exited */
+    CHECK(!michi_pairing_test_has_mutex(), "PAIR-INV-02: mutex deleted only after worker confirmed dead");
+    CHECK(michi_pairing_test_worker_state() == 0 /* MICHI_WORKER_STOPPED */, "worker stopped");
+}
+
+static void test_pair_inv_03_no_stale_task_notification(void)
+{
+    printf("PAIR-INV-03: no stale TaskHandle_t notification\n");
+    pairing_test_reset(0xABCD2003);
+    test_task_reset_invalid_notify_count();
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+
+    /* Worker is dead. Fire test notification or advance timer */
+    michi_pairing_test_notify_expired();
+    test_esp_timer_advance((uint64_t)CONFIG_MICHI_PAIRING_WINDOW_SECONDS * 1000000ULL);
+
+    CHECK(test_task_invalid_notify_count() == 0,
+          "PAIR-INV-03: zero notifications to dead or retired task handle");
+}
+
+static void test_pair_inv_04_timeout_leaves_retryable(void)
+{
+    printf("PAIR-INV-04: timeout leaves subsystem retryable\n");
+    pairing_test_reset(0xABCD2004);
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+
+    /* Hold worker */
+    michi_pairing_test_hold_worker(true);
+    CHECK(michi_pairing_shutdown() == ESP_ERR_TIMEOUT, "first shutdown times out");
+
+    /* Subsystem must remain retryable, not half-destroyed */
+    CHECK(michi_pairing_test_worker_state() == 2 /* MICHI_WORKER_STOP_REQUESTED */,
+          "worker state is STOP_REQUESTED");
+    CHECK(michi_pairing_test_has_mutex(), "mutex still intact for safe retry");
+
+    /* Release worker */
+    michi_pairing_test_hold_worker(false);
+    usleep(50000);
+
+    /* Retry shutdown must succeed completely */
+    CHECK(michi_pairing_shutdown() == ESP_OK, "PAIR-INV-04: retry shutdown succeeds");
+    CHECK(!michi_pairing_test_has_mutex(), "resources cleaned up cleanly after retry");
+    CHECK(!michi_pairing_is_window_open(), "window closed");
+}
+
+static void test_pair_inv_05_no_double_post_closed(void)
+{
+    printf("PAIR-INV-05: PAIRING_WINDOW_CLOSED must not be double-posted\n");
+    pairing_test_reset(0xABCD2005);
+    test_state_reset();
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+
+    /* 1. Normal window expiry posts exactly ONE event */
+    test_esp_timer_advance((uint64_t)CONFIG_MICHI_PAIRING_WINDOW_SECONDS * 1000000ULL);
+    usleep(20000); /* allow worker to process event */
+
+    CHECK(test_state_post_count(MICHI_EVENT_PAIRING_WINDOW_CLOSED) == 1,
+          "exactly 1 closed event posted on expiration");
+
+    /* 2. Manual close request after expiration */
+    CHECK(michi_pairing_close_window() == ESP_OK, "close window succeeds");
+    CHECK(test_state_post_count(MICHI_EVENT_PAIRING_WINDOW_CLOSED) == 1,
+          "close window on already closed window does not re-post");
+
+    /* 3. Shutdown after expiration */
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+    CHECK(test_state_post_count(MICHI_EVENT_PAIRING_WINDOW_CLOSED) == 1,
+          "PAIR-INV-05: shutdown does not double-post PAIRING_WINDOW_CLOSED");
+}
+
+static void test_pair_inv_06_pin_display_cb_lifecycle(void)
+{
+    printf("PAIR-INV-06: PIN display callback must not run after relevant display/resource teardown\n");
+    pairing_test_reset(0xABCD2006);
+    spy_reset();
+    michi_pairing_set_pin_display_cb(pin_spy, NULL);
+
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+    CHECK(spy_clear_calls == 1, "open_window clears stale PIN");
+
+    /* Shutdown pairing */
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+    CHECK(spy_clear_calls >= 2, "shutdown clears PIN on display before teardown");
+
+    /* After shutdown, reset spy counters */
+    const int clears_at_shutdown = spy_clear_calls;
+    const int pins_at_shutdown = spy_pin_calls;
+
+    /* Late close_window or another shutdown must NOT invoke the callback because callback was cleared */
+    (void)michi_pairing_close_window();
+    (void)michi_pairing_shutdown();
+
+    CHECK(spy_clear_calls == clears_at_shutdown,
+          "PAIR-INV-06: no PIN callback invocation after shutdown");
+    CHECK(spy_pin_calls == pins_at_shutdown,
+          "PAIR-INV-06: no PIN callback invocation after shutdown");
+}
+
 int main(void)
 {
     test_sha256_known_answer();
@@ -1333,9 +1480,15 @@ int main(void)
     test_pair_life_02_delayed_exit();
     test_pair_life_03_exit_just_after_timeout();
     test_pair_life_04_repeated_shutdown();
+    test_pair_inv_01_no_callback_after_teardown();
+    test_pair_inv_02_no_worker_access_after_mutex_delete();
+    test_pair_inv_03_no_stale_task_notification();
+    test_pair_inv_04_timeout_leaves_retryable();
+    test_pair_inv_05_no_double_post_closed();
+    test_pair_inv_06_pin_display_cb_lifecycle();
 
     if (failures == 0) {
-        printf("test_michi_pairing: all tests passed (including PAIR-LIFE-01..04)\n");
+        printf("test_michi_pairing: all tests passed (including PAIR-LIFE-01..04, PAIR-INV-01..06)\n");
         return 0;
     }
     printf("test_michi_pairing: %d check(s) FAILED\n", failures);

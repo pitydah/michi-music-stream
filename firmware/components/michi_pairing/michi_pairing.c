@@ -1273,8 +1273,12 @@ esp_err_t michi_pairing_shutdown(void)
     portEXIT_CRITICAL(&s_lifecycle_mux);
 
     /* 5. With worker completely dead and no callbacks in flight, clean up resources */
+    pin_display_notify(NULL);
+
     if (s_mutex != NULL) {
         xSemaphoreTake(s_mutex, portMAX_DELAY);
+        s_pin_display_cb = NULL;
+        s_pin_display_ctx = NULL;
         window_close_locked("shutdown", false);
         if (s_timer != NULL) {
             esp_timer_delete(s_timer);
@@ -1283,6 +1287,9 @@ esp_err_t michi_pairing_shutdown(void)
         xSemaphoreGive(s_mutex);
         vSemaphoreDelete(s_mutex);
         s_mutex = NULL;
+    } else {
+        s_pin_display_cb = NULL;
+        s_pin_display_ctx = NULL;
     }
     if (s_pairing_done_sem != NULL) {
         vSemaphoreDelete(s_pairing_done_sem);
@@ -1291,9 +1298,6 @@ esp_err_t michi_pairing_shutdown(void)
     s_initialized = false;
 
     ESP_LOGI(TAG, "subsystem=pairing state=off phase=10");
-    /* A reboot closes the window: the screen must not keep the PIN. The
-     * display may already be down - the callback degrades gracefully. */
-    pin_display_notify(NULL);
     return ESP_OK;
 }
 
@@ -1317,6 +1321,11 @@ __attribute__((weak)) void michi_pairing_test_unlock(void)
 __attribute__((weak)) bool michi_pairing_test_is_window_open_locked(void)
 {
     return s_window_open;
+}
+
+__attribute__((weak)) bool michi_pairing_test_has_mutex(void)
+{
+    return s_mutex != NULL;
 }
 
 __attribute__((weak)) void michi_pairing_test_notify_expired(void)

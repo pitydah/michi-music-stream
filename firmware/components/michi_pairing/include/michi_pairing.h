@@ -493,6 +493,7 @@ bool michi_pairing_test_is_window_open_locked(void);
 void michi_pairing_test_notify_expired(void);
 void michi_pairing_test_hold_worker(bool hold);
 int michi_pairing_test_worker_state(void);
+bool michi_pairing_test_has_mutex(void);
 #endif
 
 #ifdef __cplusplus
