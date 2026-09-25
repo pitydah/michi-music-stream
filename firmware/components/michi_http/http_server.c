@@ -1073,8 +1073,11 @@ static esp_err_t v1lite_heartbeat_handler(httpd_req_t *req)
                                      field);
     }
 
+    char peer_ip[16] = {0};
+    client_ip_str(req, peer_ip, sizeof(peer_ip));
+
     const michi_session_heartbeat_result_t result =
-        michi_session_heartbeat(token, body.session_id, body.sequence);
+        michi_session_heartbeat(token, body.session_id, body.sequence, peer_ip);
     switch (result) {
     case MICHI_SESSION_HEARTBEAT_TOKEN_MISMATCH:
         return michi_http_send_error(req, 401,
@@ -1086,6 +1089,10 @@ static esp_err_t v1lite_heartbeat_handler(httpd_req_t *req)
     case MICHI_SESSION_HEARTBEAT_SEQUENCE_REPLAY:
         return michi_http_send_error(req, 409,
                                      "heartbeat sequence already seen",
+                                     NULL);
+    case MICHI_SESSION_HEARTBEAT_SOURCE_MISMATCH:
+        return michi_http_send_error(req, 409,
+                                     "heartbeat source IP does not match session",
                                      NULL);
     case MICHI_SESSION_HEARTBEAT_OK:
         break;

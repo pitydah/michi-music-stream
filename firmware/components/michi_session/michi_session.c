@@ -900,7 +900,8 @@ bool michi_session_active(void)
 }
 
 michi_session_heartbeat_result_t michi_session_heartbeat(
-    const char *session_token, const char *session_id, uint32_t sequence)
+    const char *session_token, const char *session_id, uint32_t sequence,
+    const char *peer_ip)
 {
     if (!s_initialized) {
         return MICHI_SESSION_HEARTBEAT_NO_SESSION;
@@ -933,6 +934,15 @@ michi_session_heartbeat_result_t michi_session_heartbeat(
         xSemaphoreGive(s_mutex);
         ESP_LOGW(TAG, "heartbeat: session_id mismatch rejected=1");
         return MICHI_SESSION_HEARTBEAT_SESSION_MISMATCH;
+    }
+    /* Peer IP check: heartbeat from differing IP is rejected with 409 CONFLICT (R2-K) */
+    if (peer_ip != NULL && peer_ip[0] != '\0' && s_session.info.source_addr[0] != '\0') {
+        if (strcmp(peer_ip, s_session.info.source_addr) != 0) {
+            xSemaphoreGive(s_mutex);
+            ESP_LOGW(TAG, "heartbeat: peer IP %s != session source %s - rejected 409 conflict",
+                     peer_ip, s_session.info.source_addr);
+            return MICHI_SESSION_HEARTBEAT_SOURCE_MISMATCH;
+        }
     }
     /* Sequence: strictly increasing within the session. A repeated or
      * older heartbeat does NOT renew (contract 2.6: 409 CONFLICT). */
