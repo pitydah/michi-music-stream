@@ -1,29 +1,33 @@
-# Michi Stream Audit Remediation State
+# Michi Stream Audit Remediation State — Round 2
 
 - **Branch:** `fix/ui-device-gaps`
-- **HEAD inicial:** `e6c22c77dd0ab138cc429c9a87fb25e868378898`
+- **HEAD inicial R2:** `b18ec53bc52a83cc63a0539c1d0f1f51b44bd19f`
 - **Base:** `main` (`d18d4698e5ef83649d2f1dcda35a477d000b0b88`)
 - **PR:** #33
-- **Objetivo actual:** Fases A a N del plan KILLCRITIC remediation
+- **Objetivo actual:** Fases R2-A a R2-P del plan KILLCRITIC Round 2
 
-## Baseline Checks
+## Baseline Checks (R2)
 - `git status --short`: clean
-- `make -C tests/host clean && make -C tests/host test`: PASS (14 suites, 100%)
-- `cppcheck`: FAIL (`components/michi_dac/dac_manager.c:201` invalidPrintfArgType_s)
-- `python3 tests/e2e/run_e2e.py`: 9 passed, fails on commit drift guard (expected until re-anchor at final step)
+- `make -C tests/host clean && make -C tests/host test`: PASS (100%)
+- `python3 tests/e2e/run_e2e.py`: PASS (13/13 cases, MOCK_PASS=true)
+- `cppcheck`: PASS (0 warnings, --error-exitcode=1)
+- `contracts / schema / simulator`: PASS (100%)
 
-## Registro de Fases
-- [x] Pre-flight y Baseline completados
-- [x] PHASE B: DAC effective profile resolution (`michi_dac_default_profile`, NVS, compile-time SKU, single authoritative resolution)
-- [x] PHASE C: buffer_ms Signal Truth (iniciado en e6c22c7; verificar gates BUF-01..BUF-03)
-- [x] PHASE D: /server/info fail-closed
-- [x] PHASE E: RTP clock wrap + reorder correctness
-- [x] PHASE F: OTA audio health + OTA/session exclusion
-- [x] PHASE G: esp_timer pairing/discovery non-blocking
-- [x] PHASE H: display DMA buffer lifetime (HARDWARE_DISPLAY_PASS: PENDING)
-- [x] PHASE I: test-production unification (michi_jb, OTA, profile; JB-01 verified)
-- [x] PHASE J: jitter/loss metric correctness
-- [x] PHASE K: hardware docs consistency
-- [x] PHASE L: CI full closure (cppcheck clean)
-- [x] PHASE M: E2E re-certification
-- [x] PHASE N: final audit
+## Registro de Fases (Round 2)
+- [x] Pre-flight y Baseline R2 completados
+- [x] R2-A: /server/info DIAGNOSTIC fail-closed (wire service contract based)
+- [ ] R2-B: independent expected-audio / SKU truth (decoupled from runtime autodetect)
+- [ ] R2-C: pairing/discovery real coalescing (atomic pending / notification, no event loss)
+- [ ] R2-D: pairing/discovery cooperative shutdown (request stop -> wake -> exit -> join -> cleanup)
+- [ ] R2-E: buffer_ms recovery + capacity truth (target_buffer_ms in recovery, engine clamp/validation)
+- [ ] R2-F: pause/stop quiesce semantics (michi_audio_output_quiesce, mute, bounded drain)
+- [ ] R2-G: display DMA timeout recovery (quarantine state, no reuse / no UAF)
+- [ ] R2-H: cppcheck production equivalence (compile-time macro config, no divergent branching in prod)
+- [ ] R2-I: host sdkconfig parity (sync with Kconfig defaults + parity test)
+- [ ] R2-J: HTTP recv deadline (recv_wait_timeout aligned with bounded body timeout)
+- [ ] R2-K: session peer-IP policy (strict policy on heartbeat IP change)
+- [ ] R2-L: PCM5122 capability semantics (silicon max vs driver vs advertised)
+- [ ] R2-M: JB fallback + telemetry cleanup (closest behind playhead selection fix)
+- [ ] R2-N: comments/docs truth (eliminate obsolete comments)
+- [ ] R2-O: full verification (test matrix, falsification suites)
+- [ ] R2-P: final KILLCRITIC audit & report

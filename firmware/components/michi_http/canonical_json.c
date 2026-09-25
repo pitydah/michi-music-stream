@@ -94,6 +94,13 @@ static bool add_number_array(cJSON *obj, const char *key,
     return true;
 }
 
+static inline bool service_requires_identity(const char *service)
+{
+    return (service != NULL &&
+            (strcmp(service, "michi-stream-standard") == 0 ||
+             strcmp(service, "michi-stream-hifi") == 0));
+}
+
 /* The canonical receiver v1-lite info profile (section 2.1).
  * Emits the complete contract surface required by server-info.schema.json:
  * service, name, version, api_version, roles, auth, features, server_id,
@@ -106,16 +113,16 @@ esp_err_t build_info_json_with_identity(cJSON *root, const michi_product_profile
     if (root == NULL || p == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (p->tier == MICHI_PRODUCT_STANDARD || p->tier == MICHI_PRODUCT_HIFI) {
+    const char *service = (p->tier == MICHI_PRODUCT_HIFI)
+                              ? "michi-stream-hifi"
+                              : "michi-stream-standard";
+    if (service_requires_identity(service)) {
         if (server_id == NULL || server_id[0] == '\0' ||
             michi_id == NULL || michi_id[0] == '\0' ||
             public_key == NULL || public_key[0] == '\0') {
             return ESP_ERR_INVALID_STATE;
         }
     }
-    const char *service = (p->tier == MICHI_PRODUCT_HIFI)
-                              ? "michi-stream-hifi"
-                              : "michi-stream-standard";
     if (cJSON_AddStringToObject(root, "service", service) == NULL ||
         cJSON_AddStringToObject(root, "name", p->product_name) == NULL ||
         cJSON_AddStringToObject(root, "version", p->firmware_version) == NULL ||

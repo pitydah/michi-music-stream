@@ -410,6 +410,59 @@ static void test_info_fail_closed_missing_identity(void)
     cJSON_Delete(root);
 }
 
+static void test_info_fail_closed_diagnostic(void)
+{
+    printf("info: fail-closed diagnostic tier missing identity (INFO-DIAG-01..INFO-DIAG-05)\n");
+    michi_product_profile_t p_diag;
+    fill_profile(&p_diag, MICHI_PRODUCT_DIAGNOSTIC, "Michi Music Stream", "0.1.0");
+
+    cJSON *root = cJSON_CreateObject();
+    CHECK(root != NULL, "root created");
+
+    /* INFO-DIAG-01: server_id missing/empty -> ESP_ERR_INVALID_STATE */
+    CHECK(build_info_json_with_identity(root, &p_diag, NULL, TEST_STUB_MICHI_ID, TEST_STUB_PUBKEY_B64) == ESP_ERR_INVALID_STATE,
+          "INFO-DIAG-01: NULL server_id returns ESP_ERR_INVALID_STATE (DIAGNOSTIC)");
+    CHECK(build_info_json_with_identity(root, &p_diag, "", TEST_STUB_MICHI_ID, TEST_STUB_PUBKEY_B64) == ESP_ERR_INVALID_STATE,
+          "INFO-DIAG-01: empty server_id returns ESP_ERR_INVALID_STATE (DIAGNOSTIC)");
+
+    /* INFO-DIAG-02: michi_id missing/empty -> ESP_ERR_INVALID_STATE */
+    CHECK(build_info_json_with_identity(root, &p_diag, TEST_STUB_SERVER_ID, NULL, TEST_STUB_PUBKEY_B64) == ESP_ERR_INVALID_STATE,
+          "INFO-DIAG-02: NULL michi_id returns ESP_ERR_INVALID_STATE (DIAGNOSTIC)");
+    CHECK(build_info_json_with_identity(root, &p_diag, TEST_STUB_SERVER_ID, "", TEST_STUB_PUBKEY_B64) == ESP_ERR_INVALID_STATE,
+          "INFO-DIAG-02: empty michi_id returns ESP_ERR_INVALID_STATE (DIAGNOSTIC)");
+
+    /* INFO-DIAG-03: public_key missing/empty -> ESP_ERR_INVALID_STATE */
+    CHECK(build_info_json_with_identity(root, &p_diag, TEST_STUB_SERVER_ID, TEST_STUB_MICHI_ID, NULL) == ESP_ERR_INVALID_STATE,
+          "INFO-DIAG-03: NULL public_key returns ESP_ERR_INVALID_STATE (DIAGNOSTIC)");
+    CHECK(build_info_json_with_identity(root, &p_diag, TEST_STUB_SERVER_ID, TEST_STUB_MICHI_ID, "") == ESP_ERR_INVALID_STATE,
+          "INFO-DIAG-03: empty public_key returns ESP_ERR_INVALID_STATE (DIAGNOSTIC)");
+
+    /* INFO-DIAG-04: complete identity with DIAGNOSTIC tier -> ESP_OK */
+    cJSON_Delete(root);
+    root = cJSON_CreateObject();
+    CHECK(build_info_json_with_identity(root, &p_diag, TEST_STUB_SERVER_ID, TEST_STUB_MICHI_ID, TEST_STUB_PUBKEY_B64) == ESP_OK,
+          "INFO-DIAG-04: complete identity with DIAGNOSTIC succeeds");
+
+    /* INFO-DIAG-05: verify wire service and identity properties match schema requirements */
+    const cJSON *service = cJSON_GetObjectItem(root, "service");
+    CHECK(service != NULL && strcmp(service->valuestring, "michi-stream-standard") == 0,
+          "INFO-DIAG-05: wire service is michi-stream-standard");
+    const cJSON *sid = cJSON_GetObjectItem(root, "server_id");
+    CHECK(sid != NULL && strcmp(sid->valuestring, TEST_STUB_SERVER_ID) == 0,
+          "INFO-DIAG-05: server_id present");
+    const cJSON *mid = cJSON_GetObjectItem(root, "michi_id");
+    CHECK(mid != NULL && strcmp(mid->valuestring, TEST_STUB_MICHI_ID) == 0,
+          "INFO-DIAG-05: michi_id present");
+    const cJSON *pk = cJSON_GetObjectItem(root, "public_key");
+    CHECK(pk != NULL && strcmp(pk->valuestring, TEST_STUB_PUBKEY_B64) == 0,
+          "INFO-DIAG-05: public_key present");
+    const cJSON *scheme = cJSON_GetObjectItem(root, "identity_scheme");
+    CHECK(scheme != NULL && strcmp(scheme->valuestring, MICHI_IDENTITY_SCHEME) == 0,
+          "INFO-DIAG-05: identity_scheme is MICHI_IDENTITY_SCHEME");
+
+    cJSON_Delete(root);
+}
+
 /* Duplicate of request_id_generate to test formatting logic on host */
 #include "esp_random.h"
 #include <inttypes.h>
@@ -461,6 +514,7 @@ int main(void)
     test_info_profile_diagnostic_maps_standard();
     test_info_profile_invalid_args();
     test_info_fail_closed_missing_identity();
+    test_info_fail_closed_diagnostic();
     test_uuid_format();
 
     if (failures != 0) {
