@@ -486,7 +486,7 @@ void app_main(void)
      *  5. Audio availability: if SKU expects audio (configured profile), audio_available
      *     MUST be true. If audio was expected and failed to initialize, trial boot evaluates
      *     to FATAL, refusing rollback cancellation and triggering bootloader rollback.
-     *     A pure DIAGNOSTIC SKU (no DAC profile configured) remains acceptable (DEGRADED).
+     *     A pure DIAGNOSTIC SKU (no DAC profile configured) remains acceptable (DEGRADED). */
     char dac_prof[64] = {0};
     michi_dac_profile_source_t dac_src = MICHI_DAC_PROFILE_SOURCE_NONE;
     (void)michi_dac_resolve_profile(dac_prof, sizeof(dac_prof), &dac_src);

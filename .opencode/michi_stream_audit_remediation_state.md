@@ -1,33 +1,52 @@
-# Michi Stream Audit Remediation State — Round 2
+# Michi Stream KILLCRITIC — Round 3
 
-- **Branch:** `fix/ui-device-gaps`
-- **HEAD inicial R2:** `b18ec53bc52a83cc63a0539c1d0f1f51b44bd19f`
-- **Base:** `main` (`d18d4698e5ef83649d2f1dcda35a477d000b0b88`)
-- **PR:** #33
-- **Objetivo actual:** Fases R2-A a R2-P del plan KILLCRITIC Round 2
+START_HEAD: a44ea3c803a2bd62cfac772cd9d1463f80523c5c
+CURRENT_HEAD: a44ea3c803a2bd62cfac772cd9d1463f80523c5c
+BRANCH: fix/ui-device-gaps
+WORKTREE_STATUS: clean
 
-## Baseline Checks (R2)
-- `git status --short`: clean
-- `make -C tests/host clean && make -C tests/host test`: PASS (100%)
-- `python3 tests/e2e/run_e2e.py`: PASS (13/13 cases, MOCK_PASS=true)
-- `cppcheck`: PASS (0 warnings, --error-exitcode=1)
-- `contracts / schema / simulator`: PASS (100%)
+GLOBAL_STATUS: IN_PROGRESS
 
-## Registro de Fases (Round 2)
-- [x] Pre-flight y Baseline R2 completados
-- [x] R2-A: /server/info DIAGNOSTIC fail-closed (wire service contract based)
-- [x] R2-B: independent expected-audio / SKU truth (decoupled from runtime autodetect)
-- [x] R2-C: pairing/discovery real coalescing (atomic pending / notification, no event loss)
-- [x] R2-D: pairing/discovery cooperative shutdown (request stop -> wake -> exit -> join -> cleanup)
-- [ ] R2-E: buffer_ms recovery + capacity truth (target_buffer_ms in recovery, engine clamp/validation)
-- [ ] R2-F: pause/stop quiesce semantics (michi_audio_output_quiesce, mute, bounded drain)
-- [ ] R2-G: display DMA timeout recovery (quarantine state, no reuse / no UAF)
-- [ ] R2-H: cppcheck production equivalence (compile-time macro config, no divergent branching in prod)
-- [ ] R2-I: host sdkconfig parity (sync with Kconfig defaults + parity test)
-- [ ] R2-J: HTTP recv deadline (recv_wait_timeout aligned with bounded body timeout)
-- [ ] R2-K: session peer-IP policy (strict policy on heartbeat IP change)
-- [ ] R2-L: PCM5122 capability semantics (silicon max vs driver vs advertised)
-- [ ] R2-M: JB fallback + telemetry cleanup (closest behind playhead selection fix)
-- [ ] R2-N: comments/docs truth (eliminate obsolete comments)
-- [ ] R2-O: full verification (test matrix, falsification suites)
-- [ ] R2-P: final KILLCRITIC audit & report
+| Phase | Status | Reproduced | Test before patch | Patch | Falsified | Firmware | Commit |
+|---|---|---|---|---|---|---|---|
+| R3-00 | PASS | YES | YES | N/A | YES | FAIL (reproduced) | - |
+| R3-01 | PASS | YES | YES | YES | YES | PASS | pending_commit |
+| R3-02 | TODO | NO | NO | NO | NO | NO | - |
+| R3-03 | TODO | NO | NO | NO | NO | NO | - |
+| R3-04 | TODO | NO | NO | NO | NO | NO | - |
+| R3-05 | TODO | NO | NO | NO | NO | NO | - |
+| R3-06 | TODO | NO | NO | NO | NO | NO | - |
+| R3-07 | TODO | NO | NO | NO | NO | NO | - |
+| R3-08 | TODO | NO | NO | NO | NO | NO | - |
+| R3-09 | TODO | NO | NO | NO | NO | NO | - |
+| R3-10 | TODO | NO | NO | NO | NO | NO | - |
+| R3-11 | TODO | NO | NO | NO | NO | NO | - |
+| R3-12 | TODO | NO | NO | NO | NO | NO | - |
+| R3-13 | TODO | NO | NO | NO | NO | NO | - |
+| R3-14 | TODO | NO | NO | NO | NO | NO | - |
+| R3-15 | TODO | NO | NO | NO | NO | NO | - |
+| R3-16 | TODO | NO | NO | NO | NO | NO | - |
+| R3-17 | TODO | NO | NO | NO | NO | NO | - |
+| R3-18 | TODO | NO | NO | NO | NO | NO | - |
+| R3-19 | TODO | NO | NO | NO | NO | NO | - |
+| R3-20 | TODO | NO | NO | NO | NO | NO | - |
+| R3-21 | TODO | NO | NO | NO | NO | NO | - |
+| R3-22 | TODO | NO | NO | NO | NO | NO | - |
+| R3-23 | TODO | NO | NO | NO | NO | NO | - |
+| R3-24 | TODO | NO | NO | NO | NO | NO | - |
+| R3-25 | TODO | NO | NO | NO | NO | NO | - |
+
+## Pre-flight Evidence (R3-00)
+- Branch: fix/ui-device-gaps
+- Head: a44ea3c803a2bd62cfac772cd9d1463f80523c5c
+- Working tree: clean
+- Host tests: make -C tests/host clean && make -C tests/host test -> PASS
+- E2E suite: python3 tests/e2e/run_e2e.py -> PASS (13/13)
+- Cppcheck: 47/47 files checked -> PASS (0 warnings)
+- Firmware build: docker run ... espressif/idf:release-v5.3 -> FAIL (reproduced error in app_main.c line 521: "/*" within comment, line 536: 'st_res' undeclared)
+
+## R3-01 Evidence
+- Defect: Unterminated block comment at app_main.c:489 causing compiler error: "/*" within comment and undeclared st_res.
+- Reproduction: ESP-IDF release-v5.3 docker build failed at [1233/1253].
+- Patch: Closed block comment at app_main.c:489 before char dac_prof[64].
+- Verification: ESP-IDF release-v5.3 docker build passed 100%, binary size 1626656 bytes (<= 4194304), sdkconfig assertions pass, host tests pass, cppcheck passes with 0 warnings.
