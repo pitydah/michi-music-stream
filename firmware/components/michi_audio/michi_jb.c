@@ -79,7 +79,9 @@ michi_jb_entry_t *michi_jb_oldest(const michi_jb_t *jb, uint16_t playhead)
             }
             int16_t diff_e = (int16_t)(e->seq - playhead);
             int16_t diff_best = (int16_t)(best->seq - playhead);
-            if (diff_e < diff_best) {
+            /* Since both diffs are negative, the entry closest to playhead has
+             * the maximum (least negative) signed difference (e.g. -1 > -3). */
+            if (diff_e > diff_best) {
                 best = e;
             }
         }

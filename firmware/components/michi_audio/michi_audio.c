@@ -273,7 +273,9 @@ static bool stream_policy(session_t *s, const michi_rtp_guard_packet_t *pkt)
 
     if (s_paused) {
         /* Paused: valid packets are counted (received + loss
-         * accounting) but never queued - silence, not a buffer leak. */
+         * accounting) but never queued - silence, not a buffer leak.
+         * Sequence gaps observed during pause represent network missing packets,
+         * not playout underruns or buffer starvation. */
         const int16_t diff_l = (int16_t)(pkt->seq - s->last_seq);
         const uint32_t lost = michi_rtp_guard_lost_delta(s->last_seq,
                                                          pkt->seq);

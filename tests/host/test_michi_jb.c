@@ -12,6 +12,7 @@
  *   JB-9: Insert after flush succeeds (buffer reusable).
  *   JB-10: 32 packets fill the buffer exactly (no phantom full at 31).
  *   JB-11: michi_jb_init with custom pool & entries, payload copy, and release.
+ *   JB-12: michi_jb_oldest() selects closest packet behind playhead when all packets are behind.
  */
 
 #include <inttypes.h>
@@ -180,6 +181,27 @@ static void test_payload_pool(void)
     CHECK(michi_jb_find(&jb, 10) == NULL, "seq 10 gone after release");
 }
 
+/* ---- JB-12: all packets behind playhead picks closest to playhead ---- */
+static void test_oldest_all_behind_playhead(void)
+{
+    printf("jb: all packets behind playhead selects closest to playhead (least negative diff)\n");
+    michi_jb_t jb = {0};
+    michi_jb_flush(&jb);
+
+    /* Insert packets with seq 97, 98, 99. Playhead is at 100.
+     * All diffs are negative: 97 is -3, 98 is -2, 99 is -1.
+     * The fallback in michi_jb_oldest must select seq 99 (diff -1), NOT 97. */
+    michi_jb_insert(&jb, 90u, 97u, 0, 1920);
+    michi_jb_insert(&jb, 90u, 98u, 480, 1920);
+    michi_jb_insert(&jb, 90u, 99u, 960, 1920);
+
+    michi_jb_entry_t *o = michi_jb_oldest(&jb, 100u);
+    CHECK(o != NULL, "entry found when all behind playhead");
+    if (o != NULL) {
+        CHECK(o->seq == 99u, "closest packet behind playhead (seq 99) selected");
+    }
+}
+
 int main(void)
 {
     test_normal_insert();
@@ -191,6 +213,7 @@ int main(void)
     test_reuse_after_flush();
     test_exact_capacity();
     test_payload_pool();
+    test_oldest_all_behind_playhead();
 
     if (failures == 0) {
         printf("PASS test_michi_jb\n");
