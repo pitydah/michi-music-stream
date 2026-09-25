@@ -21,6 +21,7 @@
 #include "michi_http.h"
 #include "michi_identity.h"
 #include "michi_product_profile.h"
+#include "sdkconfig.h"
 
 static int failures = 0;
 
@@ -188,11 +189,31 @@ static void test_runtime_parity(void)
     cJSON_Delete(info_root);
 }
 
+static void test_host_kconfig_parity(void)
+{
+    printf("HOST-KCONFIG-01: host sdkconfig.h parity with production defaults\n");
+    CHECK(CONFIG_MICHI_DAC_I2C_SDA == 21, "DAC SDA pin == 21");
+    CHECK(CONFIG_MICHI_DAC_I2C_SCL == 16, "DAC SCL pin == 16");
+    CHECK(CONFIG_MICHI_I2S_BCLK == 3, "I2S BCLK pin == 3");
+    CHECK(CONFIG_MICHI_I2S_LRCK == 18, "I2S LRCK pin == 18");
+    CHECK(CONFIG_MICHI_I2S_DIN == 5, "I2S DIN pin == 5");
+    CHECK(CONFIG_MICHI_I2S_MCLK == -1, "I2S MCLK pin == -1 (disabled/internal PLL)");
+    CHECK(CONFIG_MICHI_LED_GPIO == 4, "LED GPIO pin == 4");
+    CHECK(CONFIG_MICHI_BUTTON_GPIO == 17, "Button GPIO pin == 17");
+    CHECK(CONFIG_MICHI_BUTTON_DEBOUNCE_MS == 30, "Button debounce == 30 ms");
+    CHECK(CONFIG_MICHI_BUTTON_POLL_MS == 5, "Button poll == 5 ms");
+    CHECK(CONFIG_MICHI_BUTTON_MIN_PRESS_MS == 50, "Button min press == 50 ms");
+    CHECK(CONFIG_MICHI_SKU_EXPECTS_AUDIO == 1, "SKU expects audio == 1");
+    CHECK(strcmp(CONFIG_MICHI_DAC_DEFAULT_PROFILE, "pcm5102a") == 0,
+          "DAC default profile == pcm5102a");
+}
+
 int main(void)
 {
     test_canonical_capability_table();
     test_announce_feature_group();
     test_runtime_parity();
+    test_host_kconfig_parity();
 
     if (failures == 0) {
         printf("test_capability_parity: all tests passed\n");
