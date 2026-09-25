@@ -95,6 +95,16 @@ menu "Michi Music Stream Hardware"
           NVS has no profile and no self-detectable I2C DAC is found.
           Enables factory-unprovisioned Standard units with PCM5102A to operate.
 
+    config MICHI_SKU_EXPECTS_AUDIO
+        bool "Manufacturing SKU expects audio hardware (DAC)"
+        default y
+        help
+          Defines the manufacturing expectation for the target SKU.
+          When enabled (default), the device requires working audio hardware.
+          If audio fails during trial boot after an OTA update, the boot
+          evaluates to FATAL, triggering rollback.
+          Disable only for dedicated diagnostic-only builds.
+
     config MICHI_LED_GPIO
         int "External LED (SK6812) data pin"
         default 4

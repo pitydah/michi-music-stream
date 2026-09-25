@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "semver.h"
+#include "michi_dac_types.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -35,6 +36,15 @@ int nvs_version_cmp_to_running(const char *nvs_ver, const char *running_ver);
 bool latch_should_block(const char *pending_version,
                         const char *running_version,
                         const char *target_version);
+
+/**
+ * @brief Evaluates whether audio is expected for this device based on
+ *        manufacturing SKU expectation and static configuration,
+ *        completely decoupled from runtime autodetection outcome.
+ */
+bool michi_ota_decide_expected_audio(bool sku_expects_audio,
+                                     const char *configured_profile,
+                                     michi_dac_profile_source_t source);
 
 ota_selftest_res_t evaluate_trial_boot_gate(bool critical_checks_ok,
                                             bool expected_audio,

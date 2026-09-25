@@ -43,6 +43,14 @@ typedef struct michi_dac_driver_ops {
 
 typedef enum { MICHI_PRODUCT_STANDARD, MICHI_PRODUCT_HIFI, MICHI_PRODUCT_DIAGNOSTIC } michi_product_tier_t;
 
+typedef enum {
+    MICHI_DAC_PROFILE_SOURCE_NONE = 0,
+    MICHI_DAC_PROFILE_SOURCE_HW_ID,
+    MICHI_DAC_PROFILE_SOURCE_NVS,
+    MICHI_DAC_PROFILE_SOURCE_KCONFIG,
+    MICHI_DAC_PROFILE_SOURCE_AUTODETECT,
+} michi_dac_profile_source_t;
+
 typedef struct {
     char vendor[24]; char model[32]; char board_profile[32];
     uint32_t max_sample_rate; uint8_t max_bit_depth; uint8_t channels; uint16_t snr_db;

@@ -16,7 +16,7 @@
 ## Registro de Fases (Round 2)
 - [x] Pre-flight y Baseline R2 completados
 - [x] R2-A: /server/info DIAGNOSTIC fail-closed (wire service contract based)
-- [ ] R2-B: independent expected-audio / SKU truth (decoupled from runtime autodetect)
+- [x] R2-B: independent expected-audio / SKU truth (decoupled from runtime autodetect)
 - [ ] R2-C: pairing/discovery real coalescing (atomic pending / notification, no event loss)
 - [ ] R2-D: pairing/discovery cooperative shutdown (request stop -> wake -> exit -> join -> cleanup)
 - [ ] R2-E: buffer_ms recovery + capacity truth (target_buffer_ms in recovery, engine clamp/validation)

@@ -7,5 +7,5 @@ idf_component_register(
     # - an unmounted card makes fopen fail with ENOENT.
     REQUIRES michi_state michi_product_profile michi_session michi_led
              esp_http_client esp_https_ota app_update mbedtls
-             esp_partition nvs_flash freertos json michi_sd
+             esp_partition nvs_flash freertos json michi_sd michi_dac
 )

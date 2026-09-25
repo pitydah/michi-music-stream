@@ -51,6 +51,24 @@ bool latch_should_block(const char *pending_version,
     return false;
 }
 
+bool michi_ota_decide_expected_audio(bool sku_expects_audio,
+                                     const char *configured_profile,
+                                     michi_dac_profile_source_t source)
+{
+    /* 1. Explicit profile configured via HW_ID, NVS, or Kconfig always expects audio */
+    if (configured_profile != NULL && configured_profile[0] != '\0') {
+        return true;
+    }
+    /* 2. Autodetect target: if hardware profile resolution assigned AUTODETECT
+     *    and the SKU expectation is an audio unit, audio is expected regardless
+     *    of runtime detection outcome */
+    if (source == MICHI_DAC_PROFILE_SOURCE_AUTODETECT && sku_expects_audio) {
+        return true;
+    }
+    /* 3. Base build-time SKU expectation */
+    return sku_expects_audio;
+}
+
 ota_selftest_res_t evaluate_trial_boot_gate(bool critical_checks_ok,
                                             bool expected_audio,
                                             bool audio_available)

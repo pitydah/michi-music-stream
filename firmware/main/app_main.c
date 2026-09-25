@@ -487,11 +487,15 @@ void app_main(void)
      *     MUST be true. If audio was expected and failed to initialize, trial boot evaluates
      *     to FATAL, refusing rollback cancellation and triggering bootloader rollback.
      *     A pure DIAGNOSTIC SKU (no DAC profile configured) remains acceptable (DEGRADED).
-     */
     char dac_prof[64] = {0};
     michi_dac_profile_source_t dac_src = MICHI_DAC_PROFILE_SOURCE_NONE;
     (void)michi_dac_resolve_profile(dac_prof, sizeof(dac_prof), &dac_src);
-    const bool expected_audio = (dac_prof[0] != '\0');
+#if defined(CONFIG_MICHI_SKU_EXPECTS_AUDIO)
+    const bool sku_expects_audio = true;
+#else
+    const bool sku_expects_audio = false;
+#endif
+    const bool expected_audio = michi_ota_decide_expected_audio(sku_expects_audio, dac_prof, dac_src);
 
     const bool critical_ok = st.overall &&
                              (michi_identity_get_state() == MICHI_IDENTITY_READY) &&

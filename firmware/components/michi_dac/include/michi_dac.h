@@ -146,14 +146,6 @@ esp_err_t michi_dac_get_nvs_profile(char *profile, size_t buf_len);
  */
 esp_err_t michi_dac_set_nvs_profile(const char *profile);
 
-typedef enum {
-    MICHI_DAC_PROFILE_SOURCE_NONE = 0,
-    MICHI_DAC_PROFILE_SOURCE_HW_ID,
-    MICHI_DAC_PROFILE_SOURCE_NVS,
-    MICHI_DAC_PROFILE_SOURCE_KCONFIG,
-    MICHI_DAC_PROFILE_SOURCE_AUTODETECT,
-} michi_dac_profile_source_t;
-
 /**
  * @brief Authoritative single-source resolver for effective DAC profile.
  *
