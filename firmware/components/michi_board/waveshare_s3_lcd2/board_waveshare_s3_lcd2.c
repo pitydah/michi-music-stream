@@ -69,6 +69,8 @@ static bool s_backlight_on = false;
 static bool s_spi_bus_inited = false;
 static bool s_inited = false;
 static SemaphoreHandle_t s_trans_done_sem = NULL;
+static volatile bool s_dma_in_flight = false;
+static volatile bool s_dma_quarantined = false;
 
 static bool IRAM_ATTR on_color_trans_done(esp_lcd_panel_io_handle_t panel_io,
                                           esp_lcd_panel_io_event_data_t *edata,
@@ -76,6 +78,7 @@ static bool IRAM_ATTR on_color_trans_done(esp_lcd_panel_io_handle_t panel_io,
 {
     (void)panel_io;
     (void)edata;
+    s_dma_in_flight = false;
     BaseType_t high_task_wakeup = pdFALSE;
     SemaphoreHandle_t sem = (SemaphoreHandle_t)user_ctx;
     if (sem != NULL) {
@@ -361,6 +364,12 @@ esp_err_t michi_board_init(void)
 
 esp_err_t michi_board_shutdown(void)
 {
+    if (s_dma_in_flight) {
+        /* Wait up to 1000 ms for in-flight DMA completion before tearing down */
+        if (s_trans_done_sem != NULL) {
+            (void)xSemaphoreTake(s_trans_done_sem, pdMS_TO_TICKS(1000));
+        }
+    }
     if (s_panel != NULL) {
         esp_err_t err = esp_lcd_panel_disp_on_off(s_panel, false);
         if (err != ESP_OK) {
@@ -388,7 +397,11 @@ esp_err_t michi_board_shutdown(void)
         s_spi_bus_inited = false;
     }
     if (s_fb != NULL) {
-        heap_caps_free(s_fb);
+        if (!s_dma_in_flight) {
+            heap_caps_free(s_fb);
+        } else {
+            ESP_LOGE(TAG, "display shutdown: buffer quarantined to prevent UAF during in-flight DMA");
+        }
         s_fb = NULL;
         s_fb_bytes = 0;
     }
@@ -398,6 +411,8 @@ esp_err_t michi_board_shutdown(void)
             ESP_LOGE(TAG, "backlight off failed: %s", esp_err_to_name(err));
         }
     }
+    s_dma_quarantined = false;
+    s_dma_in_flight = false;
     s_backlight_on = false;
     s_inited = false;
     ESP_LOGI(TAG, "board shutdown complete");
@@ -461,23 +476,32 @@ michi_board_selftest_t michi_board_self_test(void)
  * ensuring s_fb is not reused or cleared while the SPI DMA engine is reading it. */
 static esp_err_t flush_band(uint16_t y_origin)
 {
+    if (s_dma_quarantined) {
+        ESP_LOGE(TAG, "display: flush rejected - display quarantined after DMA timeout");
+        return ESP_ERR_INVALID_STATE;
+    }
     const michi_board_info_t *bi = &s_board_info;
     if (s_trans_done_sem != NULL) {
         /* Drain any stale completion before issuing transaction */
         xSemaphoreTake(s_trans_done_sem, 0);
     }
+    s_dma_in_flight = true;
     esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, 0, y_origin, bi->display_width,
                                              y_origin + MICHI_LCD_BAND, s_fb);
     if (err != ESP_OK) {
+        s_dma_in_flight = false;
         return err;
     }
     if (s_trans_done_sem != NULL) {
         /* Synchronously wait for DMA transfer completion so s_fb is not modified in-flight */
         if (xSemaphoreTake(s_trans_done_sem, pdMS_TO_TICKS(500)) != pdTRUE) {
-            ESP_LOGE(TAG, "display: DMA transfer timeout waiting for band y=%u", (unsigned)y_origin);
+            ESP_LOGE(TAG, "display: DMA transfer timeout waiting for band y=%u - quarantining buffer",
+                     (unsigned)y_origin);
+            s_dma_quarantined = true;
             return ESP_ERR_TIMEOUT;
         }
     }
+    s_dma_in_flight = false;
     return ESP_OK;
 }
 
@@ -554,8 +578,8 @@ esp_err_t michi_board_display_boot_screen(const michi_board_info_t *info,
                                           const michi_board_selftest_t *st,
                                           const char *product_name)
 {
-    if (s_panel == NULL || s_fb == NULL) {
-        ESP_LOGW(TAG, "display unavailable, boot screen not rendered");
+    if (s_panel == NULL || s_fb == NULL || s_dma_quarantined) {
+        ESP_LOGW(TAG, "display unavailable or quarantined, boot screen not rendered");
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -580,8 +604,8 @@ esp_err_t michi_board_display_boot_screen(const michi_board_info_t *info,
 
 esp_err_t michi_board_display_clear(void)
 {
-    if (s_panel == NULL || s_fb == NULL) {
-        ESP_LOGW(TAG, "display unavailable, clear skipped");
+    if (s_panel == NULL || s_fb == NULL || s_dma_quarantined) {
+        ESP_LOGW(TAG, "display unavailable or quarantined, clear skipped");
         return ESP_ERR_INVALID_STATE;
     }
     const michi_board_info_t *bi = &s_board_info;
@@ -600,8 +624,8 @@ esp_err_t michi_board_display_clear(void)
 
 esp_err_t michi_board_display_render(michi_board_render_fn fn)
 {
-    if (s_panel == NULL || s_fb == NULL) {
-        ESP_LOGW(TAG, "display unavailable, render skipped");
+    if (s_panel == NULL || s_fb == NULL || s_dma_quarantined) {
+        ESP_LOGW(TAG, "display unavailable or quarantined, render skipped");
         return ESP_ERR_INVALID_STATE;
     }
     if (fn == NULL) {
@@ -620,4 +644,32 @@ esp_err_t michi_board_display_render(michi_board_render_fn fn)
         }
     }
     return ESP_OK;
+}
+
+esp_err_t michi_board_display_recover(void)
+{
+    if (!s_dma_quarantined) {
+        return ESP_OK;
+    }
+    if (s_dma_in_flight) {
+        /* Wait up to 1000 ms for late completion */
+        if (s_trans_done_sem != NULL) {
+            if (xSemaphoreTake(s_trans_done_sem, pdMS_TO_TICKS(1000)) != pdTRUE) {
+                ESP_LOGE(TAG, "display recover: late completion never arrived within deadline");
+                return ESP_ERR_TIMEOUT;
+            }
+        }
+    }
+    if (s_trans_done_sem != NULL) {
+        xSemaphoreTake(s_trans_done_sem, 0);
+    }
+    s_dma_quarantined = false;
+    s_dma_in_flight = false;
+    ESP_LOGI(TAG, "display recover: late completion confirmed, DMA quarantine lifted");
+    return ESP_OK;
+}
+
+bool michi_board_display_is_quarantined(void)
+{
+    return s_dma_quarantined;
 }

@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "michi_board.h"
 
@@ -122,6 +123,103 @@ static void test_dma_clear_and_boot_screen(void)
     michi_board_shutdown();
 }
 
+static void test_dma_02_late_completion_no_premature_reuse(void)
+{
+    printf("DMA-02: late completion after timeout does not allow premature buffer reuse\n");
+    test_lcd_reset();
+    /* Set 600ms async delay: flush_band times out at 500ms */
+    test_lcd_set_async_delay_ms(600);
+    s_render_callbacks_invoked = 0;
+    s_premature_reuse_detected = false;
+
+    esp_err_t err = michi_board_init();
+    assert(err == ESP_OK);
+
+    /* Render should time out after 500ms */
+    err = michi_board_display_render(tracking_render_fn);
+    assert(err == ESP_ERR_TIMEOUT);
+    assert(michi_board_display_is_quarantined());
+
+    /* While quarantined, immediate subsequent render is rejected and does not touch buffer */
+    err = michi_board_display_render(tracking_render_fn);
+    assert(err == ESP_ERR_INVALID_STATE);
+    assert(!s_premature_reuse_detected);
+
+    /* Wait for the late completion (at 600ms) to arrive */
+    usleep(150000);
+
+    /* Recover display - late completion is confirmed and quarantine lifted */
+    err = michi_board_display_recover();
+    assert(err == ESP_OK);
+    assert(!michi_board_display_is_quarantined());
+
+    /* Subsequent render after recovery proceeds cleanly */
+    test_lcd_set_async_delay_ms(0);
+    s_render_callbacks_invoked = 0;
+    err = michi_board_display_render(tracking_render_fn);
+    assert(err == ESP_OK);
+    assert(s_render_callbacks_invoked == 6);
+    assert(!s_premature_reuse_detected);
+    assert(!test_lcd_has_violation());
+
+    michi_board_shutdown();
+}
+
+static void test_dma_03_shutdown_after_timeout_no_uaf(void)
+{
+    printf("DMA-03: shutdown after timeout while DMA active causes no UAF\n");
+    test_lcd_reset();
+    test_lcd_set_drop_completion(true);
+    s_render_callbacks_invoked = 0;
+    s_premature_reuse_detected = false;
+
+    esp_err_t err = michi_board_init();
+    assert(err == ESP_OK);
+
+    err = michi_board_display_render(tracking_render_fn);
+    assert(err == ESP_ERR_TIMEOUT);
+    assert(test_lcd_is_buffer_in_flight());
+
+    /* Shutdown while buffer is in flight: buffer must be quarantined rather than freed to prevent UAF */
+    err = michi_board_shutdown();
+    assert(err == ESP_OK);
+    assert(!test_lcd_has_violation());
+}
+
+static void test_dma_04_subsequent_draw_rejected_until_recovery(void)
+{
+    printf("DMA-04: subsequent draw rejected until explicit recovery\n");
+    test_lcd_reset();
+    test_lcd_set_drop_completion(true);
+    s_render_callbacks_invoked = 0;
+
+    esp_err_t err = michi_board_init();
+    assert(err == ESP_OK);
+
+    err = michi_board_display_render(tracking_render_fn);
+    assert(err == ESP_ERR_TIMEOUT);
+    assert(michi_board_display_is_quarantined());
+
+    /* All display operations must fail closed with ESP_ERR_INVALID_STATE */
+    err = michi_board_display_clear();
+    assert(err == ESP_ERR_INVALID_STATE);
+
+    const michi_board_info_t *bi = michi_board_get_info();
+    michi_board_selftest_t st = michi_board_self_test();
+    err = michi_board_display_boot_screen(bi, &st, "Test Boot");
+    assert(err == ESP_ERR_INVALID_STATE);
+
+    err = michi_board_display_render(tracking_render_fn);
+    assert(err == ESP_ERR_INVALID_STATE);
+
+    /* If late completion never arrives, recovery fails with ESP_ERR_TIMEOUT */
+    err = michi_board_display_recover();
+    assert(err == ESP_ERR_TIMEOUT);
+    assert(michi_board_display_is_quarantined());
+
+    michi_board_shutdown();
+}
+
 int main(void)
 {
     printf("--- RUN test_michi_display_dma ---\n");
@@ -129,6 +227,9 @@ int main(void)
     test_dma_01_async_dma_lifetime();
     test_dma_timeout_recovery();
     test_dma_clear_and_boot_screen();
-    printf("test_michi_display_dma: all DMA-01 checks PASSED\n");
+    test_dma_02_late_completion_no_premature_reuse();
+    test_dma_03_shutdown_after_timeout_no_uaf();
+    test_dma_04_subsequent_draw_rejected_until_recovery();
+    printf("test_michi_display_dma: all DMA-01..04 checks PASSED\n");
     return 0;
 }

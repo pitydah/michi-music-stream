@@ -91,6 +91,15 @@ void test_lcd_report_access(const void *ptr)
     pthread_mutex_unlock(&s_lock);
 }
 
+void test_lcd_report_free(const void *ptr)
+{
+    pthread_mutex_lock(&s_lock);
+    if (s_buffer_in_flight && ptr == s_in_flight_ptr) {
+        s_violation_detected = true;
+    }
+    pthread_mutex_unlock(&s_lock);
+}
+
 esp_err_t esp_lcd_new_panel_io_spi(esp_lcd_spi_bus_handle_t bus,
                                    const esp_lcd_panel_io_spi_config_t *io_config,
                                    esp_lcd_panel_io_handle_t *ret_io)
