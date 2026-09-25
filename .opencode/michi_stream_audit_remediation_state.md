@@ -1,7 +1,7 @@
 # Michi Stream KILLCRITIC — Round 3
 
 START_HEAD: a44ea3c803a2bd62cfac772cd9d1463f80523c5c
-CURRENT_HEAD: a44ea3c803a2bd62cfac772cd9d1463f80523c5c
+CURRENT_HEAD: c653914a841ecfcfeb5a6104bc8d7bf90ae3eb35
 BRANCH: fix/ui-device-gaps
 WORKTREE_STATUS: clean
 
@@ -10,7 +10,7 @@ GLOBAL_STATUS: IN_PROGRESS
 | Phase | Status | Reproduced | Test before patch | Patch | Falsified | Firmware | Commit |
 |---|---|---|---|---|---|---|---|
 | R3-00 | PASS | YES | YES | N/A | YES | FAIL (reproduced) | - |
-| R3-01 | PASS | YES | YES | YES | YES | PASS | pending_commit |
+| R3-01 | PASS | YES | YES | YES | YES | PASS | c653914 |
 | R3-02 | TODO | NO | NO | NO | NO | NO | - |
 | R3-03 | TODO | NO | NO | NO | NO | NO | - |
 | R3-04 | TODO | NO | NO | NO | NO | NO | - |
