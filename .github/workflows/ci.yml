@@ -108,6 +108,7 @@ jobs:
         run: |
           cppcheck --enable=warning,performance,portability \
             --suppress=missingIncludeSystem --suppress=normalCheckLevelMaxBranches --error-exitcode=1 \
+            -DCONFIG_MICHI_DAC_DEFAULT_PROFILE=\"pcm5102a\" \
             -i components/michi_identity/monocypher \
             -i components/michi_identity/blake3 \
             -I components \

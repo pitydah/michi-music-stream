@@ -227,7 +227,7 @@ esp_err_t michi_dac_resolve_profile(char *out, size_t out_len,
     }
 
     /* 3. Compile-time SKU fallback */
-#if defined(CONFIG_MICHI_DAC_DEFAULT_PROFILE) && !defined(__cppcheck__)
+#if defined(CONFIG_MICHI_DAC_DEFAULT_PROFILE)
     static const char s_kconfig_default[] = CONFIG_MICHI_DAC_DEFAULT_PROFILE;
 #else
     static const char s_kconfig_default[] = "";
