@@ -67,6 +67,20 @@ extern "C" {
  * ------------------------------------------------------------------
  */
 
+#define MICHI_HTTP_PORT 80
+#define MICHI_HTTP_RECV_WAIT_TIMEOUT_S 5
+#define MICHI_HTTP_SEND_WAIT_TIMEOUT_S 5
+
+/**
+ * @brief Configure httpd settings with Michi defaults.
+ *
+ * Sets port 80, LRU purge, 16 max URI handlers, 8192 stack size, and
+ * 5s recv/send socket timeouts to bound stalled client blocking.
+ *
+ * @param cfg httpd_config_t structure to populate.
+ */
+void michi_http_configure_defaults(httpd_config_t *cfg);
+
 /**
  * @brief Start the HTTP server and register the canonical endpoints.
  *

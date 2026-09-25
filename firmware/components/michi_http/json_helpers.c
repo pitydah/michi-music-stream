@@ -551,3 +551,16 @@ bool michi_http_json_get_heartbeat(const cJSON *obj,
     out->sent_at_ms = (int64_t)sent_d;
     return true;
 }
+
+void michi_http_configure_defaults(httpd_config_t *cfg)
+{
+    if (cfg == NULL) {
+        return;
+    }
+    cfg->server_port = MICHI_HTTP_PORT;
+    cfg->lru_purge_enable = true;
+    cfg->max_uri_handlers = 16;
+    cfg->stack_size = 8192;
+    cfg->recv_wait_timeout = MICHI_HTTP_RECV_WAIT_TIMEOUT_S;
+    cfg->send_wait_timeout = MICHI_HTTP_SEND_WAIT_TIMEOUT_S;
+}

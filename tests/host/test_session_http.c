@@ -524,12 +524,26 @@ static void test_heartbeat(void)
                            "token");
 }
 
+static void test_http_config_limits(void)
+{
+    printf("HTTP-DEADLINE-01: verify recv and send wait timeouts\n");
+    httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
+    michi_http_configure_defaults(&cfg);
+    CHECK(cfg.recv_wait_timeout == 5, "recv_wait_timeout == 5s");
+    CHECK(cfg.send_wait_timeout == 5, "send_wait_timeout == 5s");
+    CHECK(cfg.max_uri_handlers == 16, "max_uri_handlers == 16");
+    CHECK(cfg.stack_size == 8192, "stack_size == 8192");
+    CHECK(cfg.lru_purge_enable == true, "lru_purge_enable == true");
+    CHECK(cfg.server_port == 80, "server_port == 80");
+}
+
 int main(void)
 {
     test_create_valid();
     test_create_rejects();
     test_patch();
     test_heartbeat();
+    test_http_config_limits();
     if (failures != 0) {
         printf("session_http: %d FAILURE(S)\n", failures);
         return 1;
