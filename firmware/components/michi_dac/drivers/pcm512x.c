@@ -622,8 +622,20 @@ static esp_err_t pcm512x_shutdown(const michi_dac_driver_t *drv, void *bus_ctx)
     return ESP_OK;
 }
 
-/* Caps template: silicon capabilities from the PCM5122 datasheet (SNR 112 dB,
- * up to 192 kHz/24-bit/2ch, single-ended ground-centered outputs, PLL-based no-MCLK clocking).
+/* Caps template: silicon capabilities from the TI PCM5122 datasheet SLAS763C
+ * (SNR 112 dB, up to 384 kHz / 24-bit I2S data format / 2ch, single-ended
+ * ground-centered outputs, PLL-based no-MCLK clocking).
+ *
+ * NOTE on Capability Layer Separation (Phase R2-L):
+ *  1. Silicon capability: hardware support up to 384 kHz, 24-bit/32-bit slot,
+ *     112 dB SNR per TI datasheet.
+ *  2. Driver capability: implemented for 48 kHz / 16-bit and 24-bit slot in I2S
+ *     slave mode with BCK-referenced PLL autoset.
+ *  3. Validated system capability: verified end-to-end on ESP32-S3 hardware at
+ *     48 kHz, 16-bit stereo.
+ *  4. Protocol advertised capability: the wire contract exposed to controllers
+ *     strictly advertises 48000 Hz, 16-bit, stereo, pcm_s16le only.
+ *
  * tier/detected/initialized/board_verified are filled by the classifier based
  * on real evidence, never hardcoded here. */
 const michi_dac_caps_t g_michi_dac_pcm512x_caps = {
