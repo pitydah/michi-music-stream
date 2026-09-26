@@ -47,6 +47,25 @@ _Static_assert(CONFIG_MICHI_BUTTON_FACTORY_WARN_MS <
  * plus the shutdown exit. */
 #define MICHI_BUTTON_SHUTDOWN_TIMEOUT_MS 200
 
+/* Poll period as a tick count, floored at ONE tick.
+ *
+ * P0 (on-device): this project runs CONFIG_FREERTOS_HZ=100, so
+ * pdMS_TO_TICKS(5) == 5*100/1000 == 0. Passing 0 to ulTaskNotifyTake makes
+ * the call a non-blocking poll, so the debounce task never yields: it spins
+ * at 100% CPU on priority 2, IDLE0 (the task watchdog subscriber) is never
+ * scheduled, and the TWDT aborts the boot every 5 s. The sub-tick POLL_MS
+ * default (5 ms) was introduced by 0e27a08 and is what turned the wait into
+ * a spin; the floor makes the wait a real wait for ANY tick rate, including
+ * a sub-tick POLL_MS on a slow tick. The effective period is quantized UP to
+ * the next whole tick (10 ms at 100 Hz); the debouncer is time-based on the
+ * monotonic clock (MICHI_BUTTON_DEBOUNCE_MS), so edge confirmation accuracy
+ * is unaffected by the coarser sampling. */
+static inline TickType_t button_poll_ticks(void)
+{
+    TickType_t ticks = pdMS_TO_TICKS(CONFIG_MICHI_BUTTON_POLL_MS);
+    return (ticks == 0) ? 1 : ticks;
+}
+
 /* Hold thresholds (P0-01): all in milliseconds. */
 #define MICHI_BUTTON_PAIRING_HOLD_MS      CONFIG_MICHI_BUTTON_PAIRING_HOLD_MS
 #define MICHI_BUTTON_FACTORY_WARN_MS      CONFIG_MICHI_BUTTON_FACTORY_WARN_MS
@@ -282,8 +301,10 @@ static void button_task(void *arg)
             evaluate_hold(&ctx, now_us);
         }
 
-        /* Poll period; a shutdown notification wakes the task immediately. */
-        ulTaskNotifyTake(pdFALSE, pdMS_TO_TICKS(CONFIG_MICHI_BUTTON_POLL_MS));
+        /* Poll period; a shutdown notification wakes the task immediately.
+         * Floored at one tick - see button_poll_ticks(): a 0-tick wait is a
+         * spin that starves IDLE0 and trips the task watchdog. */
+        ulTaskNotifyTake(pdFALSE, button_poll_ticks());
     }
 }
 

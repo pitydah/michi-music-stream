@@ -525,7 +525,9 @@ static void i2s_task(void *arg)
 shutdown:
 #ifdef MICHI_HOST_TEST
     while (s_test_hold_worker) {
-        vTaskDelay(pdMS_TO_TICKS(5));
+        /* One whole tick, not pdMS_TO_TICKS(5): at 100 Hz that macro is 0 and
+         * this hold loop would burn the core instead of yielding. */
+        vTaskDelay(1);
     }
 #endif
     /* Cooperative: the task releases its own resources (stack) and
@@ -834,8 +836,12 @@ esp_err_t michi_audio_output_write(const uint8_t *data, size_t len)
             if (barrier) {
                 return ESP_ERR_INVALID_STATE;
             }
-            /* Ring full: wait for the consumer to drain. */
-            vTaskDelay(pdMS_TO_TICKS(1));
+            /* Ring full: wait for the consumer to drain. One whole tick, NOT
+             * pdMS_TO_TICKS(1): at CONFIG_FREERTOS_HZ=100 that macro is 0 and
+             * vTaskDelay(0) is just taskYIELD(), so sustained backpressure
+             * would spin here at 100% CPU and starve IDLE0, the task watchdog
+             * subscriber - the same starvation the button debounce task hit. */
+            vTaskDelay(1);
             continue;
         }
         off += n;
