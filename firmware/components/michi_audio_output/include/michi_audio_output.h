@@ -237,6 +237,7 @@ esp_err_t michi_audio_output_get_error_count(uint32_t *out);
 /* Test hooks for host unit tests */
 void test_michi_audio_output_set_cmd_timeout_ms(uint32_t ms);
 void test_michi_audio_output_set_join_timeout_ms(uint32_t ms);
+void test_michi_audio_output_hold_worker(bool hold);
 #endif
 
 #ifdef __cplusplus

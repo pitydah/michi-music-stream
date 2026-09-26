@@ -87,6 +87,7 @@ static SemaphoreHandle_t s_cmd_ack_sem = NULL;
 #ifdef MICHI_HOST_TEST
 static uint32_t s_cmd_timeout_override_ms = 0;
 static uint32_t s_join_timeout_override_ms = 0;
+static volatile bool s_test_hold_worker = false;
 #endif
 
 static size_t s_prefill_bytes = 0;
@@ -504,6 +505,11 @@ static void i2s_task(void *arg)
     }
 
 shutdown:
+#ifdef MICHI_HOST_TEST
+    while (s_test_hold_worker) {
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+#endif
     /* Cooperative: the task releases its own resources (stack) and
      * signals, then self-deletes.
      * 1. Atomically close admission of new notification leases under s_state_lock. */
@@ -1123,5 +1129,10 @@ void test_michi_audio_output_set_join_timeout_ms(uint32_t ms)
     portENTER_CRITICAL(&s_state_lock);
     s_join_timeout_override_ms = ms;
     portEXIT_CRITICAL(&s_state_lock);
+}
+
+void test_michi_audio_output_hold_worker(bool hold)
+{
+    s_test_hold_worker = hold;
 }
 #endif

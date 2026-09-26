@@ -885,27 +885,19 @@ static void test_audio_cmd_08_stop_timeout_late_worker_retry_reconciles_done(voi
     CHECK(michi_audio_output_init(&cfg) == ESP_OK, "init succeeds");
     CHECK(michi_audio_output_start() == ESP_OK, "start succeeds");
 
-    /* Configure 20ms join timeout override and 80ms worker I2S write delay */
+    /* Hold worker at shutdown to guarantee deterministic join timeout without timing races */
+    test_michi_audio_output_hold_worker(true);
     test_michi_audio_output_set_join_timeout_ms(20);
-    test_i2s_set_write_delay_ms(80);
 
-    /* Write enough audio to satisfy prefill (15360 bytes) and start I2S transmission */
-    uint8_t pcm[1920] = {0};
-    for (int i = 0; i < 10; i++) {
-        CHECK(michi_audio_output_write(pcm, sizeof(pcm)) == ESP_OK, "write audio succeeds");
-    }
-    /* Allow worker's 50ms prefill wait to expire so worker enters i2s_channel_write with 80ms delay */
-    usleep(70000);
-
-    /* Stop times out waiting for slow worker */
+    /* Stop times out waiting for held worker */
     esp_err_t err = michi_audio_output_stop();
     CHECK(err == ESP_ERR_TIMEOUT, "stop returns ESP_ERR_TIMEOUT on slow worker");
     CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_STOPPING, "state is STOPPING");
 
-    /* Reset delays and wait for late worker to self-delete */
-    test_i2s_set_write_delay_ms(0);
+    /* Release worker hold and reset join timeout */
+    test_michi_audio_output_hold_worker(false);
     test_michi_audio_output_set_join_timeout_ms(0);
-    usleep(100000);
+    usleep(50000); /* 50ms: allow worker to finish self-exit and mark STOPPED / s_task_done */
 
     /* Worker has exited late and set s_task_done = true, s_state = STOPPED.
      * Retry stop must reconcile s_task_done and return ESP_OK cleanly. */
