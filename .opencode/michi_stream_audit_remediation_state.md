@@ -120,3 +120,33 @@ GLOBAL_STATUS: IN_PROGRESS
   - Added `#ifdef MICHI_HOST_TEST` guards in `michi_discovery.h` and `michi_discovery.c` for test hooks (`has_mutex`, `has_timer`, `socket_fd`).
 - Verification: Host tests pass 100% (including DISC-LIFE-01..07). Cppcheck 47/47 files clean (0 warnings). ESP-IDF release-v5.3 docker firmware build passes 100% (binary size 1627040 bytes <= 4194304, SPIRAM OCT 16MB verified).
 
+## R3-06.5 Evidence (Lifecycle & SMP Hardening)
+- Scope Hardened:
+  - `firmware/components/michi_pairing/michi_pairing.c`
+  - `firmware/components/michi_discovery/michi_discovery.c`
+  - `tests/host/shim/freertos/FreeRTOS.h`, `task.h`, `task.c`, `semphr.h`
+  - `tests/host/test_michi_pairing.c`
+  - `tests/host/test_discovery_disc.c`
+- Defects Addressed & Invariants Enforced:
+  1. FreeRTOS SMP / Spinlock Safety:
+     - FreeRTOS APIs (`xTaskNotify`) removed from inside `portENTER_CRITICAL(&s_lifecycle_mux)`.
+     - Host FreeRTOS shim instrumented to measure critical section depth (`s_freertos_critical_depth`) and detect FreeRTOS API calls inside critical sections (`test_freertos_api_in_critical_count()`).
+     - Falsification reproduced: unpatched code caught calling `xTaskNotify` with depth=1.
+     - Patched with notification lease counter (`s_notify_inflight`) under spinlock; task notify executed outside spinlock; worker cooperatively drains in-flight notifies before exiting.
+  2. Worker self-deletion and notify race prevention:
+     - Worker drains `s_notify_inflight == 0` before transitioning to `MICHI_WORKER_EXITED` and calling `vTaskDelete(NULL)`.
+     - No external task delete allowed (`test_task_external_delete_count() == 0`).
+     - Zero invalid task notifies to dead tasks (`test_task_invalid_notify_count() == 0`).
+  3. Public API admission and teardown safety:
+     - Added `pairing_api_enter()`/`pairing_api_exit()` and `discovery_api_enter()`/`discovery_api_exit()`.
+     - Only admits callers when `s_initialized && s_worker_state == RUNNING`. Rejects with `ESP_ERR_INVALID_STATE` (or `ESP_OK` for idempotent stop) during shutdown and teardown.
+     - Shutdown tracks `s_api_inflight` and drains all in-flight API calls before destroying mutexes/timers/sockets.
+     - Concurrent `shutdown()` callers serialized via `s_shutdown_in_progress` without timeouts or race conditions.
+  4. Tests Added:
+     - `test_michi_pairing.c`: `PAIR-CONCUR-01..04` + final invariants (`test_freertos_api_in_critical_count() == 0`, `test_task_invalid_notify_count() == 0`, `test_task_external_delete_count() == 0`).
+     - `test_discovery_disc.c`: `DISC-CONCUR-01..05` + final invariants (`test_freertos_api_in_critical_count() == 0`, `test_task_invalid_notify_count() == 0`, `test_task_external_delete_count() == 0`).
+- Verification:
+  - Host unit tests: 100% pass (`make -C tests/host clean && make -C tests/host test`).
+  - Static analysis: Cppcheck 47/47 files clean (0 warnings, 0 errors).
+  - ESP-IDF release-v5.3 docker firmware build: 100% pass (`michi-music-stream.bin` size: 1627792 bytes <= 4194304, SPIRAM OCT 16MB verified).
+

@@ -1452,6 +1452,140 @@ static void test_pair_inv_06_pin_display_cb_lifecycle(void)
           "PAIR-INV-06: no PIN callback invocation after shutdown");
 }
 
+static void test_pair_concur_01_safe_notify_lease(void)
+{
+    printf("PAIR-CONCUR-01: safe notification lease without critical section violation\n");
+    pairing_test_reset(0xABCD3001);
+    test_freertos_api_reset_in_critical_count();
+    test_task_reset_invalid_notify_count();
+
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+
+    for (int i = 0; i < 50; i++) {
+        michi_pairing_test_notify_expired();
+    }
+    usleep(20000);
+
+    CHECK(test_freertos_api_in_critical_count() == 0,
+          "PAIR-CONCUR-01: zero FreeRTOS API calls inside critical sections");
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+}
+
+typedef struct {
+    volatile bool stop;
+    volatile uint32_t calls;
+    volatile uint32_t rejections;
+} pair_stress_arg_t;
+
+static void *pair_api_stress_worker(void *arg)
+{
+    pair_stress_arg_t *s = (pair_stress_arg_t *)arg;
+    char session_id[MICHI_PAIRING_SESSION_ID_LEN];
+    char expires_at[MICHI_PAIRING_EXPIRES_AT_LEN];
+    uint32_t attempts = 0;
+    while (!s->stop) {
+        s->calls++;
+        michi_pairing_start_result_t r = michi_pairing_start(
+            valid_peer(), "192.168.1.50",
+            session_id, sizeof(session_id),
+            expires_at, sizeof(expires_at), &attempts);
+        if (r == MICHI_PAIRING_START_WINDOW_CLOSED) {
+            s->rejections++;
+        }
+        (void)michi_pairing_is_window_open();
+        usleep(100);
+    }
+    return NULL;
+}
+
+static void test_pair_concur_02_public_api_admission_rejection(void)
+{
+    printf("PAIR-CONCUR-02: public API admission rejection during teardown\n");
+    pairing_test_reset(0xABCD3002);
+    test_freertos_api_reset_in_critical_count();
+
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+
+    pair_stress_arg_t s = { .stop = false, .calls = 0, .rejections = 0 };
+    pthread_t th1, th2;
+    pthread_create(&th1, NULL, pair_api_stress_worker, &s);
+    pthread_create(&th2, NULL, pair_api_stress_worker, &s);
+
+    usleep(5000);
+    /* Concurrently shutdown while API calls are actively running */
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds while API calls in flight");
+
+    s.stop = true;
+    pthread_join(th1, NULL);
+    pthread_join(th2, NULL);
+
+    /* Post-shutdown API calls must be firmly rejected without crashing */
+    char session_id[MICHI_PAIRING_SESSION_ID_LEN];
+    char expires_at[MICHI_PAIRING_EXPIRES_AT_LEN];
+    uint32_t attempts = 0;
+    michi_pairing_start_result_t r = michi_pairing_start(
+        valid_peer(), "192.168.1.50",
+        session_id, sizeof(session_id),
+        expires_at, sizeof(expires_at), &attempts);
+    CHECK(r == MICHI_PAIRING_START_WINDOW_CLOSED, "start rejected after shutdown");
+    CHECK(michi_pairing_open_window() == ESP_ERR_INVALID_STATE, "open_window rejected after shutdown");
+    CHECK(michi_pairing_close_window() == ESP_ERR_INVALID_STATE, "close_window rejected after shutdown");
+    CHECK(!michi_pairing_is_window_open(), "is_window_open returns false after shutdown");
+    CHECK(test_freertos_api_in_critical_count() == 0, "no FreeRTOS APIs in critical section");
+}
+
+static void test_pair_concur_03_no_dead_task_notify(void)
+{
+    printf("PAIR-CONCUR-03: no notify to dead task handle\n");
+    pairing_test_reset(0xABCD3003);
+    test_task_reset_invalid_notify_count();
+
+    for (int iter = 0; iter < 10; iter++) {
+        CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+        CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+
+        /* Fire notification concurrently with shutdown */
+        michi_pairing_test_notify_expired();
+        CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+        /* Firing expired after shutdown must safely drop without notifying dead task */
+        michi_pairing_test_notify_expired();
+    }
+    CHECK(test_task_invalid_notify_count() == 0,
+          "PAIR-CONCUR-03: zero notifications to dead task handles");
+}
+
+static void *pair_shutdown_racer(void *arg)
+{
+    (void)arg;
+    (void)michi_pairing_shutdown();
+    return NULL;
+}
+
+static void test_pair_concur_04_shutdown_retry_concurrent(void)
+{
+    printf("PAIR-CONCUR-04: shutdown retry safety under concurrency\n");
+    pairing_test_reset(0xABCD3004);
+
+    for (int iter = 0; iter < 5; iter++) {
+        CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+        CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+
+        pthread_t th1, th2, th3;
+        pthread_create(&th1, NULL, pair_shutdown_racer, NULL);
+        pthread_create(&th2, NULL, pair_shutdown_racer, NULL);
+        pthread_create(&th3, NULL, pair_shutdown_racer, NULL);
+
+        pthread_join(th1, NULL);
+        pthread_join(th2, NULL);
+        pthread_join(th3, NULL);
+
+        CHECK(!michi_pairing_test_has_mutex(), "mutex cleanly destroyed");
+        CHECK(michi_pairing_test_worker_state() == 0, "worker stopped cleanly");
+    }
+}
+
 int main(void)
 {
     test_sha256_known_answer();
@@ -1487,8 +1621,20 @@ int main(void)
     test_pair_inv_05_no_double_post_closed();
     test_pair_inv_06_pin_display_cb_lifecycle();
 
+    test_pair_concur_01_safe_notify_lease();
+    test_pair_concur_02_public_api_admission_rejection();
+    test_pair_concur_03_no_dead_task_notify();
+    test_pair_concur_04_shutdown_retry_concurrent();
+
+    CHECK(test_freertos_api_in_critical_count() == 0,
+          "FINAL INVARIANT: test_freertos_api_in_critical_count == 0");
+    CHECK(test_task_invalid_notify_count() == 0,
+          "FINAL INVARIANT: test_task_invalid_notify_count == 0");
+    CHECK(test_task_external_delete_count() == 0,
+          "FINAL INVARIANT: test_task_external_delete_count == 0");
+
     if (failures == 0) {
-        printf("test_michi_pairing: all tests passed (including PAIR-LIFE-01..04, PAIR-INV-01..06)\n");
+        printf("test_michi_pairing: all tests passed (including PAIR-LIFE-01..04, PAIR-INV-01..06, PAIR-CONCUR-01..04)\n");
         return 0;
     }
     printf("test_michi_pairing: %d check(s) FAILED\n", failures);

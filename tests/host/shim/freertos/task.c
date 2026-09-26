@@ -2,6 +2,7 @@
  * The task struct is intentionally leaked (test-only, few tasks per
  * binary). TEST-ONLY: never compiled into firmware. */
 
+#define MICHI_SHIM_TASK_IMPL 1
 #include "task.h"
 
 #include <pthread.h>
@@ -29,6 +30,28 @@ struct michi_shim_task {
 
 static uint32_t s_invalid_notify_count = 0;
 static uint32_t s_external_delete_count = 0;
+
+__thread uint32_t s_freertos_critical_depth = 0;
+static uint32_t s_freertos_api_in_critical_count = 0;
+
+uint32_t test_freertos_api_in_critical_count(void)
+{
+    return s_freertos_api_in_critical_count;
+}
+
+void test_freertos_api_reset_in_critical_count(void)
+{
+    s_freertos_api_in_critical_count = 0;
+}
+
+void test_freertos_check_critical(const char *api_name)
+{
+    if (s_freertos_critical_depth > 0) {
+        s_freertos_api_in_critical_count++;
+        fprintf(stderr, "HOST SHIM VIOLATION: FreeRTOS API '%s' called inside critical section (depth=%u)!\n",
+                api_name, (unsigned)s_freertos_critical_depth);
+    }
+}
 
 uint32_t test_task_invalid_notify_count(void)
 {
@@ -99,9 +122,11 @@ BaseType_t xTaskCreate(TaskFunction_t fn, const char *name,
 
 BaseType_t xTaskNotify(TaskHandle_t task, uint32_t ulValue, eNotifyAction eAction)
 {
+    test_freertos_check_critical("xTaskNotify");
     if (task == NULL) {
         return pdFAIL;
     }
+
     michi_shim_task_t *t = (michi_shim_task_t *)task;
     pthread_mutex_lock(&t->notify_mux);
     if (t->state != SHIM_TASK_ALIVE) {
@@ -136,6 +161,7 @@ BaseType_t xTaskNotifyFromISR(TaskHandle_t task, uint32_t ulValue, eNotifyAction
 BaseType_t xTaskNotifyWait(uint32_t ulBitsToClearOnEntry, uint32_t ulBitsToClearOnExit,
                            uint32_t *pulNotificationValue, TickType_t xTicksToWait)
 {
+    test_freertos_check_critical("xTaskNotifyWait");
     michi_shim_task_t *t = s_current_task;
     if (t == NULL) {
         return pdFALSE;
@@ -174,7 +200,9 @@ BaseType_t xTaskNotifyWait(uint32_t ulBitsToClearOnEntry, uint32_t ulBitsToClear
 
 uint32_t ulTaskNotifyTake(BaseType_t clear_count, TickType_t ticks)
 {
+    test_freertos_check_critical("ulTaskNotifyTake");
     michi_shim_task_t *t = s_current_task;
+
     if (t == NULL) {
         return 0;
     }

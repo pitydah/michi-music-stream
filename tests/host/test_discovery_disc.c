@@ -1175,6 +1175,157 @@ static void test_disc_life_07_repeated_shutdown_idempotent(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* DISC-CONCUR-01..05: Concurrency & SMP Hardening Invariants          */
+/* ------------------------------------------------------------------ */
+
+static void test_disc_concur_01_safe_notify_lease(void)
+{
+    printf("DISC-CONCUR-01: safe notification lease without critical section violation\n");
+    reset_all();
+    test_freertos_api_reset_in_critical_count();
+    test_task_reset_invalid_notify_count();
+    test_task_reset_external_delete_count();
+    boot_time_and_discovery();
+    DISC(29, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+    DISC(29, michi_time_start() == ESP_OK, "time start succeeds");
+
+    for (int i = 0; i < 20; i++) {
+        michi_discovery_test_notify_tick();
+        test_sntp_fire_sync(INJECTED_UNIX + i);
+    }
+    usleep(20000);
+
+    DISC(29, test_freertos_api_in_critical_count() == 0,
+         "DISC-CONCUR-01: zero FreeRTOS API calls inside critical sections");
+    DISC(29, test_task_invalid_notify_count() == 0,
+         "DISC-CONCUR-01: zero invalid task notifications");
+    teardown();
+}
+
+typedef struct {
+    volatile bool stop;
+    volatile uint32_t calls;
+    volatile uint32_t rejections;
+} disc_stress_arg_t;
+
+static void *disc_api_stress_worker(void *arg)
+{
+    disc_stress_arg_t *s = (disc_stress_arg_t *)arg;
+    while (!s->stop) {
+        s->calls++;
+        esp_err_t r = michi_discovery_start("192.168.1.102");
+        if (r == ESP_ERR_INVALID_STATE) {
+            s->rejections++;
+        }
+        r = michi_discovery_stop();
+        if (r == ESP_ERR_INVALID_STATE) {
+            s->rejections++;
+        }
+        usleep(100);
+    }
+    return NULL;
+}
+
+static void test_disc_concur_02_public_api_admission_rejection(void)
+{
+    printf("DISC-CONCUR-02: public API admission rejection during teardown\n");
+    reset_all();
+    test_freertos_api_reset_in_critical_count();
+    boot_time_and_discovery();
+    DISC(30, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+
+    disc_stress_arg_t s = { .stop = false, .calls = 0, .rejections = 0 };
+    pthread_t th1, th2;
+    pthread_create(&th1, NULL, disc_api_stress_worker, &s);
+    pthread_create(&th2, NULL, disc_api_stress_worker, &s);
+
+    usleep(5000);
+    /* Concurrently shutdown while API calls are actively running */
+    DISC(30, michi_discovery_shutdown() == ESP_OK, "shutdown succeeds while API calls in flight");
+
+    s.stop = true;
+    pthread_join(th1, NULL);
+    pthread_join(th2, NULL);
+
+    /* Post-shutdown API calls must be firmly rejected without crashing */
+    DISC(30, michi_discovery_start("192.168.1.102") == ESP_ERR_INVALID_STATE,
+         "start rejected after shutdown");
+    DISC(30, michi_discovery_stop() == ESP_OK,
+         "stop returns ESP_OK (idempotent/benign) after shutdown");
+    DISC(30, test_freertos_api_in_critical_count() == 0,
+         "DISC-CONCUR-02: zero FreeRTOS API calls inside critical sections");
+    teardown();
+}
+
+static void test_disc_concur_03_no_dead_task_notify_on_sync_race(void)
+{
+    printf("DISC-CONCUR-03: zero stale task notifications when time sync races shutdown\n");
+    test_task_reset_invalid_notify_count();
+
+    for (int iter = 0; iter < 10; iter++) {
+        reset_all();
+        boot_time_and_discovery();
+        DISC(31, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+        DISC(31, michi_time_start() == ESP_OK, "time start succeeds");
+
+        /* Fire sync concurrently / immediately around shutdown */
+        test_sntp_fire_sync(INJECTED_UNIX + iter);
+        DISC(31, michi_discovery_shutdown() == ESP_OK, "shutdown succeeds");
+        /* Late sync after shutdown */
+        test_sntp_fire_sync(INJECTED_UNIX + 100 + iter);
+        teardown();
+    }
+    DISC(31, test_task_invalid_notify_count() == 0,
+         "DISC-CONCUR-03: zero notifications to dead task handles");
+}
+
+static void *disc_shutdown_racer(void *arg)
+{
+    (void)arg;
+    (void)michi_discovery_shutdown();
+    return NULL;
+}
+
+static void test_disc_concur_04_shutdown_retry_concurrent(void)
+{
+    printf("DISC-CONCUR-04: shutdown retry safety under concurrent callers\n");
+
+    for (int iter = 0; iter < 5; iter++) {
+        reset_all();
+        boot_time_and_discovery();
+        DISC(32, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+
+        pthread_t th1, th2, th3;
+        pthread_create(&th1, NULL, disc_shutdown_racer, NULL);
+        pthread_create(&th2, NULL, disc_shutdown_racer, NULL);
+        pthread_create(&th3, NULL, disc_shutdown_racer, NULL);
+
+        pthread_join(th1, NULL);
+        pthread_join(th2, NULL);
+        pthread_join(th3, NULL);
+
+        DISC(32, !michi_discovery_test_has_mutex(), "mutex cleanly destroyed");
+        DISC(32, !michi_discovery_test_has_timer(), "timer cleanly destroyed");
+        DISC(32, michi_discovery_test_worker_state() == 0, "worker stopped cleanly");
+        teardown();
+    }
+}
+
+static void test_disc_concur_05_task_self_deletion_invariant(void)
+{
+    printf("DISC-CONCUR-05: worker task must delete itself (vTaskDelete(NULL))\n");
+    reset_all();
+    test_task_reset_external_delete_count();
+    boot_time_and_discovery();
+    DISC(33, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+    DISC(33, michi_discovery_shutdown() == ESP_OK, "shutdown succeeds");
+
+    DISC(33, test_task_external_delete_count() == 0,
+         "DISC-CONCUR-05: zero external vTaskDelete calls on discovery task");
+    teardown();
+}
+
+/* ------------------------------------------------------------------ */
 
 int main(void)
 {
@@ -1207,8 +1358,21 @@ int main(void)
     test_disc_life_06_timer_callback_racing_shutdown();
     test_disc_life_07_repeated_shutdown_idempotent();
 
+    test_disc_concur_01_safe_notify_lease();
+    test_disc_concur_02_public_api_admission_rejection();
+    test_disc_concur_03_no_dead_task_notify_on_sync_race();
+    test_disc_concur_04_shutdown_retry_concurrent();
+    test_disc_concur_05_task_self_deletion_invariant();
+
+    DISC(99, test_freertos_api_in_critical_count() == 0,
+         "FINAL INVARIANT: test_freertos_api_in_critical_count == 0");
+    DISC(99, test_task_invalid_notify_count() == 0,
+         "FINAL INVARIANT: test_task_invalid_notify_count == 0");
+    DISC(99, test_task_external_delete_count() == 0,
+         "FINAL INVARIANT: test_task_external_delete_count == 0");
+
     if (failures == 0) {
-        printf("test_discovery_disc: all DISC-01..DISC-15 + TIMER-02 + EVENT-COALESCE-DISC-01..02 + SHUT-DISC-01..03 + DISC-LIFE-01..07 passed\n");
+        printf("test_discovery_disc: all DISC-01..DISC-15 + TIMER-02 + EVENT-COALESCE-DISC-01..02 + SHUT-DISC-01..03 + DISC-LIFE-01..07 + DISC-CONCUR-01..05 passed\n");
         return 0;
     }
     printf("test_discovery_disc: %d check(s) FAILED\n", failures);

@@ -63,6 +63,7 @@ static inline SemaphoreHandle_t xSemaphoreCreateBinary(void)
 
 static inline bool xSemaphoreTake(SemaphoreHandle_t h, uint32_t timeout)
 {
+    test_freertos_check_critical("xSemaphoreTake");
     if (h == NULL) {
         return false;
     }
@@ -103,6 +104,7 @@ static inline bool xSemaphoreTake(SemaphoreHandle_t h, uint32_t timeout)
 
 static inline bool xSemaphoreGive(SemaphoreHandle_t h)
 {
+    test_freertos_check_critical("xSemaphoreGive");
     if (h == NULL) {
         return false;
     }
@@ -120,6 +122,7 @@ static inline bool xSemaphoreGive(SemaphoreHandle_t h)
 
 static inline bool xSemaphoreGiveFromISR(SemaphoreHandle_t h, BaseType_t *pxHigherPriorityTaskWoken)
 {
+    test_freertos_check_critical("xSemaphoreGiveFromISR");
     if (pxHigherPriorityTaskWoken != NULL) {
         *pxHigherPriorityTaskWoken = pdFALSE;
     }
@@ -128,6 +131,7 @@ static inline bool xSemaphoreGiveFromISR(SemaphoreHandle_t h, BaseType_t *pxHigh
 
 static inline void vSemaphoreDelete(SemaphoreHandle_t h)
 {
+    test_freertos_check_critical("vSemaphoreDelete");
     /* TEST-ONLY contract: callers never delete a semaphore while a task
      * is blocked on it (michi_time joins its task first). */
     if (h == NULL) {
@@ -139,6 +143,7 @@ static inline void vSemaphoreDelete(SemaphoreHandle_t h)
     pthread_mutex_destroy(&h->mutex);
     free(h);
 }
+
 
 #ifdef __cplusplus
 }

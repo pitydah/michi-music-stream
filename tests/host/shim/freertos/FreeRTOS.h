@@ -33,11 +33,39 @@ typedef uint32_t TickType_t;
 #include <pthread.h>
 typedef struct { pthread_mutex_t m; } portMUX_TYPE;
 #define portMUX_INITIALIZER_UNLOCKED { PTHREAD_MUTEX_INITIALIZER }
-#define portENTER_CRITICAL(mux) pthread_mutex_lock(&((portMUX_TYPE *)(mux))->m)
-#define portEXIT_CRITICAL(mux) pthread_mutex_unlock(&((portMUX_TYPE *)(mux))->m)
-#define portENTER_CRITICAL_ISR(mux) pthread_mutex_lock(&((portMUX_TYPE *)(mux))->m)
-#define portEXIT_CRITICAL_ISR(mux) pthread_mutex_unlock(&((portMUX_TYPE *)(mux))->m)
+
+extern __thread uint32_t s_freertos_critical_depth;
+uint32_t test_freertos_api_in_critical_count(void);
+void test_freertos_api_reset_in_critical_count(void);
+#ifndef MICHI_SHIM_TASK_IMPL
+__attribute__((weak)) void test_freertos_check_critical(const char *api_name)
+{
+    (void)api_name;
+}
+#else
+void test_freertos_check_critical(const char *api_name);
+#endif
+
+static inline void portENTER_CRITICAL_shim(portMUX_TYPE *mux)
+{
+    pthread_mutex_lock(&((portMUX_TYPE *)(mux))->m);
+    s_freertos_critical_depth++;
+}
+
+static inline void portEXIT_CRITICAL_shim(portMUX_TYPE *mux)
+{
+    if (s_freertos_critical_depth > 0) {
+        s_freertos_critical_depth--;
+    }
+    pthread_mutex_unlock(&((portMUX_TYPE *)(mux))->m);
+}
+
+#define portENTER_CRITICAL(mux) portENTER_CRITICAL_shim((portMUX_TYPE *)(mux))
+#define portEXIT_CRITICAL(mux) portEXIT_CRITICAL_shim((portMUX_TYPE *)(mux))
+#define portENTER_CRITICAL_ISR(mux) portENTER_CRITICAL_shim((portMUX_TYPE *)(mux))
+#define portEXIT_CRITICAL_ISR(mux) portEXIT_CRITICAL_shim((portMUX_TYPE *)(mux))
 
 #ifdef __cplusplus
 }
 #endif
+

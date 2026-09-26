@@ -31,8 +31,10 @@ void vTaskDelete(TaskHandle_t task);
 /* Real delay for host shim so cooperative yields/waits work. */
 static inline void vTaskDelay(uint32_t ticks)
 {
+    test_freertos_check_critical("vTaskDelay");
     usleep((useconds_t)ticks * 1000);
 }
+
 
 typedef enum {
     eNoAction = 0,
