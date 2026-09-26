@@ -28,6 +28,10 @@ struct michi_shim_task {
     shim_task_lifecycle_t state;
 };
 
+bool g_test_fail_create_mutex = false;
+bool g_test_fail_create_binary_sem = false;
+bool g_test_fail_task_create = false;
+
 static uint32_t s_invalid_notify_count = 0;
 static uint32_t s_external_delete_count = 0;
 
@@ -95,7 +99,7 @@ BaseType_t xTaskCreate(TaskFunction_t fn, const char *name,
     (void)name;
     (void)stack_bytes;
     (void)priority;
-    if (fn == NULL || out == NULL) {
+    if (fn == NULL || out == NULL || g_test_fail_task_create) {
         return pdFALSE;
     }
     michi_shim_task_t *t = (michi_shim_task_t *)calloc(1, sizeof(*t));

@@ -31,8 +31,24 @@ typedef struct michi_shim_sem {
 
 typedef michi_shim_sem_t *SemaphoreHandle_t;
 
+__attribute__((weak)) bool g_test_fail_create_mutex = false;
+__attribute__((weak)) bool g_test_fail_create_binary_sem = false;
+
+static inline void test_semphr_set_fail_create_mutex(bool fail)
+{
+    g_test_fail_create_mutex = fail;
+}
+
+static inline void test_semphr_set_fail_create_binary(bool fail)
+{
+    g_test_fail_create_binary_sem = fail;
+}
+
 static inline SemaphoreHandle_t xSemaphoreCreateMutex(void)
 {
+    if (g_test_fail_create_mutex) {
+        return NULL;
+    }
     michi_shim_sem_t *s = (michi_shim_sem_t *)calloc(1, sizeof(*s));
     if (s == NULL) {
         return NULL;
@@ -47,6 +63,9 @@ static inline SemaphoreHandle_t xSemaphoreCreateMutex(void)
 
 static inline SemaphoreHandle_t xSemaphoreCreateBinary(void)
 {
+    if (g_test_fail_create_binary_sem) {
+        return NULL;
+    }
     michi_shim_sem_t *s = (michi_shim_sem_t *)calloc(1, sizeof(*s));
     if (s == NULL) {
         return NULL;

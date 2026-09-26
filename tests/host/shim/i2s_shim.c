@@ -11,6 +11,8 @@ static size_t s_bytes_written = 0;
 static uint32_t s_write_count = 0;
 static bool s_last_was_silence = false;
 static esp_err_t s_injected_write_err = ESP_OK;
+static esp_err_t s_injected_new_chan_err = ESP_OK;
+static esp_err_t s_injected_init_std_err = ESP_OK;
 static uint32_t s_write_delay_ms = 0;
 static pthread_t s_writer_thread = 0;
 static bool s_has_writer_thread = false;
@@ -25,10 +27,26 @@ void test_i2s_reset(void)
     s_write_count = 0;
     s_last_was_silence = false;
     s_injected_write_err = ESP_OK;
+    s_injected_new_chan_err = ESP_OK;
+    s_injected_init_std_err = ESP_OK;
     s_write_delay_ms = 0;
     s_writer_thread = 0;
     s_has_writer_thread = false;
     s_multiple_writers = false;
+    pthread_mutex_unlock(&s_i2s_shim_mux);
+}
+
+void test_i2s_set_new_channel_fail(esp_err_t err)
+{
+    pthread_mutex_lock(&s_i2s_shim_mux);
+    s_injected_new_chan_err = err;
+    pthread_mutex_unlock(&s_i2s_shim_mux);
+}
+
+void test_i2s_set_init_std_mode_fail(esp_err_t err)
+{
+    pthread_mutex_lock(&s_i2s_shim_mux);
+    s_injected_init_std_err = err;
     pthread_mutex_unlock(&s_i2s_shim_mux);
 }
 
@@ -72,6 +90,13 @@ bool test_i2s_last_write_was_silence(void)
 esp_err_t i2s_new_channel(const i2s_chan_config_t *chan_cfg, i2s_chan_handle_t *tx_handle, i2s_chan_handle_t *rx_handle)
 {
     (void)chan_cfg;
+    pthread_mutex_lock(&s_i2s_shim_mux);
+    esp_err_t err = s_injected_new_chan_err;
+    s_injected_new_chan_err = ESP_OK;
+    pthread_mutex_unlock(&s_i2s_shim_mux);
+    if (err != ESP_OK) {
+        return err;
+    }
     if (tx_handle != NULL) {
         *tx_handle = &s_dummy_chan;
     }
@@ -85,7 +110,11 @@ esp_err_t i2s_channel_init_std_mode(i2s_chan_handle_t handle, const i2s_std_conf
 {
     (void)handle;
     (void)std_cfg;
-    return ESP_OK;
+    pthread_mutex_lock(&s_i2s_shim_mux);
+    esp_err_t err = s_injected_init_std_err;
+    s_injected_init_std_err = ESP_OK;
+    pthread_mutex_unlock(&s_i2s_shim_mux);
+    return err;
 }
 
 esp_err_t i2s_channel_enable(i2s_chan_handle_t handle)

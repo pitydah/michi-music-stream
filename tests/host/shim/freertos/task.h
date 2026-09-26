@@ -18,6 +18,12 @@ typedef void (*TaskFunction_t)(void *arg);
 typedef struct michi_shim_task michi_shim_task_t;
 typedef michi_shim_task_t *TaskHandle_t;
 
+extern bool g_test_fail_task_create;
+static inline void test_task_set_create_fail(bool fail)
+{
+    g_test_fail_task_create = fail;
+}
+
 BaseType_t xTaskCreate(TaskFunction_t fn, const char *name,
                        uint32_t stack_bytes, void *arg, int priority,
                        TaskHandle_t *out);

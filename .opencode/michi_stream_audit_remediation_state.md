@@ -6,14 +6,92 @@ LAST_VERIFIED_HEAD: c93dca6fb7bee181cbeb7f629a46abc1ff37155a
 BRANCH: fix/ui-device-gaps
 WORKTREE_STATUS: clean
 
-GLOBAL_STATUS: PASS
-PRE_MERGE_CLOSURE_STATUS: PASS
+GLOBAL_STATUS: IN_PROGRESS
+PRE_MERGE_CLOSURE_STATUS: IN_PROGRESS
 
 ## PRE-MERGE CLOSURE WAVES
 - WAVE_A: PASS (Close lifecycle/SMP residuals: A1..A7)
-- WAVE_B: PASS (Audio-output single ownership and quiesce: B1..B10)
-- WAVE_C: PASS (DMA + HTTP + session + capability/config truth: C1..C13)
-- WAVE_D: PASS (Pre-merge verification + E2E certification + final CI: D1..D7)
+- WAVE_B: REGRESSION
+- WAVE_C: REGRESSION
+- WAVE_D: REGRESSION
+
+# FINAL SOFTWARE CLOSURE
+
+START_HEAD: 690f648deb9a56a8b7faef8c18ccd910f5c27ebd
+CURRENT_IMPLEMENTATION_HEAD: 690f648deb9a56a8b7faef8c18ccd910f5c27ebd
+FINAL_CERTIFICATION_HEAD: PENDING
+BRANCH: fix/ui-device-gaps
+PRE_MERGE_CLOSURE_STATUS: IN_PROGRESS
+
+| Phase | Status | Reproduced | Test | Firmware | Static | Commit |
+|---|---|---|---|---|---|---|
+| F0 | PASS | YES | N/A | PASS | PASS | - |
+| F1 | PASS | YES | YES | PASS | PASS | pending |
+| F2 | PASS | YES | YES | PASS | PASS | pending |
+| F3 | PASS | YES | YES | PASS | PASS | pending |
+| F4 | PASS | YES | YES | PASS | PASS | pending |
+| F5 | TODO | - | - | - | - | - |
+| F6 | TODO | - | - | - | - | - |
+| F7 | TODO | - | - | - | - | - |
+| F8 | TODO | - | - | - | - | - |
+| F9 | TODO | - | - | - | - | - |
+| F10 | TODO | - | - | - | - | - |
+| F11 | TODO | - | - | - | - | - |
+| F12 | TODO | - | - | - | - | - |
+| F13 | TODO | - | - | - | - | - |
+| F14 | TODO | - | - | - | - | - |
+| F15 | TODO | - | - | - | - | - |
+| F16 | TODO | - | - | - | - | - |
+| F17 | TODO | - | - | - | - | - |
+| F18 | TODO | - | - | - | - | - |
+
+### Phase F0: Complete Shared-State Inventory — Audio Output
+
+| Variable | Owner | Writers | Readers | Synchronization | Lifetime |
+|---|---|---|---|---|---|
+| `s_ring.buf` | Lifecycle (`init`/`deinit`) | `init()` (alloc), `deinit()` (free) | `ring_write()`, `ring_read()` | Allocated before task, freed after task dead | Valid while `s_state != UNINITIALIZED` |
+| `s_ring.size` | Lifecycle (`init`/`deinit`) | `init()` | `ring_write()`, `ring_read()` | Immutable after `init()` | Valid while initialized |
+| `s_ring.head` | Producer | `ring_write()`, `init()`, `start()`, `flush()`, `i2s_task` (quiesce) | `ring_write()` | `s_ring_lock` (portMUX critical section) | Valid while initialized |
+| `s_ring.tail` | Consumer (`i2s_task`) | `ring_read()`, `i2s_task` (quiesce), `init()`, `start()`, `flush()` | `ring_read()` | `s_ring_lock` (portMUX critical section) | Valid while initialized |
+| `s_ring.used` | Shared counter | `ring_write()`, `ring_read()`, `flush()`, `init()`, `start()`, `quiesce` | `ring_used()` (`ring_write`, `ring_read`, `i2s_task` prefill) | `s_ring_lock` (portMUX critical section) | Valid while initialized |
+| `s_tx` | Lifecycle (`init`/`deinit`) | `init()` (`i2s_new_channel`), `deinit()` (`NULL`) | `start()` (`enable`), `stop()` (`disable`), `deinit()` (`del`), `i2s_task` (`write`) | Driver handle; created at init, destroyed at deinit; access sequenced by lifecycle state | `init()` to `deinit()` |
+| `s_task` | Lifecycle (`start`/`stop`) | `start()` (stores handle), `stop()` (clears `NULL`) | `ring_write()`, `send_cmd_and_wait_ack()`, `stop()`, `deinit()` | `s_state_lock` (portMUX critical section) | Valid from `start()` until worker exit join |
+| `s_inited` | Lifecycle (`init`/`deinit`) | `init()`, `deinit()` | `init()`, `start()`, `quiesce()`, `resume()`, `stop()`, `deinit()` | `s_state_lock` (portMUX critical section) | Entire process lifetime |
+| `s_running` | Lifecycle / State | `start()`, `stop()` | `write()`, `is_running()`, `flush()` | Consolidated into `s_state` under `s_state_lock` | Entire process lifetime |
+| `s_run` | Lifecycle / State | `start()` (`true`), `stop()` (`false`) | `i2s_task` loop termination condition | `s_state_lock` (portMUX critical section) | `start()` to `stop()` |
+| `s_task_done` | Consumer worker | `i2s_task` (sets `true` before self-delete), `start()`/`stop()` (clears `false`) | `stop()` join wait loop, `deinit()` | `s_state_lock` (portMUX critical section) | Task execution lifetime |
+| `s_consumer_sleeping` | Consumer worker | `i2s_task` | `ring_write()` | Removed bare data race; synchronized / lifecycle-safe wake | Task execution lifetime |
+| `s_state` | Audio output state machine | `init()`, `start()`, `quiesce()`, `resume()`, `stop()`, `deinit()`, `i2s_task` | `start()`, `write()`, `quiesce()`, `resume()`, `is_quiesced()`, `stop()`, `get_state()`, `i2s_task` | `s_state_lock` (portMUX critical section) for all reads & writes | Entire process lifetime |
+| `s_pending_cmd` | Command dispatcher | `send_cmd_and_wait_ack()` | `handle_pending_command_in_task()` | `s_state_lock` (portMUX critical section) + `s_cmd_mux` | `init()` to `deinit()` |
+| `s_cmd_result` | Consumer worker | `handle_pending_command_in_task()` | `send_cmd_and_wait_ack()` | `s_state_lock` (portMUX critical section) | `init()` to `deinit()` |
+| `s_cmd_generation` | Command dispatcher | `send_cmd_and_wait_ack()` | `handle_pending_command_in_task()`, `send_cmd_and_wait_ack()` | `s_state_lock` (portMUX critical section) | `init()` to `deinit()` |
+| `s_cmd_ack_generation` | Consumer worker | `handle_pending_command_in_task()` | `send_cmd_and_wait_ack()` | `s_state_lock` (portMUX critical section) | `init()` to `deinit()` |
+| `s_cmd_mux` | Command dispatcher | `init()` (create), `deinit()` (delete) | `send_cmd_and_wait_ack()` | FreeRTOS Mutex semaphore | `init()` to `deinit()` |
+| `s_cmd_ack_sem` | Command dispatcher | `init()` (create), `deinit()` (delete) | `handle_pending_command_in_task()` (`give`), `send_cmd_and_wait_ack()` (`take`) | FreeRTOS Binary semaphore | `init()` to `deinit()` |
+| `s_prefill_bytes` | Config | `init()` | `i2s_task` | Immutable after `init()` | `init()` to `deinit()` |
+| `s_bit_depth` | Config | `init()` | `i2s_task` | Immutable after `init()` | `init()` to `deinit()` |
+| `s_chunk` | Consumer worker (`i2s_task`) | `i2s_task` | `i2s_task` | Single-owner task: no other task or caller touches or reads `s_chunk` | Static BSS |
+| `s_error_count` | Diagnostics | `i2s_task`, `stop()` | `michi_audio_output_get_error_count()` | `s_err_lock` (portMUX critical section) | Entire process lifetime |
+
+### Phase F1-F4 Evidence: Audio Output Hardening
+
+- **F1 (Audio Init False Success):**
+  - Defect: When semaphore creation failed in `michi_audio_output_init`, `err` held `ESP_OK` from prior calls, jumping to `fail_ring` and returning `ESP_OK` without allocating resources.
+  - Fix: Explicit `err = ESP_ERR_NO_MEM;` on mutex or binary semaphore creation failure before `goto fail_ring;`.
+  - Tests: `AUDIO-INIT-FAIL-01..05` (5/5 PASS).
+- **F2 (State Machine Matrix):**
+  - Defect: `quiesce()` allowed forcing `QUIESCED` state from `INITIALIZED` or `STOPPED` without a live worker task.
+  - Fix: Explicit transition matrix enforced under `s_state_lock`. Illegal edges (`INITIALIZED->QUIESCED`, `STOPPED->QUIESCED`, etc.) rejected with `ESP_ERR_INVALID_STATE`.
+  - Tests: `AUDIO-STATE-01..08` (8/8 PASS).
+- **F3 (Shared-State Synchronization):**
+  - Defect: Bare flag `s_consumer_sleeping` had unsynchronized data race between consumer and producer. FreeRTOS APIs and logging were invoked under spinlocks.
+  - Fix: Removed `s_consumer_sleeping` completely. All state variables unified under `s_state_lock`. Zero FreeRTOS calls, zero logging under spinlock. Snapshots taken under lock, FreeRTOS/logging invoked strictly outside critical sections.
+- **F4 (Command Protocol & Generations):**
+  - Defect: Stale ACKs could resolve future commands; timeouts left state undefined; commands could block on dead workers.
+  - Fix: Monotonic command generation `s_cmd_generation` checked on ACK (`s_cmd_ack_generation`). Dead worker check rejects immediately. Command timeout transitions pipeline to `FAULTED`. Recovery via `stop()` restores clean state.
+  - Tests: `AUDIO-CMD-01..06` (6/6 PASS).
+
+
 
 | Phase | Status | Reproduced | Test before patch | Patch | Falsified | Firmware | Commit |
 |---|---|---|---|---|---|---|---|
