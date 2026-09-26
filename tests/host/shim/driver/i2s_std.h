@@ -100,6 +100,9 @@ void test_i2s_set_write_delay_ms(uint32_t ms);
 bool test_i2s_multiple_writers_detected(void);
 void test_i2s_set_new_channel_fail(esp_err_t err);
 void test_i2s_set_init_std_mode_fail(esp_err_t err);
+void test_i2s_clear_captured_data(void);
+size_t test_i2s_get_captured_bytes(uint8_t *dst, size_t max_len);
+bool test_i2s_contains_byte(uint8_t byte);
 
 #ifdef __cplusplus
 }

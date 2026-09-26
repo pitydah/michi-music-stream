@@ -19,6 +19,10 @@ static bool s_has_writer_thread = false;
 static bool s_multiple_writers = false;
 static pthread_mutex_t s_i2s_shim_mux = PTHREAD_MUTEX_INITIALIZER;
 
+#define CAPTURE_BUF_SIZE 65536
+static uint8_t s_captured_data[CAPTURE_BUF_SIZE];
+static size_t s_captured_size = 0;
+
 void test_i2s_reset(void)
 {
     pthread_mutex_lock(&s_i2s_shim_mux);
@@ -33,6 +37,14 @@ void test_i2s_reset(void)
     s_writer_thread = 0;
     s_has_writer_thread = false;
     s_multiple_writers = false;
+    s_captured_size = 0;
+    pthread_mutex_unlock(&s_i2s_shim_mux);
+}
+
+void test_i2s_clear_captured_data(void)
+{
+    pthread_mutex_lock(&s_i2s_shim_mux);
+    s_captured_size = 0;
     pthread_mutex_unlock(&s_i2s_shim_mux);
 }
 
@@ -179,6 +191,17 @@ esp_err_t i2s_channel_write(i2s_chan_handle_t handle, const void *src, size_t si
             break;
         }
     }
+
+    /* Record into capture buffer */
+    if (s_captured_size < CAPTURE_BUF_SIZE) {
+        size_t to_copy = size;
+        if (s_captured_size + to_copy > CAPTURE_BUF_SIZE) {
+            to_copy = CAPTURE_BUF_SIZE - s_captured_size;
+        }
+        memcpy(s_captured_data + s_captured_size, src, to_copy);
+        s_captured_size += to_copy;
+    }
+
     pthread_mutex_unlock(&s_i2s_shim_mux);
     return ESP_OK;
 }
@@ -188,4 +211,32 @@ esp_err_t i2s_del_channel(i2s_chan_handle_t handle)
     (void)handle;
     s_enabled = false;
     return ESP_OK;
+}
+
+size_t test_i2s_get_captured_bytes(uint8_t *dst, size_t max_len)
+{
+    pthread_mutex_lock(&s_i2s_shim_mux);
+    size_t n = s_captured_size;
+    if (n > max_len) {
+        n = max_len;
+    }
+    if (dst != NULL && n > 0) {
+        memcpy(dst, s_captured_data, n);
+    }
+    pthread_mutex_unlock(&s_i2s_shim_mux);
+    return n;
+}
+
+bool test_i2s_contains_byte(uint8_t byte)
+{
+    pthread_mutex_lock(&s_i2s_shim_mux);
+    bool found = false;
+    for (size_t i = 0; i < s_captured_size; i++) {
+        if (s_captured_data[i] == byte) {
+            found = true;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&s_i2s_shim_mux);
+    return found;
 }
