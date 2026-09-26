@@ -6,14 +6,14 @@ LAST_VERIFIED_HEAD: c93dca6fb7bee181cbeb7f629a46abc1ff37155a
 BRANCH: fix/ui-device-gaps
 WORKTREE_STATUS: clean
 
-GLOBAL_STATUS: IN_PROGRESS
-PRE_MERGE_CLOSURE_STATUS: IN_PROGRESS
+GLOBAL_STATUS: PASS
+PRE_MERGE_CLOSURE_STATUS: PASS
 
 ## PRE-MERGE CLOSURE WAVES
 - WAVE_A: PASS (Close lifecycle/SMP residuals: A1..A7)
 - WAVE_B: PASS (Audio-output single ownership and quiesce: B1..B10)
 - WAVE_C: PASS (DMA + HTTP + session + capability/config truth: C1..C13)
-- WAVE_D: TODO (Pre-merge verification + E2E certification + final CI: D1..D7)
+- WAVE_D: PASS (Pre-merge verification + E2E certification + final CI: D1..D7)
 
 | Phase | Status | Reproduced | Test before patch | Patch | Falsified | Firmware | Commit |
 |---|---|---|---|---|---|---|---|
@@ -246,9 +246,34 @@ PRE_MERGE_CLOSURE_STATUS: IN_PROGRESS
      - Contract schemas and cases pass 100% (13/13).
      - RTP clock and jitter tests pass 100%.
 - Verification:
-  - Host test suite: 100% pass (`make -C tests/host clean && make -C tests/host test`).
-  - Static analysis: Cppcheck clean (0 warnings on both Variant A and Variant B).
-  - ESP-IDF release-v5.3 docker firmware build: 100% pass (`michi-music-stream.bin` size: 1628896 bytes <= 4194304).
+## Wave D Evidence (Pre-Merge Certification & Full CI: D1..D7)
+- Scope Hardened:
+  - `tests/e2e/run_e2e.py`
+  - `tests/e2e/results/michi-link-alpha1.json`
+  - `.opencode/michi_stream_audit_remediation_state.md`
+- Invariants & Improvements:
+  1. `D1 - Full E2E Execution`:
+     - Canonical receiver simulator and contract test suites execute all 13 cases (`E2E-01..E2E-13`) and 9 pytest modules cleanly.
+  2. `D2 - E2E Re-Anchor`:
+     - `STREAM_TESTED_COMMIT` re-anchored to `7a8733dc4c5204ae79a4ea7db9e9b448f5288064` (Wave C HEAD, verifying 0 drift across `firmware/`, `simulator/`, and `contracts/`).
+     - Deterministic certification results artifact `tests/e2e/results/michi-link-alpha1.json` regenerated and synchronized.
+  3. `D3 - Vendored Contract Sync Check`:
+     - `python3 scripts/sync_michi_link_contract.py --check && python3 scripts/sync_michi_link_contract.py --verify-source` verified 100% byte-identical against `michi-link-v1.0.0-alpha.1` (84b72029e00d).
+  4. `D4 - Full Host Test Suite`:
+     - Clean host test run: `make -C tests/host clean && make -C tests/host test` passes 100% across all unit and integration suites.
+  5. `D5 - Static Analysis / Cppcheck`:
+     - Cppcheck passes with 0 warnings across both Variant A (`CONFIG_MICHI_DAC_DEFAULT_PROFILE=""`) and Variant B (`CONFIG_MICHI_DAC_DEFAULT_PROFILE="pcm5102a"`).
+  6. `D6 - ESP-IDF Firmware Build`:
+     - ESP-IDF release-v5.3 docker build passes cleanly (`michi-music-stream.bin` size: 1628896 bytes <= 4194304 bytes, SPIRAM OCT 16MB).
+  7. `D7 - Pre-Merge Software Closure Candidate`:
+     - All software blockers across Waves A, B, C, and D closed.
+     - Note: Hardware-dependent verification gates (`DEVICE_E2E_PASS`, `HARDWARE_AUDIO_PASS`) remain honestly `PENDING` physical target flashing.
+- Verification:
+  - E2E certification: 13/13 PASS (`MOCK_PASS: true`).
+  - Host test suite: 100% PASS.
+  - Cppcheck: 0 warnings, 0 errors.
+  - ESP-IDF release-v5.3 docker firmware build: PASS.
+
 
 
 
