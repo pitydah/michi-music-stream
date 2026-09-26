@@ -42,8 +42,8 @@ PRE_MERGE_CLOSURE_STATUS: PASS
 | F14 | PASS | YES | YES | PASS | PASS | 5d42284 |
 | F15 | PASS | YES | YES | PASS | PASS | b9d550c |
 | F16 | PASS | YES | YES | PASS | PASS | b9d550c |
-| F17 | PASS | YES | YES | PASS | PASS | pending_commit |
-| F18 | PASS | YES | YES | PASS | PASS | pending_commit |
+| F17 | PASS | YES | YES | PASS | PASS | acd24c5 |
+| F18 | PASS | YES | YES | PASS | PASS | acd24c5 |
 
 ### Phase F0: Complete Shared-State Inventory — Audio Output
 
