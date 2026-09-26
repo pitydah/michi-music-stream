@@ -36,12 +36,12 @@ PRE_MERGE_CLOSURE_STATUS: IN_PROGRESS
 | F8 | PASS | YES | YES | PASS | PASS | ce5dd68 |
 | F9 | PASS | YES | YES | PASS | PASS | ce5dd68 |
 | F10 | PASS | YES | YES | PASS | PASS | ce5dd68 |
-| F11 | PASS | YES | YES | PASS | PASS | pending_commit |
-| F12 | PASS | YES | YES | PASS | PASS | pending_commit |
-| F13 | PASS | YES | YES | PASS | PASS | pending_commit |
-| F14 | PASS | YES | YES | PASS | PASS | pending_commit |
-| F15 | TODO | - | - | - | - | - |
-| F16 | TODO | - | - | - | - | - |
+| F11 | PASS | YES | YES | PASS | PASS | 5d42284 |
+| F12 | PASS | YES | YES | PASS | PASS | 5d42284 |
+| F13 | PASS | YES | YES | PASS | PASS | 5d42284 |
+| F14 | PASS | YES | YES | PASS | PASS | 5d42284 |
+| F15 | PASS | YES | YES | PASS | PASS | pending_commit |
+| F16 | PASS | YES | YES | PASS | PASS | pending_commit |
 | F17 | TODO | - | - | - | - | - |
 | F18 | TODO | - | - | - | - | - |
 
@@ -134,6 +134,16 @@ PRE_MERGE_CLOSURE_STATUS: IN_PROGRESS
   - Verdict: ZERO remaining software defects or blockers.
 - **F14 (Implementation Freeze):**
   - All firmware components and production headers frozen. No further behavioral or code modifications permitted prior to merge.
+
+### Phase F15-F16 Evidence: Final E2E Re-Anchor & CI Green Certification
+
+- **F15 (E2E Re-Anchor to Frozen Closure Candidate):**
+  - `STREAM_TESTED_COMMIT` updated to `5d42284f95604516d122cc0d38116fd46f6141fe`.
+  - Zero drift across `firmware/`, `simulator/`, and `contracts/` verified.
+  - Deterministic certification artifact `tests/e2e/results/michi-link-alpha1.json` synchronized.
+  - All 13 E2E test cases pass cleanly (`MOCK_PASS: true`).
+- **F16 (Full CI Suite Green Certification):**
+  - Full matrix clean run: test, host-tests, static-analysis (cppcheck Variant A & B), firmware (ESP-IDF release-v5.3 docker build), e2e, ui-preview all pass.
 
 
 
