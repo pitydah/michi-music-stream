@@ -110,7 +110,8 @@ typedef enum {
 /**
  * @brief Result of michi_session_heartbeat() (the HTTP layer maps it:
  *        TOKEN_MISMATCH -> 401, NO_SESSION/SESSION_MISMATCH -> 404,
- *        SEQUENCE_REPLAY -> 409 CONFLICT without renewing).
+ *        SEQUENCE_REPLAY -> 409 CONFLICT without renewing,
+ *        SOURCE_MISMATCH -> 403 FORBIDDEN fail-closed).
  */
 typedef enum {
     MICHI_SESSION_HEARTBEAT_OK = 0,      /*!< Lease renewed to 30 s */
@@ -335,7 +336,7 @@ esp_err_t michi_session_patch(const char *session_token, bool volume_set,
  * @return MICHI_SESSION_HEARTBEAT_OK on renewal; NO_SESSION (404);
  *         TOKEN_MISMATCH (401); SESSION_MISMATCH (404);
  *         SEQUENCE_REPLAY (409, no renewal);
- *         SOURCE_MISMATCH (409, peer IP != session source IP).
+ *         SOURCE_MISMATCH (403 FORBIDDEN, peer IP != session source IP).
  */
 michi_session_heartbeat_result_t michi_session_heartbeat(
     const char *session_token, const char *session_id, uint32_t sequence,

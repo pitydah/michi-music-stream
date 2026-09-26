@@ -32,10 +32,10 @@ PRE_MERGE_CLOSURE_STATUS: IN_PROGRESS
 | F4 | PASS | YES | YES | PASS | PASS | 41541c8 |
 | F5 | PASS | YES | YES | PASS | PASS | 9514b3d |
 | F6 | PASS | YES | YES | PASS | PASS | 9514b3d |
-| F7 | PASS | YES | YES | PASS | PASS | pending_commit |
-| F8 | TODO | - | - | - | - | - |
-| F9 | TODO | - | - | - | - | - |
-| F10 | TODO | - | - | - | - | - |
+| F7 | PASS | YES | YES | PASS | PASS | 322aa1e |
+| F8 | PASS | YES | YES | PASS | PASS | pending_commit |
+| F9 | PASS | YES | YES | PASS | PASS | pending_commit |
+| F10 | PASS | YES | YES | PASS | PASS | pending_commit |
 | F11 | TODO | - | - | - | - | - |
 | F12 | TODO | - | - | - | - | - |
 | F13 | TODO | - | - | - | - | - |
@@ -108,6 +108,18 @@ PRE_MERGE_CLOSURE_STATUS: IN_PROGRESS
   - Defect: In `michi_http_read_body()`, the anti-slowloris total deadline check was only performed at the beginning of each loop iteration. A client trickling data whose final chunk crossed the 2000ms deadline would exit the loop because `received == content_len` and return `ESP_OK`, evading the timeout policy.
   - Fix: Check `esp_timer_get_time() >= deadline_us` immediately after adding received bytes, as well as unconditionally after loop completion. If the total transfer elapsed >= 2000ms, abort immediately with `ESP_ERR_TIMEOUT`.
   - Tests: `HTTP-SLOW-01..04` (including `HTTP-SLOW-04` specifically asserting that a transfer completing on a deadline-exceeding chunk is rejected with `ESP_ERR_TIMEOUT`).
+
+### Phase F8-F10 Evidence: Silicon Capability, Host Kconfig & Signal Truth
+
+- **F8 (PCM5122 Silicon Hardware Capability Truth):**
+  - Defect: `g_michi_dac_pcm512x_caps` defined `.max_bit_depth = 24`, whereas TI PCM5121/PCM5122 silicon supports 32-bit audio data (SLAS763C Table 1).
+  - Fix: Updated `.max_bit_depth = 32;` in `firmware/components/michi_dac/drivers/pcm512x.c` while preserving wire-protocol advertised capability strictly at 48000 Hz, 16-bit, stereo per contract.
+- **F9 (Host Kconfig Classification Truth):**
+  - Defect: `CONFIG_MICHI_DAC_DEFAULT_PROFILE "pcm5102a"` was grouped under `PRODUCTION_DEFAULT` in `tests/host/shim/sdkconfig.h`, but the production Kconfig default is `""`.
+  - Fix: Moved `CONFIG_MICHI_DAC_DEFAULT_PROFILE "pcm5102a"` to `TEST_OVERRIDE` section with commentary explaining host test fallback profile intent.
+- **F10 (API Documentation & Signal Truth Alignment):**
+  - Defect: `michi_session.h` doc comment claimed `SOURCE_MISMATCH` returns 409 and omitted it from the enum summary, conflicting with 403 Forbidden fail-closed enforcement. `michi_http.h` stated `/server/info` does not emit the identity group, which was outdated.
+  - Fix: Harmonized doc comments in `michi_session.h` (403 Forbidden fail-closed) and `michi_http.h` (persistent Ed25519 identity group emitted).
 
 
 

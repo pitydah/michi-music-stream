@@ -23,6 +23,9 @@
 /* Bounded 64 KB audio ring buffer for host memory efficiency (firmware default is 1024 KB in PSRAM) */
 #define CONFIG_MICHI_AUDIO_RING_BUFFER_KB 64
 
+/* Host test fallback profile override (firmware Kconfig default is "") */
+#define CONFIG_MICHI_DAC_DEFAULT_PROFILE "pcm5102a"
+
 
 /* === 2. PRODUCTION_DEFAULT === */
 /* michi_pairing */
@@ -46,7 +49,6 @@
 #define CONFIG_LWIP_SNTP_MAX_SERVERS 1
 
 /* michi_dac */
-#define CONFIG_MICHI_DAC_DEFAULT_PROFILE "pcm5102a"
 #define CONFIG_MICHI_DAC_I2C_SDA 21
 #define CONFIG_MICHI_DAC_I2C_SCL 16
 #define CONFIG_MICHI_DAC_I2C_SPEED_HZ 100000

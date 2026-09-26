@@ -25,15 +25,14 @@ extern "C" {
  * /api/v1/receiver-lite/session, /heartbeat, /now-playing,
  * /diagnostics and /firmware. No legacy route is kept.
  *
- * /server/info emits the exact receiver v1-lite profile (build_info_json;
- * the identity group is NOT emitted yet - it requires the persistent
- * Ed25519 identity of michi_identity, MS-04). Receiver-button pairing
- * (MS-06), the canonical RTP session (MS-07) and the heartbeat lease
- * (MS-08) are implemented; the certified now-playing payload and the
- * OTA flow answer 501 NOT_IMPLEMENTED after the route-table auth and
- * the strict JSON body gate, and the matching feature flag in
- * /server/info is false. Diagnostics is implemented (its response shape
- * is not frozen by the contract).
+ * /server/info emits the exact receiver v1-lite profile (build_info_json,
+ * including the persistent Ed25519 identity group of michi_identity).
+ * Receiver-button pairing (MS-06), the canonical RTP session (MS-07)
+ * and the heartbeat lease (MS-08) are implemented; the certified
+ * now-playing payload and the OTA flow answer 501 NOT_IMPLEMENTED
+ * after the route-table auth and the strict JSON body gate, and the
+ * matching feature flag in /server/info is false. Diagnostics is
+ * implemented (its response shape is not frozen by the contract).
  *
  * Every error response uses the single canonical envelope
  * {error:{code,message,request_id,details}} built by
