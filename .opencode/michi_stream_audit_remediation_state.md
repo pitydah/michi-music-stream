@@ -18,32 +18,32 @@ PRE_MERGE_CLOSURE_STATUS: IN_PROGRESS
 # FINAL SOFTWARE CLOSURE
 
 START_HEAD: c08678df295526be5744e0fc3a4a280c9ae1b826
-CURRENT_IMPLEMENTATION_HEAD: 8daf6632b50c5649e26e574a4a12347b494ef934
-FINAL_CERTIFICATION_HEAD: 5ae4948e91672ce00eef7f0e34c9f132e01362e5
+CURRENT_IMPLEMENTATION_HEAD: e5430521d25576dd3e8f3b558209c4c1429d2625
+FINAL_CERTIFICATION_HEAD: c1cb3827d05cae1a90c1f4b82d334e32049eef39
 BRANCH: fix/ui-device-gaps
 PRE_MERGE_CLOSURE_STATUS: PASS
 
 | Phase | Status | Reproduced | Test | Firmware | Static | Commit |
 |---|---|---|---|---|---|---|
-| F0 | PASS | YES | N/A | PASS | PASS | 8daf663 |
+| F0 | PASS | YES | N/A | PASS | PASS | e543052 |
 | F1 | PASS | YES | YES | PASS | PASS | 41541c8 |
 | F2 | PASS | YES | YES | PASS | PASS | 41541c8 |
-| F3 | PASS | YES | YES | PASS | PASS | 8daf663 |
-| F4 | PASS | YES | YES | PASS | PASS | 8daf663 |
+| F3 | PASS | YES | YES | PASS | PASS | e543052 |
+| F4 | PASS | YES | YES | PASS | PASS | e543052 |
 | F5 | PASS | YES | YES | PASS | PASS | 9514b3d |
 | F6 | PASS | YES | YES | PASS | PASS | 9514b3d |
 | F7 | PASS | YES | YES | PASS | PASS | 322aa1e |
 | F8 | PASS | YES | YES | PASS | PASS | 8daf663 |
 | F9 | PASS | YES | YES | PASS | PASS | ce5dd68 |
 | F10 | PASS | YES | YES | PASS | PASS | 8daf663 |
-| F11 | PASS | YES | YES | PASS | PASS | 8daf663 |
-| F12 | PASS | YES | YES | PASS | PASS | 8daf663 |
-| F13 | PASS | YES | YES | PASS | PASS | 8daf663 |
-| F14 | PASS | YES | YES | PASS | PASS | 8daf663 |
-| F15 | PASS | YES | YES | PASS | PASS | 5ae4948 |
-| F16 | PASS | YES | YES | PASS | PASS | 5ae4948 |
-| F17 | PASS | YES | YES | PASS | PASS | in progress |
-| F18 | PASS | YES | YES | PASS | PASS | 5ae4948 |
+| F11 | PASS | YES | YES | PASS | PASS | e543052 |
+| F12 | PASS | YES | YES | PASS | PASS | e543052 |
+| F13 | PASS | YES | YES | PASS | PASS | e543052 |
+| F14 | PASS | YES | YES | PASS | PASS | e543052 |
+| F15 | PASS | YES | YES | PASS | PASS | c1cb382 |
+| F16 | PASS | YES | YES | PASS | PASS | c1cb382 |
+| F17 | PASS | YES | YES | PASS | PASS | tracked |
+| F18 | PASS | YES | YES | PASS | PASS | tracked |
 
 ### Phase F0: Complete Shared-State Inventory — Audio Output
 
@@ -54,12 +54,14 @@ PRE_MERGE_CLOSURE_STATUS: PASS
 | `s_ring.head` | Producer | `ring_write()`, `init()`, `start()`, `flush()`, `i2s_task` (quiesce) | `ring_write()` | `s_ring_lock` (portMUX critical section) | Valid while initialized |
 | `s_ring.tail` | Consumer (`i2s_task`) | `ring_read()`, `i2s_task` (quiesce), `init()`, `start()`, `flush()` | `ring_read()` | `s_ring_lock` (portMUX critical section) | Valid while initialized |
 | `s_ring.used` | Shared counter | `ring_write()`, `ring_read()`, `flush()`, `init()`, `start()`, `quiesce` | `ring_used()` (`ring_write`, `ring_read`, `i2s_task` prefill) | `s_ring_lock` (portMUX critical section) | Valid while initialized |
+| `s_ring_write_barrier` | Write admission barrier | `send_cmd_and_wait_ack()` (`true` on QUIESCE start, `false` on resume/stop/fail), `init()` (`false`), `stop()` (`false`) | `ring_write()`, `michi_audio_output_write()` | `s_ring_lock` (portMUX critical section) | `init()` to `deinit()` |
 | `s_tx` | Lifecycle (`init`/`deinit`) | `init()` (`i2s_new_channel`), `deinit()` (`NULL`) | `start()` (`enable`), `stop()` (`disable`), `deinit()` (`del`), `i2s_task` (`write`) | Driver handle; created at init, destroyed at deinit; access sequenced by lifecycle state | `init()` to `deinit()` |
 | `s_task` | Lifecycle (`start`/`stop`) | `start()` (stores handle), `stop()` (clears `NULL`), `i2s_task` (clears `NULL` under lock before self-delete) | `audio_task_notify()`, `send_cmd_and_wait_ack()`, `stop()`, `deinit()` | `s_state_lock` (portMUX critical section) + lease `s_notify_inflight` | Valid from `start()` until worker exit join |
 | `s_notify_inflight` | Task notification lease | `audio_task_notify()` (`++`/`--`) | `i2s_task` exit drain loop | `s_state_lock` (portMUX critical section) | Entire process lifetime |
+| `s_notify_closed` | Task notification lease gate | `i2s_task` shutdown (`true`), `init()` (`false`) | `audio_task_notify()` | `s_state_lock` (portMUX critical section) | Entire process lifetime |
 | `s_inited` | Lifecycle (`init`/`deinit`) | `init()`, `deinit()` | `init()`, `start()`, `quiesce()`, `resume()`, `stop()`, `deinit()` | `s_state_lock` (portMUX critical section) | Entire process lifetime |
 | `s_run` | Lifecycle / State | `start()` (`true`), `stop()` (`false`) | `i2s_task` loop termination condition | `s_state_lock` (portMUX critical section) | `start()` to `stop()` |
-| `s_task_done` | Consumer worker | `i2s_task` (sets `true` before self-delete), `start()`/`stop()` (clears `false`) | `stop()` join wait loop, `deinit()` | `s_state_lock` (portMUX critical section) | Task execution lifetime |
+| `s_task_done` | Consumer worker | `i2s_task` (sets `true` before self-delete), `start()`/`stop()`/`deinit()` (clears `false` on start or exit reconciliation) | `stop()` join wait loop, `deinit()` | `s_state_lock` (portMUX critical section) | Task execution lifetime |
 | `s_state` | Audio output state machine | `init()`, `start()`, `quiesce()`, `resume()`, `stop()`, `deinit()`, `i2s_task` | `start()`, `write()`, `quiesce()`, `resume()`, `is_quiesced()`, `stop()`, `get_state()`, `i2s_task` | `s_state_lock` (portMUX critical section) for all reads & writes | Entire process lifetime |
 | `s_pending_cmd` | Command dispatcher | `send_cmd_and_wait_ack()` | `handle_pending_command_in_task()` | `s_state_lock` (portMUX critical section) + `s_cmd_mux` | `init()` to `deinit()` |
 | `s_cmd_result` | Consumer worker | `handle_pending_command_in_task()` | `send_cmd_and_wait_ack()` | `s_state_lock` (portMUX critical section) | `init()` to `deinit()` |
@@ -82,20 +84,22 @@ PRE_MERGE_CLOSURE_STATUS: PASS
   - Defect: `quiesce()` allowed forcing `QUIESCED` state from `INITIALIZED` or `STOPPED` without a live worker task.
   - Fix: Explicit transition matrix enforced under `s_state_lock`. Illegal edges (`INITIALIZED->QUIESCED`, `STOPPED->QUIESCED`, etc.) rejected with `ESP_ERR_INVALID_STATE`.
   - Tests: `AUDIO-STATE-01..08` (8/8 PASS).
-- **F3 (Shared-State Synchronization & Task Notification Lease):**
-  - Defect: Bare flag `s_consumer_sleeping` had unsynchronized data race. On SMP, a race existed where `stop()` or `ring_write()` snapshotted `s_task`, worker exited and called `vTaskDelete(NULL)`, and caller called `xTaskNotifyGive(target)` on a stale/deleted handle. Additionally, `heap_caps_free()` was called inside `s_ring_lock` spinlock, and dead state `s_running` remained.
-  - Fix: Implemented Task Notification Lease pattern with `s_notify_inflight` under `s_state_lock`. In `i2s_task()` shutdown, worker drains all in-flight notify leases and sets `s_task = NULL` before `vTaskDelete(NULL)`. Moved `heap_caps_free()` strictly outside spinlock. Completely removed dead `s_running` flag. Gated test hooks under `MICHI_HOST_TEST`.
-  - Tests: Global invariant `test_task_invalid_notify_count() == 0` asserted across all test cases.
-- **F4 (Command Protocol, Generation ACK & Serialization):**
-  - Defect: Stale ACKs could resolve future commands; if a command timed out (`s_state = FAULTED`), a late worker execution could unconditionally overwrite `s_state = QUIESCED`; `stop()` and `deinit()` did not serialize with `s_cmd_mux`, risking concurrent destruction while commands waited.
-  - Fix: Monotonic command generations verified. Worker `handle_pending_command_in_task()` explicitly protects `FAULTED`, `STOPPING`, and `STOPPED` from overwrite. `stop()` and `deinit()` serialize with `s_cmd_mux` and wake in-flight waiters.
-  - Tests: `AUDIO-CMD-01..06` covering:
-    - `AUDIO-CMD-01`: Late ACK from command A cannot satisfy command B or overwrite `FAULTED` state.
+- **F3 (Shared-State Synchronization, Notification Lease Admission & Task Done Reconciliation):**
+  - Defect: Bare flag `s_consumer_sleeping` had unsynchronized data race. On SMP, a race existed where `stop()` or `ring_write()` snapshotted `s_task`, worker exited and called `vTaskDelete(NULL)`, and caller called `xTaskNotifyGive(target)` on a stale/deleted handle. In addition, new notification leases could theoretically be granted during worker shutdown before drain completion if not atomically closed. Furthermore, when `michi_audio_output_stop()` timed out waiting for the worker to exit, a subsequent late worker exit would set `s_task_done = true`, but retry `stop()` or `deinit()` did not reconcile `s_task_done = false` and `s_task = NULL`, failing or leaving inconsistent state.
+  - Fix: Implemented Task Notification Lease pattern with `s_notify_inflight` under `s_state_lock`. Added atomic `s_notify_closed = true;` under `s_state_lock` at worker shutdown entry before draining in-flight leases; `audio_task_notify()` checks `!s_notify_closed`. In `michi_audio_output_stop()` and `deinit()`, when worker has already exited (`s_task_done == true`), explicitly reconcile `s_task_done = false` and `s_task = NULL`, returning `ESP_OK` on retry and allowing subsequent `deinit()` to cleanly proceed. Moved `heap_caps_free()` strictly outside spinlock. Completely removed dead `s_running` flag.
+  - Tests: Global invariant `test_task_invalid_notify_count() == 0` asserted across all test cases. `AUDIO-CMD-08` validates stop timeout -> late worker exit -> retry stop reconciles `s_task_done` and returns `ESP_OK`, followed by clean `deinit()`.
+- **F4 (Command Protocol, Write Barrier & Adversarial In-Flight Suite):**
+  - Defect: Stale ACKs could resolve future commands; if a command timed out (`s_state = FAULTED`), a late worker execution could unconditionally overwrite `s_state = QUIESCED`; `stop()` and `deinit()` did not serialize with `s_cmd_mux`, risking concurrent destruction while commands waited. In addition, between QUIESCE command dispatch and worker ACK, concurrent PCM writes could enter the ring buffer and leak into post-resume playback. Prior tests relied on artificial command drops (`s_test_ignore_cmds`) rather than authentic worker execution delay.
+  - Fix: Monotonic command generations verified. Worker `handle_pending_command_in_task()` explicitly protects `FAULTED`, `STOPPING`, and `STOPPED` from overwrite. `stop()` and `deinit()` serialize with `s_cmd_mux` and wake in-flight waiters. Added write/admission barrier `s_ring_write_barrier` under `s_ring_lock`, engaged synchronously upon QUIESCE command dispatch, rejecting all subsequent `ring_write()` and `michi_audio_output_write()` calls with `ESP_ERR_INVALID_STATE` until resumed or stopped. Completely eliminated test hook `s_test_ignore_cmds`. Instrumented I2S test shim with authentic write delay (`test_i2s_set_write_delay_ms`) and capture buffer inspection.
+  - Tests: `AUDIO-CMD-01..08` covering:
+    - `AUDIO-CMD-01`: Late ACK from command A cannot satisfy command B or overwrite `FAULTED` state under authentic worker delay.
     - `AUDIO-CMD-02`: Missing or dead worker rejects immediately without waiting for full timeout.
-    - `AUDIO-CMD-03`: Command timeout transitions to `FAULTED` with clean stop/restart recovery.
+    - `AUDIO-CMD-03`: Command timeout transitions to `FAULTED` with clean stop/restart recovery under authentic in-flight write delay.
     - `AUDIO-CMD-04`: Concurrent `quiesce()` and `resume()` callers serialized deterministically.
-    - `AUDIO-CMD-05`: `stop()` racing in-flight command transitions cleanly without illegal state.
+    - `AUDIO-CMD-05`: `stop()` racing authentic in-flight command/write transitions cleanly without illegal state.
     - `AUDIO-CMD-06`: Zero notifications to dead/invalid task handle across 10 repeated lifecycles (`test_task_invalid_notify_count() == 0`).
+    - `AUDIO-CMD-07`: Concurrent writer during QUIESCE write barrier rejected; post-resume bitstream verified (0 bytes of `0xDE` forbidden pattern; valid `0x42` present).
+    - `AUDIO-CMD-08`: Stop timeout (`join_timeout_override_ms = 20`) with delayed worker, late worker exit, retry stop reconciles `s_task_done` and returns `ESP_OK`, subsequent `deinit()` succeeds.
 
 ### Phase F5-F6 Evidence: Session Pause/Resume & Teardown Truth
 
@@ -132,19 +136,19 @@ PRE_MERGE_CLOSURE_STATUS: PASS
 - **F11 (Ledger Reconciliation):**
   - All Phase F0-F10 defect/fix/test records reconciled with full cross-referencing and commit citations.
 - **F12 (Full Regression Matrix Execution):**
-  - Host test suite: `make -C tests/host clean && make -C tests/host test` executed and passing 100% (29 audio output tests, 28 session tests, 8 HTTP slowloris/deadline tests, display DMA, jitter buffer, rtp guard, button debouncer, etc.).
+  - Host test suite: `make -C tests/host clean && make -C tests/host test` executed and passing 100% (37 audio output tests, 28 session tests, 8 HTTP slowloris/deadline tests, display DMA, jitter buffer, rtp guard, button debouncer, etc.).
   - Static analysis: Cppcheck Variant A (`CONFIG_MICHI_DAC_DEFAULT_PROFILE=""`) and Variant B (`CONFIG_MICHI_DAC_DEFAULT_PROFILE="pcm5102a"`) run with zero errors, zero warnings across all 47 source files.
-  - Firmware build: Clean ESP-IDF release-v5.3 docker build succeeded (`0x18df40` bytes, 61% app partition free).
+  - Firmware build: Clean ESP-IDF release-v5.3 docker build succeeded (`0x18e150` bytes, 61% app partition free).
 - **F13 (Adversarial KILLCRITIC Software Verification):**
   - Comprehensive adversarial verification across all 18 review facets (lifecycle, SMP, memory, state machines, timing, protocols, error propagation, signals).
   - Verdict: ZERO remaining software defects or blockers.
 - **F14 (Implementation Freeze):**
-  - All firmware components and production headers frozen at `8daf6632b50c5649e26e574a4a12347b494ef934`. No further behavioral or code modifications permitted prior to merge.
+  - All firmware components and production headers frozen at `e5430521d25576dd3e8f3b558209c4c1429d2625`. No further behavioral or code modifications permitted prior to merge.
 
 ### Phase F15-F16 Evidence: Final E2E Re-Anchor & CI Green Certification
 
 - **F15 (E2E Re-Anchor to Frozen Closure Candidate):**
-  - `STREAM_TESTED_COMMIT` updated to `8daf6632b50c5649e26e574a4a12347b494ef934`.
+  - `STREAM_TESTED_COMMIT` updated to `e5430521d25576dd3e8f3b558209c4c1429d2625`.
   - Zero drift across `firmware/`, `simulator/`, and `contracts/` verified.
   - Deterministic certification artifact `tests/e2e/results/michi-link-alpha1.json` synchronized.
   - All 13 E2E test cases pass cleanly (`MOCK_PASS: true`).
