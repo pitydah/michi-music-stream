@@ -42,6 +42,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <stdatomic.h>
 
 #include "cJSON.h"
 
@@ -1203,23 +1204,23 @@ static void test_disc_concur_01_safe_notify_lease(void)
 }
 
 typedef struct {
-    volatile bool stop;
-    volatile uint32_t calls;
-    volatile uint32_t rejections;
+    _Atomic bool stop;
+    _Atomic uint32_t calls;
+    _Atomic uint32_t rejections;
 } disc_stress_arg_t;
 
 static void *disc_api_stress_worker(void *arg)
 {
     disc_stress_arg_t *s = (disc_stress_arg_t *)arg;
-    while (!s->stop) {
-        s->calls++;
+    while (!atomic_load(&s->stop)) {
+        atomic_fetch_add(&s->calls, 1);
         esp_err_t r = michi_discovery_start("192.168.1.102");
         if (r == ESP_ERR_INVALID_STATE) {
-            s->rejections++;
+            atomic_fetch_add(&s->rejections, 1);
         }
         r = michi_discovery_stop();
         if (r == ESP_ERR_INVALID_STATE) {
-            s->rejections++;
+            atomic_fetch_add(&s->rejections, 1);
         }
         usleep(100);
     }
@@ -1234,7 +1235,10 @@ static void test_disc_concur_02_public_api_admission_rejection(void)
     boot_time_and_discovery();
     DISC(30, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
 
-    disc_stress_arg_t s = { .stop = false, .calls = 0, .rejections = 0 };
+    disc_stress_arg_t s;
+    atomic_init(&s.stop, false);
+    atomic_init(&s.calls, 0);
+    atomic_init(&s.rejections, 0);
     pthread_t th1, th2;
     pthread_create(&th1, NULL, disc_api_stress_worker, &s);
     pthread_create(&th2, NULL, disc_api_stress_worker, &s);
@@ -1243,7 +1247,7 @@ static void test_disc_concur_02_public_api_admission_rejection(void)
     /* Concurrently shutdown while API calls are actively running */
     DISC(30, michi_discovery_shutdown() == ESP_OK, "shutdown succeeds while API calls in flight");
 
-    s.stop = true;
+    atomic_store(&s.stop, true);
     pthread_join(th1, NULL);
     pthread_join(th2, NULL);
 
@@ -1256,6 +1260,42 @@ static void test_disc_concur_02_public_api_admission_rejection(void)
          "DISC-CONCUR-02: zero FreeRTOS API calls inside critical sections");
     teardown();
 }
+
+static void test_life_smp_disc_02_03_api_drain_timeout_and_retry(void)
+{
+    printf("LIFE-SMP-DISC-02 & 03: Discovery API drain timeout preserves resources and retry succeeds\n");
+    reset_all();
+    boot_time_and_discovery();
+    DISC(34, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+
+    /* Hold API lease to simulate in-flight API call stuck */
+    michi_discovery_test_hold_api(true);
+
+    esp_err_t err = michi_discovery_shutdown();
+    DISC(34, err == ESP_ERR_TIMEOUT, "LIFE-SMP-02: discovery shutdown returns timeout when API in flight");
+    DISC(34, michi_discovery_test_has_mutex(), "LIFE-SMP-02: discovery mutex preserved on API drain timeout");
+    DISC(34, michi_discovery_test_has_timer(), "LIFE-SMP-02: discovery timer preserved on API drain timeout");
+    int dwst = michi_discovery_test_worker_state();
+    DISC(34, dwst == 2 || dwst == 3,
+         "LIFE-SMP-02: discovery worker remains STOP_REQUESTED or EXITED on drain timeout");
+
+    /* LIFE-SMP-08: No new API admitted while STOP_REQUESTED or EXITED */
+    DISC(34, michi_discovery_start("192.168.1.102") == ESP_ERR_INVALID_STATE,
+         "LIFE-SMP-08: discovery start rejected after STOP_REQUESTED");
+
+    /* Release API lease */
+    michi_discovery_test_hold_api(false);
+
+    /* LIFE-SMP-03: Retry shutdown succeeds cleanly */
+    DISC(34, michi_discovery_shutdown() == ESP_OK,
+         "LIFE-SMP-03: retry discovery shutdown succeeds after API drain completes");
+    DISC(34, !michi_discovery_test_has_mutex(), "LIFE-SMP-03: mutex destroyed after successful retry");
+    DISC(34, !michi_discovery_test_has_timer(), "LIFE-SMP-03: timer destroyed after successful retry");
+    DISC(34, michi_discovery_test_worker_state() == 0 /* MICHI_WORKER_STOPPED */,
+         "LIFE-SMP-03: discovery worker state is STOPPED");
+    teardown();
+}
+
 
 static void test_disc_concur_03_no_dead_task_notify_on_sync_race(void)
 {
@@ -1363,6 +1403,7 @@ int main(void)
     test_disc_concur_03_no_dead_task_notify_on_sync_race();
     test_disc_concur_04_shutdown_retry_concurrent();
     test_disc_concur_05_task_self_deletion_invariant();
+    test_life_smp_disc_02_03_api_drain_timeout_and_retry();
 
     DISC(99, test_freertos_api_in_critical_count() == 0,
          "FINAL INVARIANT: test_freertos_api_in_critical_count == 0");

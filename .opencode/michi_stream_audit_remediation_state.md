@@ -7,6 +7,13 @@ BRANCH: fix/ui-device-gaps
 WORKTREE_STATUS: clean
 
 GLOBAL_STATUS: IN_PROGRESS
+PRE_MERGE_CLOSURE_STATUS: IN_PROGRESS
+
+## PRE-MERGE CLOSURE WAVES
+- WAVE_A: PASS (Close lifecycle/SMP residuals: A1..A7)
+- WAVE_B: TODO (Audio-output single ownership and quiesce: B1..B10)
+- WAVE_C: TODO (DMA + HTTP + session + capability/config truth: C1..C13)
+- WAVE_D: TODO (Pre-merge verification + E2E certification + final CI: D1..D7)
 
 | Phase | Status | Reproduced | Test before patch | Patch | Falsified | Firmware | Commit |
 |---|---|---|---|---|---|---|---|
@@ -149,4 +156,28 @@ GLOBAL_STATUS: IN_PROGRESS
   - Host unit tests: 100% pass (`make -C tests/host clean && make -C tests/host test`).
   - Static analysis: Cppcheck 47/47 files clean (0 warnings, 0 errors).
   - ESP-IDF release-v5.3 docker firmware build: 100% pass (`michi-music-stream.bin` size: 1627792 bytes <= 4194304, SPIRAM OCT 16MB verified).
+
+## Wave A Evidence (Lifecycle & SMP Residuals: A1..A7)
+- Scope Hardened:
+  - `firmware/components/michi_pairing/include/michi_pairing.h`, `michi_pairing.c`
+  - `firmware/components/michi_discovery/include/michi_discovery.h`, `michi_discovery.c`
+  - `tests/host/test_michi_pairing.c`
+  - `tests/host/test_discovery_disc.c`
+- Invariants & Improvements:
+  1. `LIFE-SMP-01`: Bounded shutdown wait for concurrent callers with `MICHI_LIFECYCLE_SHUTDOWN_TIMEOUT_MS = 1000`. Exits cleanly with `ESP_ERR_TIMEOUT` on expiry.
+  2. `LIFE-SMP-02`: Bounded API drain wait with `MICHI_LIFECYCLE_API_DRAIN_TIMEOUT_MS = 500`. On drain expiry, preserves all resources (mutexes, timers, sockets), logs `ESP_LOGE`, leaves retriable state (`STOP_REQUESTED`), and returns `ESP_ERR_TIMEOUT`.
+  3. `LIFE-SMP-03`: Bounded drain timeout verified retriable: subsequent shutdown invocation after API drain completes succeeds cleanly and tears down all resources without leaks.
+  4. `LIFE-SMP-04`: FreeRTOS SMP correctness: removed `volatile` from lifecycle/task flags (`s_worker_state`, `s_initialized`, `s_shutdown_in_progress`, `s_notify_inflight`, `s_api_inflight`) in production, replaced test stress flags with C11 `<stdatomic.h>`.
+  5. `LIFE-SMP-05`: Single authority for `s_worker_state` under `s_lifecycle_mux`, eliminating bare reads/writes.
+  6. `LIFE-SMP-06`: Documented explicit lock order contract in file headers: Level 1 `s_lifecycle_mux` (spinlock) -> Level 2 `s_mutex` / `s_announce_mutex` (mutex) -> Level 3 (external callbacks/IO).
+  7. `LIFE-SMP-07`: `pin_display_notify()` and `set_pin_display_cb()` read `s_initialized` under `s_lifecycle_mux`.
+  8. `LIFE-SMP-08`: Public API admission rejected when `s_worker_state` is `STOP_REQUESTED`, `EXITED`, or `STOPPED`.
+- Tests Added:
+  - `test_michi_pairing.c`: `test_life_smp_02_03_api_drain_timeout_and_retry`
+  - `test_discovery_disc.c`: `test_life_smp_disc_02_03_api_drain_timeout_and_retry`
+- Verification:
+  - Host test suite: 100% pass (`make -C tests/host clean && make -C tests/host test`).
+  - Static analysis: Cppcheck clean (0 warnings, 0 errors).
+  - ESP-IDF release-v5.3 docker firmware build: 100% pass (`michi-music-stream.bin` size: 1627792 bytes <= 4194304).
+
 

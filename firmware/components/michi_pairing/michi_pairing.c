@@ -94,6 +94,9 @@ typedef struct {
 #define PAIRING_NOTIFY_EXPIRED (1u << 0)
 #define PAIRING_NOTIFY_STOP    (1u << 1)
 
+#define MICHI_LIFECYCLE_API_DRAIN_TIMEOUT_MS 500
+#define MICHI_LIFECYCLE_SHUTDOWN_TIMEOUT_MS  1000
+
 typedef enum {
     MICHI_WORKER_STOPPED = 0,
     MICHI_WORKER_RUNNING,
@@ -101,19 +104,55 @@ typedef enum {
     MICHI_WORKER_EXITED,
 } michi_worker_lifecycle_t;
 
+/* ====================================================================
+ * LIFECYCLE & LOCK ORDER CONTRACT
+ *
+ * 1. s_lifecycle_mux (portMUX_TYPE spinlock) protects ONLY lifecycle metadata:
+ *    - s_worker_state (michi_worker_lifecycle_t)
+ *    - s_pairing_task (TaskHandle_t)
+ *    - s_notify_inflight (uint32_t lease counter)
+ *    - s_api_inflight (uint32_t lease counter)
+ *    - s_initialized (bool)
+ *    - s_shutdown_in_progress (bool)
+ *
+ * 2. Invariant: NEVER call blocking FreeRTOS APIs, vTaskDelay, or logging
+ *    while s_lifecycle_mux is held.
+ *
+ * 3. Lock Ordering:
+ *    Level 1: s_lifecycle_mux (held briefly, metadata access only)
+ *    Level 2: Component Mutex (s_mutex)
+ *    Level 3: External callbacks / I/O
+ *    RULE: Never acquire Level 2 while holding Level 1.
+ *    RULE: Never wait on Level 1 while holding Level 2.
+ *
+ * 4. API Lease:
+ *    Public APIs must acquire an API lease via pairing_api_enter() before
+ *    accessing component resources, and release via pairing_api_exit() on exit.
+ *    Shutdown drains all leases before freeing mutexes and timers.
+ * ==================================================================== */
+
 static SemaphoreHandle_t s_mutex;
 static esp_timer_handle_t s_timer;
 static TaskHandle_t s_pairing_task;
 static SemaphoreHandle_t s_pairing_done_sem;
 static portMUX_TYPE s_lifecycle_mux = portMUX_INITIALIZER_UNLOCKED;
-static volatile michi_worker_lifecycle_t s_worker_state = MICHI_WORKER_STOPPED;
+static michi_worker_lifecycle_t s_worker_state = MICHI_WORKER_STOPPED;
 static uint32_t s_notify_inflight = 0;
 static uint32_t s_api_inflight = 0;
-static volatile bool s_initialized;
-static volatile bool s_shutdown_in_progress = false;
+static bool s_initialized = false;
+static bool s_shutdown_in_progress = false;
 #ifdef MICHI_HOST_TEST
 static volatile bool s_test_hold_worker = false;
 #endif
+
+static michi_worker_lifecycle_t worker_state_get(void)
+{
+    michi_worker_lifecycle_t st;
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    st = s_worker_state;
+    portEXIT_CRITICAL(&s_lifecycle_mux);
+    return st;
+}
 
 static bool pairing_api_enter(void)
 {
@@ -420,7 +459,12 @@ static void pin_display_notify(const char *pin)
      * holding it). */
     michi_pairing_pin_display_cb_t cb = NULL;
     void *cb_ctx = NULL;
-    if (!s_initialized) {
+    bool is_init = false;
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    is_init = s_initialized;
+    portEXIT_CRITICAL(&s_lifecycle_mux);
+
+    if (!is_init) {
         cb = s_pin_display_cb;
         cb_ctx = s_pin_display_ctx;
     } else {
@@ -485,12 +529,12 @@ static void pairing_task_func(void *arg)
         }
 
         if (r == pdTRUE && (notified_bits & PAIRING_NOTIFY_EXPIRED)) {
-            if (s_worker_state >= MICHI_WORKER_STOP_REQUESTED) {
+            if (worker_state_get() >= MICHI_WORKER_STOP_REQUESTED) {
                 continue;
             }
             xSemaphoreTake(s_mutex, portMAX_DELAY);
             /* Stale-callback guard: verify deadline under mutex */
-            if (s_worker_state >= MICHI_WORKER_STOP_REQUESTED || !s_window_open) {
+            if (worker_state_get() >= MICHI_WORKER_STOP_REQUESTED || !s_window_open) {
                 xSemaphoreGive(s_mutex);
                 continue;
             }
@@ -1340,7 +1384,11 @@ void michi_pairing_set_pin_display_cb(michi_pairing_pin_display_cb_t cb,
                                       void *ctx)
 {
     if (!pairing_api_enter()) {
-        if (!s_initialized) {
+        bool is_init = false;
+        portENTER_CRITICAL(&s_lifecycle_mux);
+        is_init = s_initialized;
+        portEXIT_CRITICAL(&s_lifecycle_mux);
+        if (!is_init) {
             s_pin_display_cb = cb;
             s_pin_display_ctx = ctx;
         }
@@ -1370,9 +1418,14 @@ esp_err_t michi_pairing_shutdown(void)
 {
     TaskHandle_t target = NULL;
     portENTER_CRITICAL(&s_lifecycle_mux);
+    int wait_ms = 0;
     while (s_shutdown_in_progress) {
         portEXIT_CRITICAL(&s_lifecycle_mux);
-        vTaskDelay(1);
+        if (wait_ms >= MICHI_LIFECYCLE_SHUTDOWN_TIMEOUT_MS) {
+            return ESP_ERR_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+        wait_ms += 10;
         portENTER_CRITICAL(&s_lifecycle_mux);
     }
     if (!s_initialized) {
@@ -1404,7 +1457,8 @@ esp_err_t michi_pairing_shutdown(void)
         esp_timer_stop(s_timer);
     }
 
-    /* 3. Wait until all in-flight API calls complete */
+    /* 3. Wait until all in-flight API calls complete (bounded drain) */
+    int drain_wait_ms = 0;
     while (1) {
         bool api_busy = false;
         portENTER_CRITICAL(&s_lifecycle_mux);
@@ -1413,11 +1467,19 @@ esp_err_t michi_pairing_shutdown(void)
         if (!api_busy) {
             break;
         }
-        vTaskDelay(1);
+        if (drain_wait_ms >= MICHI_LIFECYCLE_API_DRAIN_TIMEOUT_MS) {
+            ESP_LOGE(TAG, "pairing: shutdown API drain timed out (api_inflight > 0)");
+            portENTER_CRITICAL(&s_lifecycle_mux);
+            s_shutdown_in_progress = false;
+            portEXIT_CRITICAL(&s_lifecycle_mux);
+            return ESP_ERR_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+        drain_wait_ms += 10;
     }
 
     /* 4. Wait for worker exit if not already EXITED */
-    if (s_worker_state != MICHI_WORKER_EXITED) {
+    if (worker_state_get() != MICHI_WORKER_EXITED) {
         if (s_pairing_done_sem != NULL) {
             if (xSemaphoreTake(s_pairing_done_sem, pdMS_TO_TICKS(1000)) != pdTRUE) {
                 ESP_LOGE(TAG, "pairing: worker task join timed out");
@@ -1513,11 +1575,18 @@ __attribute__((weak)) void michi_pairing_test_hold_worker(bool hold)
 
 __attribute__((weak)) int michi_pairing_test_worker_state(void)
 {
-    int st;
+    return (int)worker_state_get();
+}
+
+__attribute__((weak)) void michi_pairing_test_hold_api(bool hold)
+{
     portENTER_CRITICAL(&s_lifecycle_mux);
-    st = (int)s_worker_state;
+    if (hold) {
+        s_api_inflight++;
+    } else if (s_api_inflight > 0) {
+        s_api_inflight--;
+    }
     portEXIT_CRITICAL(&s_lifecycle_mux);
-    return st;
 }
 #endif
 

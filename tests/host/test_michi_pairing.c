@@ -23,6 +23,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <stdatomic.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -1473,9 +1474,9 @@ static void test_pair_concur_01_safe_notify_lease(void)
 }
 
 typedef struct {
-    volatile bool stop;
-    volatile uint32_t calls;
-    volatile uint32_t rejections;
+    _Atomic bool stop;
+    _Atomic uint32_t calls;
+    _Atomic uint32_t rejections;
 } pair_stress_arg_t;
 
 static void *pair_api_stress_worker(void *arg)
@@ -1484,14 +1485,14 @@ static void *pair_api_stress_worker(void *arg)
     char session_id[MICHI_PAIRING_SESSION_ID_LEN];
     char expires_at[MICHI_PAIRING_EXPIRES_AT_LEN];
     uint32_t attempts = 0;
-    while (!s->stop) {
-        s->calls++;
+    while (!atomic_load(&s->stop)) {
+        atomic_fetch_add(&s->calls, 1);
         michi_pairing_start_result_t r = michi_pairing_start(
             valid_peer(), "192.168.1.50",
             session_id, sizeof(session_id),
             expires_at, sizeof(expires_at), &attempts);
         if (r == MICHI_PAIRING_START_WINDOW_CLOSED) {
-            s->rejections++;
+            atomic_fetch_add(&s->rejections, 1);
         }
         (void)michi_pairing_is_window_open();
         usleep(100);
@@ -1508,7 +1509,10 @@ static void test_pair_concur_02_public_api_admission_rejection(void)
     CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
     CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
 
-    pair_stress_arg_t s = { .stop = false, .calls = 0, .rejections = 0 };
+    pair_stress_arg_t s;
+    atomic_init(&s.stop, false);
+    atomic_init(&s.calls, 0);
+    atomic_init(&s.rejections, 0);
     pthread_t th1, th2;
     pthread_create(&th1, NULL, pair_api_stress_worker, &s);
     pthread_create(&th2, NULL, pair_api_stress_worker, &s);
@@ -1517,7 +1521,7 @@ static void test_pair_concur_02_public_api_admission_rejection(void)
     /* Concurrently shutdown while API calls are actively running */
     CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds while API calls in flight");
 
-    s.stop = true;
+    atomic_store(&s.stop, true);
     pthread_join(th1, NULL);
     pthread_join(th2, NULL);
 
@@ -1586,6 +1590,47 @@ static void test_pair_concur_04_shutdown_retry_concurrent(void)
     }
 }
 
+static void test_life_smp_02_03_api_drain_timeout_and_retry(void)
+{
+    printf("LIFE-SMP-02 & 03: API drain timeout preserves resources and retry succeeds\n");
+    pairing_test_reset(0xABCD4001);
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+
+    /* Hold API lease to simulate in-flight API call stuck */
+    michi_pairing_test_hold_api(true);
+
+    esp_err_t err = michi_pairing_shutdown();
+    CHECK(err == ESP_ERR_TIMEOUT, "LIFE-SMP-02: shutdown returns timeout when API in flight");
+    CHECK(michi_pairing_test_has_mutex(), "LIFE-SMP-02: mutex preserved on API drain timeout");
+    int wst = michi_pairing_test_worker_state();
+    CHECK(wst == 2 || wst == 3,
+          "LIFE-SMP-02: worker remains STOP_REQUESTED or EXITED on drain timeout");
+
+    /* LIFE-SMP-08: No new API admitted while STOP_REQUESTED or EXITED */
+    char session_id[MICHI_PAIRING_SESSION_ID_LEN];
+    char expires_at[MICHI_PAIRING_EXPIRES_AT_LEN];
+    uint32_t attempts = 0;
+    michi_pairing_start_result_t r = michi_pairing_start(
+        valid_peer(), "192.168.1.50",
+        session_id, sizeof(session_id),
+        expires_at, sizeof(expires_at), &attempts);
+    CHECK(r == MICHI_PAIRING_START_WINDOW_CLOSED,
+          "LIFE-SMP-08: no new API admitted after STOP_REQUESTED");
+    CHECK(michi_pairing_open_window() == ESP_ERR_INVALID_STATE,
+          "LIFE-SMP-08: open_window rejected after STOP_REQUESTED");
+
+    /* Release API lease */
+    michi_pairing_test_hold_api(false);
+
+    /* LIFE-SMP-03: Retry shutdown succeeds cleanly */
+    CHECK(michi_pairing_shutdown() == ESP_OK,
+          "LIFE-SMP-03: retry shutdown succeeds after API drain completes");
+    CHECK(!michi_pairing_test_has_mutex(), "LIFE-SMP-03: mutex destroyed after successful retry");
+    CHECK(michi_pairing_test_worker_state() == 0 /* MICHI_WORKER_STOPPED */,
+          "LIFE-SMP-03: worker state is STOPPED");
+}
+
 int main(void)
 {
     test_sha256_known_answer();
@@ -1625,6 +1670,7 @@ int main(void)
     test_pair_concur_02_public_api_admission_rejection();
     test_pair_concur_03_no_dead_task_notify();
     test_pair_concur_04_shutdown_retry_concurrent();
+    test_life_smp_02_03_api_drain_timeout_and_retry();
 
     CHECK(test_freertos_api_in_critical_count() == 0,
           "FINAL INVARIANT: test_freertos_api_in_critical_count == 0");

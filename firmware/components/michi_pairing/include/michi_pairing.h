@@ -494,6 +494,7 @@ void michi_pairing_test_notify_expired(void);
 void michi_pairing_test_hold_worker(bool hold);
 int michi_pairing_test_worker_state(void);
 bool michi_pairing_test_has_mutex(void);
+void michi_pairing_test_hold_api(bool hold);
 #endif
 
 #ifdef __cplusplus
