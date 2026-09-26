@@ -109,13 +109,15 @@ test_json_helpers: test_json_helpers.c $(FIRMWARE)/michi_http/json_helpers.c \
                    $(FIRMWARE)/michi_http/include/michi_http.h \
                    $(FIRMWARE)/michi_pairing/validators.c \
                    $(FIRMWARE)/michi_pairing/validators.h \
-                   $(FIRMWARE)/michi_audio/michi_audio_buffer.c $(SHIMS)
+                   $(FIRMWARE)/michi_audio/michi_audio_buffer.c \
+                   shim/esp_http_server_shim.c shim/esp_timer.c $(SHIMS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CJSON_CFLAGS) -I../../firmware/components/michi_pairing/include \
 	    -I../../firmware/components/michi_identity/include \
 	    -o $@ test_json_helpers.c \
 	    $(FIRMWARE)/michi_http/json_helpers.c \
 	    $(FIRMWARE)/michi_pairing/validators.c \
-	    $(FIRMWARE)/michi_audio/michi_audio_buffer.c $(CJSON_LIBS)
+	    $(FIRMWARE)/michi_audio/michi_audio_buffer.c \
+	    shim/esp_http_server_shim.c shim/esp_timer.c $(CJSON_LIBS)
 
 test_http_canonical: test_http_canonical.c $(FIRMWARE)/michi_http/canonical_json.c \
                      $(FIRMWARE)/michi_http/include/michi_http.h \
@@ -130,11 +132,13 @@ test_pairing_http: test_pairing_http.c $(FIRMWARE)/michi_http/json_helpers.c \
                    $(FIRMWARE)/michi_http/include/michi_http.h \
                    $(FIRMWARE)/michi_pairing/validators.c \
                    $(FIRMWARE)/michi_pairing/validators.h \
-                   $(FIRMWARE)/michi_audio/michi_audio_buffer.c $(SHIMS)
+                   $(FIRMWARE)/michi_audio/michi_audio_buffer.c \
+                   shim/esp_http_server_shim.c shim/esp_timer.c $(SHIMS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CJSON_CFLAGS) -o $@ test_pairing_http.c \
 	    $(FIRMWARE)/michi_http/json_helpers.c \
 	    $(FIRMWARE)/michi_pairing/validators.c \
-	    $(FIRMWARE)/michi_audio/michi_audio_buffer.c $(CJSON_LIBS)
+	    $(FIRMWARE)/michi_audio/michi_audio_buffer.c \
+	    shim/esp_http_server_shim.c shim/esp_timer.c $(CJSON_LIBS)
 
 # michi_pairing: compiles the REAL component (pairing core + validators +
 # identity for verify/derive/base64url) against the test shims. The host
@@ -319,11 +323,13 @@ test_session_http: test_session_http.c $(FIRMWARE)/michi_http/json_helpers.c \
                    $(FIRMWARE)/michi_http/include/michi_http.h \
                    $(FIRMWARE)/michi_pairing/validators.c \
                    $(FIRMWARE)/michi_pairing/validators.h \
-                   $(FIRMWARE)/michi_audio/michi_audio_buffer.c $(SHIMS)
+                   $(FIRMWARE)/michi_audio/michi_audio_buffer.c \
+                   shim/esp_http_server_shim.c shim/esp_timer.c $(SHIMS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CJSON_CFLAGS) -o $@ test_session_http.c \
 	    $(FIRMWARE)/michi_http/json_helpers.c \
 	    $(FIRMWARE)/michi_pairing/validators.c \
-	    $(FIRMWARE)/michi_audio/michi_audio_buffer.c $(CJSON_LIBS)
+	    $(FIRMWARE)/michi_audio/michi_audio_buffer.c \
+	    shim/esp_http_server_shim.c shim/esp_timer.c $(CJSON_LIBS)
 
 # michi_discovery: compiles the REAL announce builder + server_id NVS
 # wrapper + the identity sources (signing) against the test shims. The

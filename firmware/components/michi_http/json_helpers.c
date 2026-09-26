@@ -5,9 +5,14 @@
 
 #include "michi_http.h"
 
+#include <errno.h>
 #include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#include "esp_http_server.h"
+#include "esp_timer.h"
 
 #include "cJSON.h"
 #include "michi_pairing.h"
@@ -563,4 +568,64 @@ void michi_http_configure_defaults(httpd_config_t *cfg)
     cfg->stack_size = 8192;
     cfg->recv_wait_timeout = MICHI_HTTP_RECV_WAIT_TIMEOUT_S;
     cfg->send_wait_timeout = MICHI_HTTP_SEND_WAIT_TIMEOUT_S;
+}
+
+esp_err_t michi_http_read_body(httpd_req_t *req, char *buf, size_t buf_len,
+                               size_t *out_len)
+{
+    if (req == NULL || buf == NULL || out_len == NULL || buf_len == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    char clen_str[16] = {0};
+    if (httpd_req_get_hdr_value_str(req, "Content-Length", clen_str,
+                                    sizeof(clen_str)) != ESP_OK) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    /* Strict parse: no trailing junk, no negatives. A malformed header is
+     * a client error - the caller MUST answer 400. */
+    char *endp = NULL;
+    long content_len = strtol(clen_str, &endp, 10);
+    if (endp == clen_str || *endp != '\0') {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (content_len < 0 || (size_t)content_len >= buf_len) {
+        /* The caller's buffer size IS the limit: a body that does not fit
+         * (or a missing NUL byte) is rejected, never truncated. */
+        return ESP_ERR_INVALID_SIZE;
+    }
+    size_t received = 0;
+    int timeouts = 0;
+    /* Anti-slowloris contract: the whole body must arrive within
+     * MICHI_HTTP_BODY_TOTAL_TIMEOUT_MS of wall time (checked before every
+     * recv) AND a socket timeout is retried at most once - a client that
+     * trickles bytes cannot hold the httpd task indefinitely. */
+    const int64_t deadline_us = esp_timer_get_time() +
+                                MICHI_HTTP_BODY_TOTAL_TIMEOUT_MS * 1000LL;
+    while (received < (size_t)content_len) {
+        if (esp_timer_get_time() >= deadline_us) {
+            return ESP_ERR_TIMEOUT;
+        }
+        int ret = httpd_req_recv(req, buf + received,
+                                 (size_t)content_len - received);
+        if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+            /* Bounded retries: a stalled client cannot block the httpd
+             * task forever. */
+            if (++timeouts > MICHI_HTTP_RECV_TIMEOUT_RETRIES) {
+                return ESP_ERR_TIMEOUT;
+            }
+            continue;
+        }
+        /* httpd_req_recv reports socket failures as positive sentinels
+         * (HTTPD_SOCK_ERR_INVALID = 0x1002, HTTPD_SOCK_ERR_FAIL = 0x1003);
+         * anything >= HTTPD_SOCK_ERR_TIMEOUT is an error, never a byte
+         * count. Accepting them as bytes would corrupt the stack buffer
+         * terminator below. */
+        if (ret <= 0 || ret >= HTTPD_SOCK_ERR_TIMEOUT) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        received += (size_t)ret;
+    }
+    buf[received] = '\0';
+    *out_len = received;
+    return ESP_OK;
 }

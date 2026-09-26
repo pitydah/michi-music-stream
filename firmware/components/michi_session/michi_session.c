@@ -935,14 +935,15 @@ michi_session_heartbeat_result_t michi_session_heartbeat(
         ESP_LOGW(TAG, "heartbeat: session_id mismatch rejected=1");
         return MICHI_SESSION_HEARTBEAT_SESSION_MISMATCH;
     }
-    /* Peer IP check: heartbeat from differing IP is rejected with 409 CONFLICT (R2-K) */
-    if (peer_ip != NULL && peer_ip[0] != '\0' && s_session.info.source_addr[0] != '\0') {
-        if (strcmp(peer_ip, s_session.info.source_addr) != 0) {
-            xSemaphoreGive(s_mutex);
-            ESP_LOGW(TAG, "heartbeat: peer IP %s != session source %s - rejected 409 conflict",
-                     peer_ip, s_session.info.source_addr);
-            return MICHI_SESSION_HEARTBEAT_SOURCE_MISMATCH;
-        }
+    /* Peer IP check: fail closed. Heartbeat must strictly match session source IP.
+     * Empty, malformed, NULL, or differing peer IP is rejected with 403 Forbidden (fail closed);
+     * lease is NOT renewed and sequence is NOT advanced. */
+    if (peer_ip == NULL || peer_ip[0] == '\0' || s_session.info.source_addr[0] == '\0' ||
+        strcmp(peer_ip, s_session.info.source_addr) != 0) {
+        xSemaphoreGive(s_mutex);
+        ESP_LOGW(TAG, "heartbeat: peer IP '%s' != session source '%s' - rejected fail closed (403)",
+                 peer_ip ? peer_ip : "<null>", s_session.info.source_addr);
+        return MICHI_SESSION_HEARTBEAT_SOURCE_MISMATCH;
     }
     /* Sequence: strictly increasing within the session. A repeated or
      * older heartbeat does NOT renew (contract 2.6: 409 CONFLICT). */

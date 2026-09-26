@@ -58,6 +58,21 @@ void test_lcd_set_drop_completion(bool drop)
     pthread_mutex_unlock(&s_lock);
 }
 
+void test_lcd_trigger_late_completion(void)
+{
+    pthread_mutex_lock(&s_lock);
+    s_buffer_in_flight = false;
+    s_in_flight_ptr = NULL;
+    esp_lcd_panel_io_color_trans_done_cb_t cb = s_io_inst.on_color_trans_done;
+    void *uctx = s_io_inst.user_ctx;
+    esp_lcd_panel_io_handle_t io = &s_io_inst;
+    pthread_mutex_unlock(&s_lock);
+
+    if (cb != NULL) {
+        cb(io, NULL, uctx);
+    }
+}
+
 bool test_lcd_is_buffer_in_flight(void)
 {
     pthread_mutex_lock(&s_lock);
@@ -117,6 +132,11 @@ esp_err_t esp_lcd_new_panel_io_spi(esp_lcd_spi_bus_handle_t bus,
 esp_err_t esp_lcd_panel_io_del(esp_lcd_panel_io_handle_t io)
 {
     (void)io;
+    pthread_mutex_lock(&s_lock);
+    if (s_buffer_in_flight) {
+        s_violation_detected = true;
+    }
+    pthread_mutex_unlock(&s_lock);
     return ESP_OK;
 }
 
@@ -149,6 +169,11 @@ esp_err_t esp_lcd_panel_init(esp_lcd_panel_handle_t panel)
 esp_err_t esp_lcd_panel_del(esp_lcd_panel_handle_t panel)
 {
     (void)panel;
+    pthread_mutex_lock(&s_lock);
+    if (s_buffer_in_flight) {
+        s_violation_detected = true;
+    }
+    pthread_mutex_unlock(&s_lock);
     return ESP_OK;
 }
 

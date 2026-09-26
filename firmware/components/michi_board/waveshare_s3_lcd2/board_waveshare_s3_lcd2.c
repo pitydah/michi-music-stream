@@ -367,9 +367,21 @@ esp_err_t michi_board_shutdown(void)
     if (s_dma_in_flight) {
         /* Wait up to 1000 ms for in-flight DMA completion before tearing down */
         if (s_trans_done_sem != NULL) {
-            (void)xSemaphoreTake(s_trans_done_sem, pdMS_TO_TICKS(1000));
+            if (xSemaphoreTake(s_trans_done_sem, pdMS_TO_TICKS(1000)) != pdTRUE) {
+                ESP_LOGE(TAG, "display shutdown: in-flight DMA wait timed out; preserving resources to prevent UAF");
+                s_dma_quarantined = true;
+                s_dma_in_flight = true;
+                return ESP_ERR_TIMEOUT;
+            }
         }
+        s_dma_in_flight = false;
     }
+
+    if (s_trans_done_sem != NULL) {
+        /* Drain any pending completion token before teardown */
+        xSemaphoreTake(s_trans_done_sem, 0);
+    }
+
     if (s_panel != NULL) {
         esp_err_t err = esp_lcd_panel_disp_on_off(s_panel, false);
         if (err != ESP_OK) {
@@ -397,11 +409,7 @@ esp_err_t michi_board_shutdown(void)
         s_spi_bus_inited = false;
     }
     if (s_fb != NULL) {
-        if (!s_dma_in_flight) {
-            heap_caps_free(s_fb);
-        } else {
-            ESP_LOGE(TAG, "display shutdown: buffer quarantined to prevent UAF during in-flight DMA");
-        }
+        heap_caps_free(s_fb);
         s_fb = NULL;
         s_fb_bytes = 0;
     }
@@ -410,10 +418,10 @@ esp_err_t michi_board_shutdown(void)
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "backlight off failed: %s", esp_err_to_name(err));
         }
+        s_backlight_on = false;
     }
     s_dma_quarantined = false;
     s_dma_in_flight = false;
-    s_backlight_on = false;
     s_inited = false;
     ESP_LOGI(TAG, "board shutdown complete");
     return ESP_OK;

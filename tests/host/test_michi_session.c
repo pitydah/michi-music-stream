@@ -285,6 +285,22 @@ static void test_start_rejects_invalid(void)
     CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
           "valid start still works");
     cleanup_session();
+
+    /* Boundary and nominal buffer_ms values (50, 300, 500) succeed */
+    p.buffer_ms = 50;
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
+          "buffer 50 succeeds");
+    cleanup_session();
+
+    p.buffer_ms = 300;
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
+          "buffer 300 succeeds");
+    cleanup_session();
+
+    p.buffer_ms = 500;
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
+          "buffer 500 succeeds");
+    cleanup_session();
 }
 
 static void test_patch(void)
@@ -474,31 +490,31 @@ static void test_heartbeat(void)
     memcpy(g_session_id, info.session_id, sizeof(g_session_id));
 
     /* Malformed/wrong credential (HTTP 401) and id mismatch (HTTP 404). */
-    CHECK(michi_session_heartbeat("not-a-token", g_session_id, 1, NULL) ==
+    CHECK(michi_session_heartbeat("not-a-token", g_session_id, 1, PEER_IP) ==
               MICHI_SESSION_HEARTBEAT_TOKEN_MISMATCH,
           "malformed token rejected (401)");
     CHECK(michi_session_heartbeat(
               "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", g_session_id,
-              1, NULL) == MICHI_SESSION_HEARTBEAT_TOKEN_MISMATCH,
+              1, PEER_IP) == MICHI_SESSION_HEARTBEAT_TOKEN_MISMATCH,
           "wrong token rejected (401)");
     CHECK(michi_session_heartbeat(
               g_token, "550e8400-e29b-41d4-a716-446655440003",
-              1, NULL) == MICHI_SESSION_HEARTBEAT_SESSION_MISMATCH,
+              1, PEER_IP) == MICHI_SESSION_HEARTBEAT_SESSION_MISMATCH,
           "foreign session_id rejected (404)");
 
     /* First heartbeat: any sequence value is valid (e.g. 0). */
-    CHECK(michi_session_heartbeat(g_token, g_session_id, 0, NULL) ==
+    CHECK(michi_session_heartbeat(g_token, g_session_id, 0, PEER_IP) ==
               MICHI_SESSION_HEARTBEAT_OK,
           "first heartbeat (seq 0) renews");
     /* Strictly increasing: seq 1 renews. */
-    CHECK(michi_session_heartbeat(g_token, g_session_id, 1, NULL) ==
+    CHECK(michi_session_heartbeat(g_token, g_session_id, 1, PEER_IP) ==
               MICHI_SESSION_HEARTBEAT_OK,
           "increasing sequence renews");
     /* Repeated and older: 409, no renew. */
-    CHECK(michi_session_heartbeat(g_token, g_session_id, 1, NULL) ==
+    CHECK(michi_session_heartbeat(g_token, g_session_id, 1, PEER_IP) ==
               MICHI_SESSION_HEARTBEAT_SEQUENCE_REPLAY,
           "repeated sequence rejected (409)");
-    CHECK(michi_session_heartbeat(g_token, g_session_id, 0, NULL) ==
+    CHECK(michi_session_heartbeat(g_token, g_session_id, 0, PEER_IP) ==
               MICHI_SESSION_HEARTBEAT_SEQUENCE_REPLAY,
           "older sequence rejected (409)");
 
@@ -509,7 +525,7 @@ static void test_heartbeat(void)
     CHECK(!michi_session_active(), "session closed by the watchdog");
     CHECK(michi_session_lease_expirations() == before + 1,
           "lease_expirations incremented once");
-    CHECK(michi_session_heartbeat(g_token, g_session_id, 99, NULL) ==
+    CHECK(michi_session_heartbeat(g_token, g_session_id, 99, PEER_IP) ==
               MICHI_SESSION_HEARTBEAT_NO_SESSION,
           "heartbeat after expiry finds no session (404)");
 
@@ -528,7 +544,7 @@ static void test_heartbeat_renewal_extends(void)
 
     /* Renew at t=25 s: the window extends to t=55 s. */
     test_esp_timer_advance(25LL * 1000 * 1000);
-    CHECK(michi_session_heartbeat(g_token, g_session_id, 7, NULL) ==
+    CHECK(michi_session_heartbeat(g_token, g_session_id, 7, PEER_IP) ==
               MICHI_SESSION_HEARTBEAT_OK, "heartbeat at t=25 renews");
     test_esp_timer_advance(20LL * 1000 * 1000); /* t=45: old deadline */
     CHECK(michi_session_active(), "still alive after the OLD deadline");
@@ -557,7 +573,7 @@ static void test_lease_remaining_real(void)
           "20000 ms remaining (monotonic, floor)");
 
     /* Renewal resets the window. */
-    CHECK(michi_session_heartbeat(g_token, info.session_id, 1, NULL) ==
+    CHECK(michi_session_heartbeat(g_token, info.session_id, 1, PEER_IP) ==
               MICHI_SESSION_HEARTBEAT_OK, "heartbeat renews");
     CHECK(michi_session_get_info(&info) == ESP_OK, "get_info ok");
     CHECK(info.lease_remaining_ms == 30000, "30000 ms after renewal");
@@ -584,10 +600,20 @@ static void test_heartbeat_peer_ip_policy(void)
     CHECK(michi_session_heartbeat(g_token, g_session_id, 1, PEER_IP) ==
               MICHI_SESSION_HEARTBEAT_OK, "matching peer IP renews");
 
-    /* Differing IP fails with SOURCE_MISMATCH (409 conflict) */
+    /* NULL peer IP fails fail closed with SOURCE_MISMATCH (403) */
+    CHECK(michi_session_heartbeat(g_token, g_session_id, 2, NULL) ==
+              MICHI_SESSION_HEARTBEAT_SOURCE_MISMATCH,
+          "NULL peer IP rejected fail closed (403)");
+
+    /* Empty peer IP fails fail closed with SOURCE_MISMATCH (403) */
+    CHECK(michi_session_heartbeat(g_token, g_session_id, 2, "") ==
+              MICHI_SESSION_HEARTBEAT_SOURCE_MISMATCH,
+          "empty peer IP rejected fail closed (403)");
+
+    /* Differing IP fails with SOURCE_MISMATCH (403) */
     CHECK(michi_session_heartbeat(g_token, g_session_id, 2, "192.168.4.99") ==
               MICHI_SESSION_HEARTBEAT_SOURCE_MISMATCH,
-          "differing peer IP rejected with 409 conflict");
+          "differing peer IP rejected with 403");
 
     /* Heartbeat with differing IP did NOT consume sequence or renew lease:
      * Legitimate peer can still send sequence 2 */

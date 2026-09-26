@@ -12,6 +12,7 @@
 void test_lcd_reset(void);
 void test_lcd_set_async_delay_ms(int ms);
 void test_lcd_set_drop_completion(bool drop);
+void test_lcd_trigger_late_completion(void);
 bool test_lcd_is_buffer_in_flight(void);
 int test_lcd_get_draw_count(void);
 bool test_lcd_has_violation(void);
@@ -96,9 +97,14 @@ static void test_dma_timeout_recovery(void)
     err = michi_board_display_render(tracking_render_fn);
     assert(err == ESP_ERR_TIMEOUT);
     assert(s_render_callbacks_invoked == 1);
-    assert(test_lcd_get_draw_count() == 1);
+    /* First shutdown preserves resources and returns ESP_ERR_TIMEOUT */
+    err = michi_board_shutdown();
+    assert(err == ESP_ERR_TIMEOUT);
 
-    michi_board_shutdown();
+    /* Trigger late completion and tear down cleanly */
+    test_lcd_trigger_late_completion();
+    err = michi_board_shutdown();
+    assert(err == ESP_OK);
 }
 
 static void test_dma_clear_and_boot_screen(void)
@@ -165,13 +171,46 @@ static void test_dma_02_late_completion_no_premature_reuse(void)
     michi_board_shutdown();
 }
 
-static void test_dma_03_shutdown_after_timeout_no_uaf(void)
+static void test_dma_shut_01_clean_shutdown(void)
 {
-    printf("DMA-03: shutdown after timeout while DMA active causes no UAF\n");
+    printf("DMA-SHUT-01: clean shutdown when idle releases resources without error\n");
+    test_lcd_reset();
+    esp_err_t err = michi_board_init();
+    assert(err == ESP_OK);
+
+    err = michi_board_shutdown();
+    assert(err == ESP_OK);
+    assert(!test_lcd_has_violation());
+}
+
+static void test_dma_shut_02_in_flight_completion(void)
+{
+    printf("DMA-SHUT-02: in-flight DMA completing within timeout allows clean teardown\n");
+    test_lcd_reset();
+    /* Set 600ms async delay: flush_band times out at 500ms leaving DMA in flight */
+    test_lcd_set_async_delay_ms(600);
+    s_render_callbacks_invoked = 0;
+
+    esp_err_t err = michi_board_init();
+    assert(err == ESP_OK);
+
+    err = michi_board_display_render(tracking_render_fn);
+    assert(err == ESP_ERR_TIMEOUT);
+    assert(michi_board_display_is_quarantined());
+
+    /* Shutdown waits up to 1000ms. Since DMA completes at 600ms (~100ms from now),
+     * shutdown joins cleanly without timeout or violation. */
+    err = michi_board_shutdown();
+    assert(err == ESP_OK);
+    assert(!test_lcd_has_violation());
+}
+
+static void test_dma_shut_03_timeout_preserves_resources(void)
+{
+    printf("DMA-SHUT-03: stalled DMA times out and preserves resources without UAF\n");
     test_lcd_reset();
     test_lcd_set_drop_completion(true);
     s_render_callbacks_invoked = 0;
-    s_premature_reuse_detected = false;
 
     esp_err_t err = michi_board_init();
     assert(err == ESP_OK);
@@ -180,10 +219,47 @@ static void test_dma_03_shutdown_after_timeout_no_uaf(void)
     assert(err == ESP_ERR_TIMEOUT);
     assert(test_lcd_is_buffer_in_flight());
 
-    /* Shutdown while buffer is in flight: buffer must be quarantined rather than freed to prevent UAF */
+    /* Shutdown while buffer is in flight with dropped completion:
+     * wait times out, returns ESP_ERR_TIMEOUT, preserves panel_io/sem/fb to prevent UAF. */
+    err = michi_board_shutdown();
+    assert(err == ESP_ERR_TIMEOUT);
+    assert(!test_lcd_has_violation());
+    assert(michi_board_display_is_quarantined());
+
+    /* Clean up for subsequent tests */
+    test_lcd_trigger_late_completion();
     err = michi_board_shutdown();
     assert(err == ESP_OK);
     assert(!test_lcd_has_violation());
+}
+
+static void test_dma_shut_04_late_completion_retry(void)
+{
+    printf("DMA-SHUT-04: late completion after shutdown timeout allows clean subsequent retry\n");
+    test_lcd_reset();
+    test_lcd_set_drop_completion(true);
+    s_render_callbacks_invoked = 0;
+
+    esp_err_t err = michi_board_init();
+    assert(err == ESP_OK);
+
+    err = michi_board_display_render(tracking_render_fn);
+    assert(err == ESP_ERR_TIMEOUT);
+    assert(test_lcd_is_buffer_in_flight());
+
+    /* First shutdown times out */
+    err = michi_board_shutdown();
+    assert(err == ESP_ERR_TIMEOUT);
+    assert(!test_lcd_has_violation());
+
+    /* Now late completion arrives */
+    test_lcd_trigger_late_completion();
+
+    /* Second shutdown completes cleanly */
+    err = michi_board_shutdown();
+    assert(err == ESP_OK);
+    assert(!test_lcd_has_violation());
+    assert(!michi_board_display_is_quarantined());
 }
 
 static void test_dma_04_subsequent_draw_rejected_until_recovery(void)
@@ -217,7 +293,9 @@ static void test_dma_04_subsequent_draw_rejected_until_recovery(void)
     assert(err == ESP_ERR_TIMEOUT);
     assert(michi_board_display_is_quarantined());
 
-    michi_board_shutdown();
+    test_lcd_trigger_late_completion();
+    err = michi_board_shutdown();
+    assert(err == ESP_OK);
 }
 
 int main(void)
@@ -228,8 +306,11 @@ int main(void)
     test_dma_timeout_recovery();
     test_dma_clear_and_boot_screen();
     test_dma_02_late_completion_no_premature_reuse();
-    test_dma_03_shutdown_after_timeout_no_uaf();
+    test_dma_shut_01_clean_shutdown();
+    test_dma_shut_02_in_flight_completion();
+    test_dma_shut_03_timeout_preserves_resources();
+    test_dma_shut_04_late_completion_retry();
     test_dma_04_subsequent_draw_rejected_until_recovery();
-    printf("test_michi_display_dma: all DMA-01..04 checks PASSED\n");
+    printf("test_michi_display_dma: all DMA-01..04 & DMA-SHUT-01..04 checks PASSED\n");
     return 0;
 }

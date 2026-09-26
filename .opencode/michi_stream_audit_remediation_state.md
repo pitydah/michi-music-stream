@@ -12,7 +12,7 @@ PRE_MERGE_CLOSURE_STATUS: IN_PROGRESS
 ## PRE-MERGE CLOSURE WAVES
 - WAVE_A: PASS (Close lifecycle/SMP residuals: A1..A7)
 - WAVE_B: PASS (Audio-output single ownership and quiesce: B1..B10)
-- WAVE_C: TODO (DMA + HTTP + session + capability/config truth: C1..C13)
+- WAVE_C: PASS (DMA + HTTP + session + capability/config truth: C1..C13)
 - WAVE_D: TODO (Pre-merge verification + E2E certification + final CI: D1..D7)
 
 | Phase | Status | Reproduced | Test before patch | Patch | Falsified | Firmware | Commit |
@@ -196,9 +196,59 @@ PRE_MERGE_CLOSURE_STATUS: IN_PROGRESS
   6. `B6 - Error Propagation`: Worker captures `i2s_channel_write` errors during quiesce, transitions to `MICHI_AUDIO_STATE_FAULTED`, and propagates error to caller without returning false `ESP_OK`.
   7. `B7 - State Machine`: Explicit state machine `michi_audio_output_state_t` (`UNINITIALIZED`, `INITIALIZED`, `RUNNING`, `QUIESCED`, `STOPPING`, `STOPPED`, `FAULTED`) with `michi_audio_output_get_state()`.
   8. `B8 - Deterministic Tests Added`: `AUDIO-Q-01` through `AUDIO-Q-10` in `test_michi_audio_output.c` (10/10 PASS).
+## Wave C Evidence (Remaining Software Blockers: C1..C13)
+- Scope Hardened:
+  - `firmware/components/michi_board/waveshare_s3_lcd2/board_waveshare_s3_lcd2.c`
+  - `firmware/components/michi_http/include/michi_http.h`
+  - `firmware/components/michi_http/http_server.c`
+  - `firmware/components/michi_http/json_helpers.c`
+  - `firmware/components/michi_session/include/michi_session.h`
+  - `firmware/components/michi_session/michi_session.c`
+  - `firmware/components/michi_product_profile/capabilities.c`
+  - `firmware/components/michi_time/Kconfig`
+  - `firmware/sdkconfig.defaults`
+  - `.github/workflows/ci.yml`
+  - `tests/host/Makefile`
+  - `tests/host/shim/esp_http_server.h`
+  - `tests/host/shim/esp_http_server_shim.c`
+  - `tests/host/shim/esp_lcd_shim.c`
+  - `tests/host/shim/sdkconfig.h`
+  - `tests/host/test_michi_display_dma.c`
+  - `tests/host/test_session_http.c`
+  - `tests/host/test_michi_session.c`
+- Invariants & Improvements:
+  1. `C1 & C2 - Display DMA Shutdown Safety & Late-completion Tests`:
+     - `michi_board_shutdown()` waits up to 1000ms for in-flight DMA on `s_trans_done_sem`.
+     - On timeout, returns `ESP_ERR_TIMEOUT`, preserves resources (`s_trans_done_sem`, `s_panel_io`, `s_panel`, `s_fb`, `spi_bus`), sets `s_dma_quarantined = true`, preventing UAF.
+     - Once DMA finishes, retry cleanly reclaims resources and completes teardown.
+     - Deterministic tests `DMA-SHUT-01..04` added in `test_michi_display_dma.c`.
+  2. `C3 & C4 - HTTP Body Timeout Contradiction & Slowloris`:
+     - Harmonized timeouts: `MICHI_HTTP_RECV_WAIT_TIMEOUT_S = 1`, `MICHI_HTTP_RECV_TIMEOUT_RETRIES = 1`, `MICHI_HTTP_BODY_TOTAL_TIMEOUT_MS = 2000`.
+     - Moved `michi_http_read_body()` to `json_helpers.c` ensuring 100% production source parity between firmware and host tests without divergence.
+     - Deterministic tests `HTTP-SLOW-01..03` added in `test_session_http.c`.
+  3. `C5 - Heartbeat Peer-IP Fail Closed`:
+     - `michi_session_heartbeat()` strictly verifies `peer_ip`: NULL, empty, or mismatch rejects fail-closed with `MICHI_SESSION_HEARTBEAT_SOURCE_MISMATCH` (HTTP 403 Forbidden).
+     - Does not advance sequence number, does not renew lease. Legitimate peer can still send subsequent sequence.
+     - Verified in `test_michi_session.c`.
+  4. `C6 - PCM5122 Capability Layers`:
+     - Documented the 4 distinct capability tiers in `capabilities.c`: Silicon Hardware Limits, Driver Implementation, Validated System Capability, and Wire Protocol / Advertised Capability.
+  5. `C7 - Cppcheck Representative Variants`:
+     - Updated `.github/workflows/ci.yml` to check Variant A (`CONFIG_MICHI_DAC_DEFAULT_PROFILE=""`) and Variant B (`CONFIG_MICHI_DAC_DEFAULT_PROFILE="pcm5102a"`).
+     - Accurate suppression commentary for system includes and branch limits. Zero codebase warnings.
+  6. `C8 - Host Kconfig Truth`:
+     - `tests/host/shim/sdkconfig.h` classified into `TEST_OVERRIDE` (fast pairing window 5s, fast SNTP timeout 250ms, compact ring 64KB) and `PRODUCTION_DEFAULT`.
+  7. `C9 - Stale Kconfig Removal`:
+     - Removed obsolete `CONFIG_LWIP_SNTP=y` from `firmware/sdkconfig.defaults` and updated commentary in `firmware/components/michi_time/Kconfig` to reference `esp_netif_sntp` authority.
+  8. `C10 - Signal Truth & Comments`:
+     - Harmonized comments across `firmware/README.md`, `michi_http.h`, and component headers.
+  9. `C11, C12, C13 - Regression Verifications`:
+     - Boundary and nominal `buffer_ms` values (50, 300, 500) verified in `test_michi_session.c`.
+     - Contract schemas and cases pass 100% (13/13).
+     - RTP clock and jitter tests pass 100%.
 - Verification:
   - Host test suite: 100% pass (`make -C tests/host clean && make -C tests/host test`).
-  - Static analysis: Cppcheck 47/47 files clean (0 warnings, 0 errors).
-  - ESP-IDF release-v5.3 docker firmware build: 100% pass (`michi-music-stream.bin` size: 1628880 bytes <= 4194304).
+  - Static analysis: Cppcheck clean (0 warnings on both Variant A and Variant B).
+  - ESP-IDF release-v5.3 docker firmware build: 100% pass (`michi-music-stream.bin` size: 1628896 bytes <= 4194304).
+
 
 

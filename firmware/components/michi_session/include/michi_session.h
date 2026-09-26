@@ -118,7 +118,7 @@ typedef enum {
     MICHI_SESSION_HEARTBEAT_TOKEN_MISMATCH, /*!< Wrong/malformed session token */
     MICHI_SESSION_HEARTBEAT_SESSION_MISMATCH, /*!< session_id != active session */
     MICHI_SESSION_HEARTBEAT_SEQUENCE_REPLAY,  /*!< sequence repeated/older: no renew */
-    MICHI_SESSION_HEARTBEAT_SOURCE_MISMATCH,  /*!< peer IP != session source IP: 409 conflict */
+    MICHI_SESSION_HEARTBEAT_SOURCE_MISMATCH,  /*!< peer IP != session source IP: 403 forbidden */
 } michi_session_heartbeat_result_t;
 
 /**

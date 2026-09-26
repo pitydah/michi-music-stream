@@ -19,9 +19,8 @@ CONFIG_BT_NIMBLE_ENABLED=y
 # 6-packet mailbox (drops there are invisible to the engine metrics).
 CONFIG_LWIP_UDP_RECVMBOX_SIZE=64
 # P0-02: SNTP wall clock for signed discovery. michi_time uses the IDF
-# 5.3 esp_netif_sntp API (esp_netif_sntp_init/start/sync_wait), which
-# drives the lwIP SNTP client - the module must be enabled.
-CONFIG_LWIP_SNTP=y
+# 5.3 esp_netif_sntp API (esp_netif_sntp_init/start/sync_wait) as authority;
+# no explicit CONFIG_LWIP_SNTP symbol is required under IDF 5.3.
 
 # MS-11 on-device: the boot path (identity+wifi+discovery+time init chained
 # through log_vprintf 504B frames) overflows the IDF default 3584B main

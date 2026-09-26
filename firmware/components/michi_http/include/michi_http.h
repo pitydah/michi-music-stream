@@ -68,14 +68,16 @@ extern "C" {
  */
 
 #define MICHI_HTTP_PORT 80
-#define MICHI_HTTP_RECV_WAIT_TIMEOUT_S 5
+#define MICHI_HTTP_RECV_WAIT_TIMEOUT_S 1
 #define MICHI_HTTP_SEND_WAIT_TIMEOUT_S 5
+#define MICHI_HTTP_RECV_TIMEOUT_RETRIES 1  /* single timeout retry */
+#define MICHI_HTTP_BODY_TOTAL_TIMEOUT_MS 2000 /* anti-slowloris: total body deadline */
 
 /**
  * @brief Configure httpd settings with Michi defaults.
  *
- * Sets port 80, LRU purge, 16 max URI handlers, 8192 stack size, and
- * 5s recv/send socket timeouts to bound stalled client blocking.
+ * Sets port 80, LRU purge, 16 max URI handlers, 8192 stack size, 1s recv
+ * and 5s send socket timeouts to bound stalled client blocking and slowloris.
  *
  * @param cfg httpd_config_t structure to populate.
  */

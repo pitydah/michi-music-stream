@@ -13,6 +13,29 @@
  *  - ota: the A/B partitions exist, but the OTA service lands in phase 13
  *    (501).
  *
+ * Four Distinct Capability Tiers (Signal Truth Architecture):
+ * ------------------------------------------------------------
+ * 1. Silicon Hardware Limits:
+ *    Physical limits of the audio silicon (e.g. PCM5122 supports up to 384 kHz,
+ *    16/24/32-bit slot audio data, 112 dB SNR, and hardware volume attenuation
+ *    from -103.5 dB to +24 dB; PCM5102A supports up to 384 kHz / 32-bit but has
+ *    no I2C volume control).
+ * 2. Driver Implementation:
+ *    ESP-IDF driver configuration and register control (e.g. I2S standard mode
+ *    clocked for 48 kHz / 16-bit payload in 16-bit or 32-bit frame slots, and
+ *    I2C register initialization/attenuation commands for supported DAC models).
+ * 3. Validated System Capability:
+ *    The end-to-end signal path verified and certified under test across RTOS
+ *    tasks, jitter buffer, and audio engine: 48 kHz, 16-bit stereo PCM, 10 ms
+ *    RTP packetization (480 frames / 960 samples / 1920 bytes per packet), and
+ *    buffer depth of 50..500 ms.
+ * 4. Wire Protocol / Advertised Capability:
+ *    The external contract surface announced over mDNS discovery and HTTP
+ *    GET /api/v1/receiver-lite/server_info. The wire protocol advertises ONLY what
+ *    is certified end-to-end (48 kHz / 16-bit stereo PCM, canonical features
+ *    {session, heartbeat, volume}). Higher silicon features (e.g. 96/192/384 kHz
+ *    or 24-bit PCM) are explicitly gated and not advertised until verified.
+ *
  * The announce carries ONLY the canonical group {heartbeat, session,
  * volume}; the extended flags (now_playing/diagnostics/ota) belong to
  * /server/info, not to the announce.
