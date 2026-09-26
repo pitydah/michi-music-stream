@@ -12,6 +12,14 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include <time.h>
+
+static int64_t get_now_us(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000LL + (ts.tv_nsec / 1000);
+}
 
 static int failures = 0;
 
@@ -519,44 +527,85 @@ static void test_audio_state_08_illegal_write_and_flush(void)
  * AUDIO-CMD-01..06: Command protocol, generation ACK, timeout, faults
  * ================================================================== */
 
-static void test_audio_cmd_01_generation_safe_ack(void)
+/* AUDIO-CMD-01: Late ACK from command A cannot satisfy command B or overwrite state */
+static void test_audio_cmd_01_late_ack_cannot_satisfy_future_cmd(void)
 {
-    printf("=== AUDIO-CMD-01: Generation-safe command ACK ===\n");
+    printf("=== AUDIO-CMD-01: Late ACK cannot satisfy future command or overwrite state ===\n");
     test_i2s_reset();
+    test_task_reset_invalid_notify_count();
     michi_audio_output_config_t cfg = default_cfg();
 
     CHECK(michi_audio_output_init(&cfg) == ESP_OK, "init succeeds");
     CHECK(michi_audio_output_start() == ESP_OK, "start succeeds");
 
-    /* Multiple alternating commands */
-    for (int i = 0; i < 5; i++) {
-        CHECK(michi_audio_output_quiesce() == ESP_OK, "quiesce with generation ACK succeeds");
-        CHECK(michi_audio_output_is_quiesced(), "quiesced verified");
-        CHECK(michi_audio_output_resume() == ESP_OK, "resume with generation ACK succeeds");
-        CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_RUNNING, "running verified");
-    }
+    /* 1. Command A times out */
+    test_michi_audio_output_set_cmd_timeout_ms(20);
+    test_michi_audio_output_set_ignore_cmd(true);
+
+    esp_err_t err = michi_audio_output_quiesce();
+    CHECK(err == ESP_ERR_TIMEOUT, "command A times out returning ESP_ERR_TIMEOUT");
+    CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_FAULTED, "pipeline enters FAULTED on timeout");
+
+    /* 2. Worker unblocked: processes command A late */
+    test_michi_audio_output_set_ignore_cmd(false);
+    test_michi_audio_output_set_cmd_timeout_ms(0);
+    usleep(50000);
+
+    /* 3. Late execution of command A MUST NOT overwrite FAULTED state */
+    CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_FAULTED,
+          "late ACK from command A preserves FAULTED state without overwrite");
+
+    /* 4. Recover via stop and restart */
+    CHECK(michi_audio_output_stop() == ESP_OK, "stop recovers from FAULTED");
+    CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_STOPPED, "state is STOPPED");
+    CHECK(michi_audio_output_start() == ESP_OK, "start succeeds");
+    CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_RUNNING, "state is RUNNING");
+
+    /* 5. Command B dispatches with fresh generation and succeeds */
+    CHECK(michi_audio_output_quiesce() == ESP_OK, "command B with fresh generation succeeds");
+    CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_QUIESCED, "state is QUIESCED");
 
     CHECK(michi_audio_output_stop() == ESP_OK, "stop succeeds");
     CHECK(michi_audio_output_deinit() == ESP_OK, "deinit succeeds");
+    CHECK(test_task_invalid_notify_count() == 0, "no invalid task notifications in CMD-01");
 }
 
-static void test_audio_cmd_02_dead_worker_check(void)
+/* AUDIO-CMD-02: Worker missing or dead -> immediate failure, no full timeout wait */
+static void test_audio_cmd_02_dead_worker_immediate_reject(void)
 {
-    printf("=== AUDIO-CMD-02: Dead worker check rejects immediately ===\n");
+    printf("=== AUDIO-CMD-02: Missing or dead worker rejects immediately ===\n");
     test_i2s_reset();
+    test_task_reset_invalid_notify_count();
     michi_audio_output_config_t cfg = default_cfg();
 
     CHECK(michi_audio_output_init(&cfg) == ESP_OK, "init succeeds");
-    /* No worker running: quiesce must reject immediately */
+    /* No worker running: quiesce must reject immediately without waiting */
+    int64_t t0 = get_now_us();
     CHECK(michi_audio_output_quiesce() == ESP_ERR_INVALID_STATE, "quiesce with NULL worker returns ESP_ERR_INVALID_STATE");
+    int64_t elapsed_us = get_now_us() - t0;
+    CHECK(elapsed_us < 100000, "rejected immediately without timeout wait");
+
+    /* Start and stop: worker is now dead / stopped */
+    CHECK(michi_audio_output_start() == ESP_OK, "start succeeds");
+    CHECK(michi_audio_output_stop() == ESP_OK, "stop succeeds");
+    CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_STOPPED, "state is STOPPED");
+
+    t0 = get_now_us();
+    CHECK(michi_audio_output_quiesce() == ESP_ERR_INVALID_STATE, "quiesce on dead worker rejected immediately");
+    CHECK(michi_audio_output_resume() == ESP_ERR_INVALID_STATE, "resume on dead worker rejected immediately");
+    elapsed_us = get_now_us() - t0;
+    CHECK(elapsed_us < 100000, "dead worker rejected immediately without timeout wait");
 
     CHECK(michi_audio_output_deinit() == ESP_OK, "deinit succeeds");
+    CHECK(test_task_invalid_notify_count() == 0, "no invalid task notifications in CMD-02");
 }
 
+/* AUDIO-CMD-03: Command timeout -> defined fault/recovery state */
 static void test_audio_cmd_03_timeout_fault_semantics(void)
 {
-    printf("=== AUDIO-CMD-03: Timeout transitions to FAULTED ===\n");
+    printf("=== AUDIO-CMD-03: Timeout transitions to FAULTED and clean recovery ===\n");
     test_i2s_reset();
+    test_task_reset_invalid_notify_count();
     michi_audio_output_config_t cfg = default_cfg();
 
     CHECK(michi_audio_output_init(&cfg) == ESP_OK, "init succeeds");
@@ -573,81 +622,172 @@ static void test_audio_cmd_03_timeout_fault_semantics(void)
     test_michi_audio_output_set_ignore_cmd(false);
     test_michi_audio_output_set_cmd_timeout_ms(0);
 
+    /* Illegal transitions while FAULTED */
+    uint8_t pcm[64] = {0};
+    CHECK(michi_audio_output_write(pcm, sizeof(pcm)) == ESP_ERR_INVALID_STATE, "write while FAULTED rejected");
+    CHECK(michi_audio_output_flush() == ESP_ERR_INVALID_STATE, "flush while FAULTED rejected");
+    CHECK(michi_audio_output_quiesce() == ESP_ERR_INVALID_STATE, "quiesce while FAULTED rejected");
+    CHECK(michi_audio_output_resume() == ESP_ERR_INVALID_STATE, "resume while FAULTED rejected");
+    CHECK(michi_audio_output_start() == ESP_ERR_INVALID_STATE, "start while FAULTED rejected");
+    CHECK(michi_audio_output_deinit() == ESP_ERR_INVALID_STATE, "deinit while FAULTED rejected");
+
     /* Recovery: stop must cleanly recover from FAULTED */
     CHECK(michi_audio_output_stop() == ESP_OK, "stop recovers from FAULTED");
     CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_STOPPED, "state is STOPPED");
-    CHECK(michi_audio_output_deinit() == ESP_OK, "deinit succeeds");
-}
-
-static void test_audio_cmd_04_faulted_recovery_and_restart(void)
-{
-    printf("=== AUDIO-CMD-04: FAULTED pipeline recovery and restart ===\n");
-    test_i2s_reset();
-    michi_audio_output_config_t cfg = default_cfg();
-
-    CHECK(michi_audio_output_init(&cfg) == ESP_OK, "init succeeds");
-    CHECK(michi_audio_output_start() == ESP_OK, "start succeeds");
-
-    /* Induce FAULTED via I2S write error during quiesce */
-    test_i2s_set_write_fail(ESP_FAIL);
-    CHECK(michi_audio_output_quiesce() == ESP_FAIL, "quiesce fails");
-    CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_FAULTED, "state is FAULTED");
-
-    /* Stop recovers pipeline */
-    CHECK(michi_audio_output_stop() == ESP_OK, "stop from FAULTED succeeds");
-    CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_STOPPED, "state is STOPPED");
 
     /* Restart runs cleanly */
-    CHECK(michi_audio_output_start() == ESP_OK, "re-start succeeds");
+    CHECK(michi_audio_output_start() == ESP_OK, "re-start after recovery succeeds");
     CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_RUNNING, "state is RUNNING");
 
-    uint8_t pcm[256] = {0xAA};
-    CHECK(michi_audio_output_write(pcm, sizeof(pcm)) == ESP_OK, "write succeeds on recovered pipeline");
+    uint8_t pcm2[256] = {0xAA};
+    CHECK(michi_audio_output_write(pcm2, sizeof(pcm2)) == ESP_OK, "write succeeds on recovered pipeline");
 
     CHECK(michi_audio_output_stop() == ESP_OK, "stop succeeds");
     CHECK(michi_audio_output_deinit() == ESP_OK, "deinit succeeds");
+    CHECK(test_task_invalid_notify_count() == 0, "no invalid task notifications in CMD-03");
 }
 
-static void test_audio_cmd_05_quiesce_while_faulted_rejected(void)
+/* AUDIO-CMD-04: QUIESCE and RESUME concurrent callers serialize deterministically */
+typedef struct {
+    int iterations;
+    int success_count;
+    int error_count;
+} concur_worker_arg_t;
+
+static void *concur_quiescer(void *arg)
 {
-    printf("=== AUDIO-CMD-05: Quiesce while FAULTED rejected ===\n");
+    concur_worker_arg_t *c = (concur_worker_arg_t *)arg;
+    for (int i = 0; i < c->iterations; i++) {
+        esp_err_t err = michi_audio_output_quiesce();
+        if (err == ESP_OK) {
+            c->success_count++;
+        } else {
+            c->error_count++;
+        }
+        usleep(500);
+    }
+    return NULL;
+}
+
+static void *concur_resumer(void *arg)
+{
+    concur_worker_arg_t *c = (concur_worker_arg_t *)arg;
+    for (int i = 0; i < c->iterations; i++) {
+        esp_err_t err = michi_audio_output_resume();
+        if (err == ESP_OK) {
+            c->success_count++;
+        } else {
+            c->error_count++;
+        }
+        usleep(500);
+    }
+    return NULL;
+}
+
+static void test_audio_cmd_04_concurrent_callers_serialized(void)
+{
+    printf("=== AUDIO-CMD-04: Concurrent QUIESCE and RESUME callers serialized ===\n");
     test_i2s_reset();
+    test_task_reset_invalid_notify_count();
     michi_audio_output_config_t cfg = default_cfg();
 
     CHECK(michi_audio_output_init(&cfg) == ESP_OK, "init succeeds");
     CHECK(michi_audio_output_start() == ESP_OK, "start succeeds");
 
-    test_i2s_set_write_fail(ESP_FAIL);
-    (void)michi_audio_output_quiesce();
-    CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_FAULTED, "state is FAULTED");
+    concur_worker_arg_t arg_q = {.iterations = 20, .success_count = 0, .error_count = 0};
+    concur_worker_arg_t arg_r = {.iterations = 20, .success_count = 0, .error_count = 0};
 
-    CHECK(michi_audio_output_quiesce() == ESP_ERR_INVALID_STATE, "quiesce while FAULTED rejected with ESP_ERR_INVALID_STATE");
+    pthread_t th1, th2;
+    pthread_create(&th1, NULL, concur_quiescer, &arg_q);
+    pthread_create(&th2, NULL, concur_resumer, &arg_r);
 
-    CHECK(michi_audio_output_stop() == ESP_OK, "stop recovers");
+    pthread_join(th1, NULL);
+    pthread_join(th2, NULL);
+
+    michi_audio_output_state_t st = michi_audio_output_get_state();
+    CHECK(st == MICHI_AUDIO_STATE_RUNNING || st == MICHI_AUDIO_STATE_QUIESCED,
+          "pipeline state is valid (RUNNING or QUIESCED) after concurrent commands");
+
+    CHECK(michi_audio_output_stop() == ESP_OK, "stop succeeds");
     CHECK(michi_audio_output_deinit() == ESP_OK, "deinit succeeds");
+    CHECK(test_task_invalid_notify_count() == 0, "no invalid task notifications in CMD-04");
 }
 
-static void test_audio_cmd_06_resume_while_faulted_rejected(void)
+/* AUDIO-CMD-05: STOP racing command cannot produce illegal state */
+static void *slow_command_thread(void *arg)
 {
-    printf("=== AUDIO-CMD-06: Resume while FAULTED rejected ===\n");
+    esp_err_t *res = (esp_err_t *)arg;
+    *res = michi_audio_output_quiesce();
+    return NULL;
+}
+
+static void test_audio_cmd_05_stop_racing_command(void)
+{
+    printf("=== AUDIO-CMD-05: STOP racing command cannot produce illegal state ===\n");
     test_i2s_reset();
+    test_task_reset_invalid_notify_count();
     michi_audio_output_config_t cfg = default_cfg();
 
     CHECK(michi_audio_output_init(&cfg) == ESP_OK, "init succeeds");
     CHECK(michi_audio_output_start() == ESP_OK, "start succeeds");
 
-    test_i2s_set_write_fail(ESP_FAIL);
-    (void)michi_audio_output_quiesce();
-    CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_FAULTED, "state is FAULTED");
+    /* Delay command worker or simulate pending command */
+    test_michi_audio_output_set_cmd_timeout_ms(200);
+    test_michi_audio_output_set_ignore_cmd(true);
 
-    CHECK(michi_audio_output_resume() == ESP_ERR_INVALID_STATE, "resume while FAULTED rejected with ESP_ERR_INVALID_STATE");
+    esp_err_t cmd_res = ESP_OK;
+    pthread_t th;
+    pthread_create(&th, NULL, slow_command_thread, &cmd_res);
 
-    CHECK(michi_audio_output_stop() == ESP_OK, "stop recovers");
-    CHECK(michi_audio_output_deinit() == ESP_OK, "deinit succeeds");
+    /* Allow slow command to enter send_cmd_and_wait_ack */
+    usleep(5000);
+
+    /* Main thread calls stop() while command is in-flight */
+    CHECK(michi_audio_output_stop() == ESP_OK, "stop racing in-flight command succeeds");
+    CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_STOPPED, "state is STOPPED");
+
+    pthread_join(th, NULL);
+
+    test_michi_audio_output_set_ignore_cmd(false);
+    test_michi_audio_output_set_cmd_timeout_ms(0);
+
+    /* deinit immediately after must succeed cleanly (no UAF or mutex lockup) */
+    CHECK(michi_audio_output_deinit() == ESP_OK, "deinit immediately after stopped race succeeds");
+    CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_UNINITIALIZED, "state is UNINITIALIZED");
+    CHECK(test_task_invalid_notify_count() == 0, "no invalid task notifications in CMD-05");
+}
+
+/* AUDIO-CMD-06: Zero notifications to dead/invalid task handle across lifecycle */
+static void test_audio_cmd_06_no_stale_taskhandle_notification(void)
+{
+    printf("=== AUDIO-CMD-06: Zero notifications to dead/invalid task handle across lifecycle ===\n");
+    test_i2s_reset();
+    test_task_reset_invalid_notify_count();
+    michi_audio_output_config_t cfg = default_cfg();
+
+    /* Cycle start/stop 10 times with writes and commands */
+    for (int i = 0; i < 10; i++) {
+        CHECK(michi_audio_output_init(&cfg) == ESP_OK, "init succeeds");
+        CHECK(michi_audio_output_start() == ESP_OK, "start succeeds");
+
+        uint8_t pcm[256] = {0};
+        (void)michi_audio_output_write(pcm, sizeof(pcm));
+
+        CHECK(michi_audio_output_quiesce() == ESP_OK, "quiesce succeeds");
+        CHECK(michi_audio_output_resume() == ESP_OK, "resume succeeds");
+
+        CHECK(michi_audio_output_stop() == ESP_OK, "stop succeeds");
+        CHECK(michi_audio_output_deinit() == ESP_OK, "deinit succeeds");
+    }
+
+    CHECK(test_task_invalid_notify_count() == 0,
+          "FINAL INVARIANT: test_task_invalid_notify_count == 0 across all lifecycles");
 }
 
 int main(void)
 {
+    test_task_reset_invalid_notify_count();
+
     printf("=== michi_audio_output quiesce tests (AUDIO-Q-01..10) ===\n");
     test_audio_q_01_stale_pcm_never_submitted();
     test_audio_q_02_write_while_quiesced_rejected();
@@ -678,12 +818,15 @@ int main(void)
     test_audio_state_08_illegal_write_and_flush();
 
     printf("\n=== michi_audio_output command protocol tests (AUDIO-CMD-01..06) ===\n");
-    test_audio_cmd_01_generation_safe_ack();
-    test_audio_cmd_02_dead_worker_check();
+    test_audio_cmd_01_late_ack_cannot_satisfy_future_cmd();
+    test_audio_cmd_02_dead_worker_immediate_reject();
     test_audio_cmd_03_timeout_fault_semantics();
-    test_audio_cmd_04_faulted_recovery_and_restart();
-    test_audio_cmd_05_quiesce_while_faulted_rejected();
-    test_audio_cmd_06_resume_while_faulted_rejected();
+    test_audio_cmd_04_concurrent_callers_serialized();
+    test_audio_cmd_05_stop_racing_command();
+    test_audio_cmd_06_no_stale_taskhandle_notification();
+
+    CHECK(test_task_invalid_notify_count() == 0,
+          "FINAL SUITE INVARIANT: test_task_invalid_notify_count == 0 across full test suite");
 
     if (failures != 0) {
         printf("\nFAILED: %d check(s) failed\n", failures);

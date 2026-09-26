@@ -623,7 +623,7 @@ static esp_err_t pcm512x_shutdown(const michi_dac_driver_t *drv, void *bus_ctx)
 }
 
 /* Caps template: silicon capabilities from the TI PCM5122 datasheet SLAS763C
- * (SNR 112 dB, up to 384 kHz / 24-bit I2S data format / 2ch, single-ended
+ * (SNR 112 dB, up to 384 kHz / 32-bit PCM input capability / 2ch, single-ended
  * ground-centered outputs, PLL-based no-MCLK clocking).
  *
  * NOTE on Capability Layer Separation (Phase R2-L):

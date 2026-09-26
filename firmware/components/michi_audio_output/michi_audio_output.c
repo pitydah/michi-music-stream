@@ -68,12 +68,12 @@ static portMUX_TYPE s_ring_lock = portMUX_INITIALIZER_UNLOCKED;
 static i2s_chan_handle_t s_tx = NULL;
 static TaskHandle_t s_task = NULL;
 static bool s_inited = false;
-static bool s_running = false;
 static bool s_run = false;       /* cooperative: read by the task */
 static bool s_task_done = false; /* set by the task before self-delete */
 
 static michi_audio_output_state_t s_state = MICHI_AUDIO_STATE_UNINITIALIZED;
 static portMUX_TYPE s_state_lock = portMUX_INITIALIZER_UNLOCKED;
+static uint32_t s_notify_inflight = 0;
 
 static michi_audio_cmd_t s_pending_cmd = MICHI_AUDIO_CMD_NONE;
 static esp_err_t s_cmd_result = ESP_OK;
@@ -82,8 +82,10 @@ static uint32_t s_cmd_ack_generation = 0;
 static SemaphoreHandle_t s_cmd_mux = NULL;
 static SemaphoreHandle_t s_cmd_ack_sem = NULL;
 
+#ifdef MICHI_HOST_TEST
 static bool s_test_ignore_cmds = false;
 static uint32_t s_cmd_timeout_override_ms = 0;
+#endif
 
 static size_t s_prefill_bytes = 0;
 static uint8_t s_bit_depth = 16;
@@ -114,6 +116,28 @@ static void err_count_inc(void)
  * `used` is a plain counter that never wraps.
  * ------------------------------------------------------------------ */
 
+static void audio_task_notify(void)
+{
+    TaskHandle_t target = NULL;
+    portENTER_CRITICAL(&s_state_lock);
+    if (s_task != NULL && (s_state == MICHI_AUDIO_STATE_RUNNING ||
+                           s_state == MICHI_AUDIO_STATE_QUIESCED ||
+                           s_state == MICHI_AUDIO_STATE_STOPPING)) {
+        target = s_task;
+        s_notify_inflight++;
+    }
+    portEXIT_CRITICAL(&s_state_lock);
+
+    if (target != NULL) {
+        xTaskNotifyGive(target);
+        portENTER_CRITICAL(&s_state_lock);
+        if (s_notify_inflight > 0) {
+            s_notify_inflight--;
+        }
+        portEXIT_CRITICAL(&s_state_lock);
+    }
+}
+
 static size_t ring_used(const ring_t *r)
 {
     return r->used;
@@ -122,8 +146,6 @@ static size_t ring_used(const ring_t *r)
 static size_t ring_write(ring_t *r, const uint8_t *data, size_t len)
 {
     size_t written = 0;
-    bool wake = false;
-    TaskHandle_t target = NULL;
 
     portENTER_CRITICAL(&s_ring_lock);
     size_t free = r->size - ring_used(r);
@@ -146,16 +168,7 @@ static size_t ring_write(ring_t *r, const uint8_t *data, size_t len)
     portEXIT_CRITICAL(&s_ring_lock);
 
     if (free > 0 && was_empty) {
-        portENTER_CRITICAL(&s_state_lock);
-        if (s_state == MICHI_AUDIO_STATE_RUNNING) {
-            target = s_task;
-            wake = (target != NULL);
-        }
-        portEXIT_CRITICAL(&s_state_lock);
-    }
-
-    if (wake && target != NULL) {
-        xTaskNotifyGive(target);
+        audio_task_notify();
     }
     return written;
 }
@@ -194,11 +207,17 @@ static void handle_pending_command_in_task(void)
     uint32_t gen = 0;
 
     portENTER_CRITICAL(&s_state_lock);
+#ifdef MICHI_HOST_TEST
     if (!s_test_ignore_cmds) {
         cmd = s_pending_cmd;
         gen = s_cmd_generation;
         s_pending_cmd = MICHI_AUDIO_CMD_NONE;
     }
+#else
+    cmd = s_pending_cmd;
+    gen = s_cmd_generation;
+    s_pending_cmd = MICHI_AUDIO_CMD_NONE;
+#endif
     portEXIT_CRITICAL(&s_state_lock);
 
     if (cmd == MICHI_AUDIO_CMD_NONE) {
@@ -223,7 +242,11 @@ static void handle_pending_command_in_task(void)
 
         portENTER_CRITICAL(&s_state_lock);
         s_cmd_ack_generation = gen;
-        if (wr_err != ESP_OK) {
+        if (s_state == MICHI_AUDIO_STATE_FAULTED ||
+            s_state == MICHI_AUDIO_STATE_STOPPING ||
+            s_state == MICHI_AUDIO_STATE_STOPPED) {
+            s_cmd_result = (wr_err != ESP_OK) ? wr_err : ESP_ERR_TIMEOUT;
+        } else if (wr_err != ESP_OK) {
             s_state = MICHI_AUDIO_STATE_FAULTED;
             s_cmd_result = wr_err;
         } else {
@@ -243,8 +266,14 @@ static void handle_pending_command_in_task(void)
     } else if (cmd == MICHI_AUDIO_CMD_RESUME) {
         portENTER_CRITICAL(&s_state_lock);
         s_cmd_ack_generation = gen;
-        s_state = MICHI_AUDIO_STATE_RUNNING;
-        s_cmd_result = ESP_OK;
+        if (s_state == MICHI_AUDIO_STATE_FAULTED ||
+            s_state == MICHI_AUDIO_STATE_STOPPING ||
+            s_state == MICHI_AUDIO_STATE_STOPPED) {
+            s_cmd_result = ESP_ERR_TIMEOUT;
+        } else {
+            s_state = MICHI_AUDIO_STATE_RUNNING;
+            s_cmd_result = ESP_OK;
+        }
         portEXIT_CRITICAL(&s_state_lock);
 
         if (s_cmd_ack_sem != NULL) {
@@ -265,9 +294,15 @@ static void handle_pending_command_in_task(void)
 
 static esp_err_t send_cmd_and_wait_ack(michi_audio_cmd_t cmd, uint32_t timeout_ms)
 {
-    if (s_cmd_timeout_override_ms > 0) {
-        timeout_ms = s_cmd_timeout_override_ms;
+#ifdef MICHI_HOST_TEST
+    uint32_t override_ms = 0;
+    portENTER_CRITICAL(&s_state_lock);
+    override_ms = s_cmd_timeout_override_ms;
+    portEXIT_CRITICAL(&s_state_lock);
+    if (override_ms > 0) {
+        timeout_ms = override_ms;
     }
+#endif
     if (s_cmd_mux == NULL || s_cmd_ack_sem == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -281,7 +316,6 @@ static esp_err_t send_cmd_and_wait_ack(michi_audio_cmd_t cmd, uint32_t timeout_m
     }
 
     uint32_t my_gen = 0;
-    TaskHandle_t target = NULL;
 
     portENTER_CRITICAL(&s_state_lock);
     /* Dead worker check: if task is not alive, cannot process command */
@@ -293,12 +327,9 @@ static esp_err_t send_cmd_and_wait_ack(michi_audio_cmd_t cmd, uint32_t timeout_m
     s_cmd_generation++;
     my_gen = s_cmd_generation;
     s_pending_cmd = cmd;
-    target = s_task;
     portEXIT_CRITICAL(&s_state_lock);
 
-    if (target != NULL) {
-        xTaskNotifyGive(target);
-    }
+    audio_task_notify();
 
     esp_err_t res = ESP_OK;
     if (xSemaphoreTake(s_cmd_ack_sem, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
@@ -456,11 +487,23 @@ static void i2s_task(void *arg)
 
 shutdown:
     /* Cooperative: the task releases its own resources (stack) and
-     * signals, then self-deletes. stop() never vTaskDelete()s from the
-     * outside. */
+     * signals, then self-deletes. Drain any notification in flight
+     * before marking STOPPED and clearing s_task. */
+    while (1) {
+        bool inflight = false;
+        portENTER_CRITICAL(&s_state_lock);
+        inflight = (s_notify_inflight > 0);
+        portEXIT_CRITICAL(&s_state_lock);
+        if (!inflight) {
+            break;
+        }
+        vTaskDelay(1);
+    }
+
     portENTER_CRITICAL(&s_state_lock);
     s_task_done = true;
     s_state = MICHI_AUDIO_STATE_STOPPED;
+    s_task = NULL;
     portEXIT_CRITICAL(&s_state_lock);
 
     vTaskDelete(NULL);
@@ -611,7 +654,6 @@ esp_err_t michi_audio_output_init(const michi_audio_output_config_t *cfg)
     portENTER_CRITICAL(&s_state_lock);
     s_tx = tx;
     s_inited = true;
-    s_running = false;
     s_run = false;
     s_task = NULL;
     s_task_done = false;
@@ -665,7 +707,6 @@ esp_err_t michi_audio_output_start(void)
     /* 3) Flags BEFORE creating the task */
     portENTER_CRITICAL(&s_state_lock);
     s_run = true;
-    s_running = true;
     s_state = MICHI_AUDIO_STATE_RUNNING;
     s_task_done = false;
     portEXIT_CRITICAL(&s_state_lock);
@@ -679,7 +720,6 @@ esp_err_t michi_audio_output_start(void)
         i2s_channel_disable(s_tx);
         portENTER_CRITICAL(&s_state_lock);
         s_run = false;
-        s_running = false;
         s_state = MICHI_AUDIO_STATE_INITIALIZED;
         s_task = NULL;
         portEXIT_CRITICAL(&s_state_lock);
@@ -809,14 +849,22 @@ esp_err_t michi_audio_output_stop(void)
     /* 1) Stop the flag and set STOPPING state. */
     s_state = MICHI_AUDIO_STATE_STOPPING;
     s_run = false;
-    TaskHandle_t target = s_task;
     portEXIT_CRITICAL(&s_state_lock);
 
-    /* 2) Wake the task (ring-empty sleep AND prefill wait both use the
-     *    notification). */
-    if (target != NULL) {
-        xTaskNotifyGive(target);
+    /* Wake any command waiter stuck on s_cmd_ack_sem */
+    if (s_cmd_ack_sem != NULL) {
+        xSemaphoreGive(s_cmd_ack_sem);
     }
+
+    /* Serialize with any in-flight quiesce/resume command */
+    if (s_cmd_mux != NULL) {
+        xSemaphoreTake(s_cmd_mux, portMAX_DELAY);
+    }
+
+    /* 2) Wake the task (ring-empty sleep AND prefill wait both use the
+     *    notification lease). */
+    audio_task_notify();
+
     /* 3) Unblock any in-flight i2s_channel_write immediately. */
     esp_err_t err = i2s_channel_disable(s_tx);
     if (err != ESP_OK) {
@@ -839,6 +887,9 @@ esp_err_t michi_audio_output_stop(void)
         waited_ms += 10;
     }
     if (!done) {
+        if (s_cmd_mux != NULL) {
+            xSemaphoreGive(s_cmd_mux);
+        }
         /* The task may still be alive: the channel is NOT deleted and
          * s_task/s_task_done are NOT reset - the subsystem requires
          * deinit after timeout. */
@@ -851,9 +902,14 @@ esp_err_t michi_audio_output_stop(void)
     portENTER_CRITICAL(&s_state_lock);
     s_task = NULL;
     s_task_done = false;
-    s_running = false;
     s_state = MICHI_AUDIO_STATE_STOPPED;
     portEXIT_CRITICAL(&s_state_lock);
+
+    if (s_cmd_mux != NULL) {
+        while (xSemaphoreTake(s_cmd_ack_sem, 0) == pdTRUE) {
+        }
+        xSemaphoreGive(s_cmd_mux);
+    }
 
     ESP_LOGI(TAG, "stop: pipeline stopped");
     return ESP_OK;
@@ -879,6 +935,11 @@ esp_err_t michi_audio_output_deinit(void)
     }
     portEXIT_CRITICAL(&s_state_lock);
 
+    /* Serialize with command channel */
+    if (s_cmd_mux != NULL) {
+        xSemaphoreTake(s_cmd_mux, portMAX_DELAY);
+    }
+
     /* The channel is deleted here and only here (also after
      * init()-without-start(): it was created but never enabled). */
     if (s_tx != NULL) {
@@ -888,9 +949,11 @@ esp_err_t michi_audio_output_deinit(void)
         }
         s_tx = NULL;
     }
+
+    void *buf_to_free = NULL;
     portENTER_CRITICAL(&s_ring_lock);
     if (s_ring.buf != NULL) {
-        heap_caps_free(s_ring.buf);
+        buf_to_free = s_ring.buf;
         s_ring.buf = NULL;
         s_ring.size = 0;
         s_ring.head = 0;
@@ -899,18 +962,25 @@ esp_err_t michi_audio_output_deinit(void)
     }
     portEXIT_CRITICAL(&s_ring_lock);
 
-    if (s_cmd_mux != NULL) {
-        vSemaphoreDelete(s_cmd_mux);
-        s_cmd_mux = NULL;
+    if (buf_to_free != NULL) {
+        heap_caps_free(buf_to_free);
     }
-    if (s_cmd_ack_sem != NULL) {
-        vSemaphoreDelete(s_cmd_ack_sem);
-        s_cmd_ack_sem = NULL;
+
+    SemaphoreHandle_t mux_to_delete = s_cmd_mux;
+    SemaphoreHandle_t sem_to_delete = s_cmd_ack_sem;
+    s_cmd_mux = NULL;
+    s_cmd_ack_sem = NULL;
+
+    if (mux_to_delete != NULL) {
+        xSemaphoreGive(mux_to_delete);
+        vSemaphoreDelete(mux_to_delete);
+    }
+    if (sem_to_delete != NULL) {
+        vSemaphoreDelete(sem_to_delete);
     }
 
     portENTER_CRITICAL(&s_state_lock);
     s_inited = false;
-    s_running = false;
     s_run = false;
     s_state = MICHI_AUDIO_STATE_UNINITIALIZED;
     portEXIT_CRITICAL(&s_state_lock);
@@ -947,6 +1017,7 @@ esp_err_t michi_audio_output_get_error_count(uint32_t *out)
     return ESP_OK;
 }
 
+#ifdef MICHI_HOST_TEST
 void test_michi_audio_output_set_ignore_cmd(bool ignore)
 {
     portENTER_CRITICAL(&s_state_lock);
@@ -960,3 +1031,4 @@ void test_michi_audio_output_set_cmd_timeout_ms(uint32_t ms)
     s_cmd_timeout_override_ms = ms;
     portEXIT_CRITICAL(&s_state_lock);
 }
+#endif

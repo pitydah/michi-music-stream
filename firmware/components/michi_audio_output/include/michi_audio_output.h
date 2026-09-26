@@ -233,9 +233,11 @@ michi_audio_output_state_t michi_audio_output_get_state(void);
  */
 esp_err_t michi_audio_output_get_error_count(uint32_t *out);
 
+#ifdef MICHI_HOST_TEST
 /* Test hooks for host unit tests */
 void test_michi_audio_output_set_ignore_cmd(bool ignore);
 void test_michi_audio_output_set_cmd_timeout_ms(uint32_t ms);
+#endif
 
 #ifdef __cplusplus
 }

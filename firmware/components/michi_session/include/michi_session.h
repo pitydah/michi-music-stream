@@ -332,7 +332,7 @@ esp_err_t michi_session_patch(const char *session_token, bool volume_set,
  * @param session_token The 43-char base64url session token.
  * @param session_id    UUID v4 of the active session (from the body).
  * @param sequence      Unsigned heartbeat sequence (strictly increasing).
- * @param peer_ip       TCP peer IP of the request (optional, NULL skips check).
+ * @param peer_ip       TCP peer IP of the request (required; fail-closed: NULL or mismatch returns SOURCE_MISMATCH).
  * @return MICHI_SESSION_HEARTBEAT_OK on renewal; NO_SESSION (404);
  *         TOKEN_MISMATCH (401); SESSION_MISMATCH (404);
  *         SEQUENCE_REPLAY (409, no renewal);
