@@ -18,30 +18,30 @@ PRE_MERGE_CLOSURE_STATUS: IN_PROGRESS
 # FINAL SOFTWARE CLOSURE
 
 START_HEAD: c08678df295526be5744e0fc3a4a280c9ae1b826
-CURRENT_IMPLEMENTATION_HEAD: e5430521d25576dd3e8f3b558209c4c1429d2625
-FINAL_CERTIFICATION_HEAD: c1cb3827d05cae1a90c1f4b82d334e32049eef39
+CURRENT_IMPLEMENTATION_HEAD: 30105140f1dc67d673c2c9ebbc502873666c0937
+FINAL_CERTIFICATION_HEAD: 30105140f1dc67d673c2c9ebbc502873666c0937
 BRANCH: fix/ui-device-gaps
 PRE_MERGE_CLOSURE_STATUS: PASS
 
 | Phase | Status | Reproduced | Test | Firmware | Static | Commit |
 |---|---|---|---|---|---|---|
-| F0 | PASS | YES | N/A | PASS | PASS | e543052 |
+| F0 | PASS | YES | N/A | PASS | PASS | 3010514 |
 | F1 | PASS | YES | YES | PASS | PASS | 41541c8 |
 | F2 | PASS | YES | YES | PASS | PASS | 41541c8 |
-| F3 | PASS | YES | YES | PASS | PASS | e543052 |
-| F4 | PASS | YES | YES | PASS | PASS | e543052 |
+| F3 | PASS | YES | YES | PASS | PASS | 3010514 |
+| F4 | PASS | YES | YES | PASS | PASS | 3010514 |
 | F5 | PASS | YES | YES | PASS | PASS | 9514b3d |
 | F6 | PASS | YES | YES | PASS | PASS | 9514b3d |
 | F7 | PASS | YES | YES | PASS | PASS | 322aa1e |
 | F8 | PASS | YES | YES | PASS | PASS | 8daf663 |
 | F9 | PASS | YES | YES | PASS | PASS | ce5dd68 |
 | F10 | PASS | YES | YES | PASS | PASS | 8daf663 |
-| F11 | PASS | YES | YES | PASS | PASS | e543052 |
-| F12 | PASS | YES | YES | PASS | PASS | e543052 |
-| F13 | PASS | YES | YES | PASS | PASS | e543052 |
-| F14 | PASS | YES | YES | PASS | PASS | e543052 |
-| F15 | PASS | YES | YES | PASS | PASS | c1cb382 |
-| F16 | PASS | YES | YES | PASS | PASS | c1cb382 |
+| F11 | PASS | YES | YES | PASS | PASS | 3010514 |
+| F12 | PASS | YES | YES | PASS | PASS | 3010514 |
+| F13 | PASS | YES | YES | PASS | PASS | 3010514 |
+| F14 | PASS | YES | YES | PASS | PASS | 3010514 |
+| F15 | PASS | YES | YES | PASS | PASS | tracked |
+| F16 | PASS | YES | YES | PASS | PASS | tracked |
 | F17 | PASS | YES | YES | PASS | PASS | tracked |
 | F18 | PASS | YES | YES | PASS | PASS | tracked |
 
@@ -143,12 +143,12 @@ PRE_MERGE_CLOSURE_STATUS: PASS
   - Comprehensive adversarial verification across all 18 review facets (lifecycle, SMP, memory, state machines, timing, protocols, error propagation, signals).
   - Verdict: ZERO remaining software defects or blockers.
 - **F14 (Implementation Freeze):**
-  - All firmware components and production headers frozen at `e5430521d25576dd3e8f3b558209c4c1429d2625`. No further behavioral or code modifications permitted prior to merge.
+  - All firmware components and production headers frozen at `30105140f1dc67d673c2c9ebbc502873666c0937`. No further behavioral or code modifications permitted prior to merge.
 
 ### Phase F15-F16 Evidence: Final E2E Re-Anchor & CI Green Certification
 
 - **F15 (E2E Re-Anchor to Frozen Closure Candidate):**
-  - `STREAM_TESTED_COMMIT` updated to `e5430521d25576dd3e8f3b558209c4c1429d2625`.
+  - `STREAM_TESTED_COMMIT` updated to `30105140f1dc67d673c2c9ebbc502873666c0937`.
   - Zero drift across `firmware/`, `simulator/`, and `contracts/` verified.
   - Deterministic certification artifact `tests/e2e/results/michi-link-alpha1.json` synchronized.
   - All 13 E2E test cases pass cleanly (`MOCK_PASS: true`).
