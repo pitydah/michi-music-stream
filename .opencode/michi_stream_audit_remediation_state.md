@@ -11,7 +11,7 @@ PRE_MERGE_CLOSURE_STATUS: IN_PROGRESS
 
 ## PRE-MERGE CLOSURE WAVES
 - WAVE_A: PASS (Close lifecycle/SMP residuals: A1..A7)
-- WAVE_B: TODO (Audio-output single ownership and quiesce: B1..B10)
+- WAVE_B: PASS (Audio-output single ownership and quiesce: B1..B10)
 - WAVE_C: TODO (DMA + HTTP + session + capability/config truth: C1..C13)
 - WAVE_D: TODO (Pre-merge verification + E2E certification + final CI: D1..D7)
 
@@ -179,5 +179,26 @@ PRE_MERGE_CLOSURE_STATUS: IN_PROGRESS
   - Host test suite: 100% pass (`make -C tests/host clean && make -C tests/host test`).
   - Static analysis: Cppcheck clean (0 warnings, 0 errors).
   - ESP-IDF release-v5.3 docker firmware build: 100% pass (`michi-music-stream.bin` size: 1627792 bytes <= 4194304).
+
+## Wave B Evidence (Audio Output Single-Owner & Quiesce: B1..B10)
+- Scope Hardened:
+  - `firmware/components/michi_audio_output/include/michi_audio_output.h`
+  - `firmware/components/michi_audio_output/michi_audio_output.c`
+  - `tests/host/shim/driver/i2s_std.h`
+  - `tests/host/shim/i2s_shim.c`
+  - `tests/host/test_michi_audio_output.c`
+- Invariants & Improvements:
+  1. `B1 - Single I2S Owner`: ONLY `i2s_task()` owns `s_chunk`, modifies `s_chunk`, calls `michi_volume_apply()`, and calls `i2s_channel_write()`. Removed direct writes, silence pushes, and `memset(s_chunk, 0)` from caller contexts.
+  2. `B2 - Control Command & ACK Protocol`: Implemented command dispatch (`QUIESCE`, `RESUME`, `STOP`) with `s_cmd_mux` serialization and `s_cmd_ack_sem` worker acknowledgement.
+  3. `B3 - Quiesce Semantics`: Worker stops accepting stale PCM, flushes SPSC ring, clears `s_chunk`, pushes digital silence to clear hardware FIFOs, transitions to `MICHI_AUDIO_STATE_QUIESCED`, and signals ACK. New writes rejected with `ESP_ERR_INVALID_STATE`.
+  4. `B4 - Resume Semantics`: Resets state from `QUIESCED` to `RUNNING`, signals ACK, fresh PCM accepted, old PCM never reappears.
+  5. `B5 - I2S Timeout Units`: Verified against ESP-IDF headers (`timeout_ms`). Removed all `pdMS_TO_TICKS()` conversions on `i2s_channel_write` calls; using explicit millisecond constants `MICHI_AUDIO_I2S_WRITE_TIMEOUT_MS = 100` and `MICHI_AUDIO_I2S_SILENCE_TIMEOUT_MS = 50`.
+  6. `B6 - Error Propagation`: Worker captures `i2s_channel_write` errors during quiesce, transitions to `MICHI_AUDIO_STATE_FAULTED`, and propagates error to caller without returning false `ESP_OK`.
+  7. `B7 - State Machine`: Explicit state machine `michi_audio_output_state_t` (`UNINITIALIZED`, `INITIALIZED`, `RUNNING`, `QUIESCED`, `STOPPING`, `STOPPED`, `FAULTED`) with `michi_audio_output_get_state()`.
+  8. `B8 - Deterministic Tests Added`: `AUDIO-Q-01` through `AUDIO-Q-10` in `test_michi_audio_output.c` (10/10 PASS).
+- Verification:
+  - Host test suite: 100% pass (`make -C tests/host clean && make -C tests/host test`).
+  - Static analysis: Cppcheck 47/47 files clean (0 warnings, 0 errors).
+  - ESP-IDF release-v5.3 docker firmware build: 100% pass (`michi-music-stream.bin` size: 1628880 bytes <= 4194304).
 
 

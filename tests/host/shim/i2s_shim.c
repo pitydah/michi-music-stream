@@ -2,18 +2,56 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <pthread.h>
+#include <unistd.h>
+
 static int s_dummy_chan = 1;
 static bool s_enabled = false;
 static size_t s_bytes_written = 0;
 static uint32_t s_write_count = 0;
 static bool s_last_was_silence = false;
+static esp_err_t s_injected_write_err = ESP_OK;
+static uint32_t s_write_delay_ms = 0;
+static pthread_t s_writer_thread = 0;
+static bool s_has_writer_thread = false;
+static bool s_multiple_writers = false;
+static pthread_mutex_t s_i2s_shim_mux = PTHREAD_MUTEX_INITIALIZER;
 
 void test_i2s_reset(void)
 {
+    pthread_mutex_lock(&s_i2s_shim_mux);
     s_enabled = false;
     s_bytes_written = 0;
     s_write_count = 0;
     s_last_was_silence = false;
+    s_injected_write_err = ESP_OK;
+    s_write_delay_ms = 0;
+    s_writer_thread = 0;
+    s_has_writer_thread = false;
+    s_multiple_writers = false;
+    pthread_mutex_unlock(&s_i2s_shim_mux);
+}
+
+void test_i2s_set_write_fail(esp_err_t err)
+{
+    pthread_mutex_lock(&s_i2s_shim_mux);
+    s_injected_write_err = err;
+    pthread_mutex_unlock(&s_i2s_shim_mux);
+}
+
+void test_i2s_set_write_delay_ms(uint32_t ms)
+{
+    pthread_mutex_lock(&s_i2s_shim_mux);
+    s_write_delay_ms = ms;
+    pthread_mutex_unlock(&s_i2s_shim_mux);
+}
+
+bool test_i2s_multiple_writers_detected(void)
+{
+    pthread_mutex_lock(&s_i2s_shim_mux);
+    bool m = s_multiple_writers;
+    pthread_mutex_unlock(&s_i2s_shim_mux);
+    return m;
 }
 
 size_t test_i2s_get_bytes_written(void)
@@ -68,9 +106,35 @@ esp_err_t i2s_channel_write(i2s_chan_handle_t handle, const void *src, size_t si
 {
     (void)handle;
     (void)timeout_ms;
+
+    pthread_mutex_lock(&s_i2s_shim_mux);
     if (!s_enabled) {
+        pthread_mutex_unlock(&s_i2s_shim_mux);
         return ESP_ERR_INVALID_STATE;
     }
+
+    pthread_t self = pthread_self();
+    if (!s_has_writer_thread) {
+        s_writer_thread = self;
+        s_has_writer_thread = true;
+    } else if (!pthread_equal(s_writer_thread, self)) {
+        s_multiple_writers = true;
+    }
+
+    uint32_t delay_ms = s_write_delay_ms;
+    esp_err_t injected_err = s_injected_write_err;
+    if (injected_err != ESP_OK) {
+        s_injected_write_err = ESP_OK; /* One-shot injection */
+        pthread_mutex_unlock(&s_i2s_shim_mux);
+        return injected_err;
+    }
+    pthread_mutex_unlock(&s_i2s_shim_mux);
+
+    if (delay_ms > 0) {
+        usleep(delay_ms * 1000);
+    }
+
+    pthread_mutex_lock(&s_i2s_shim_mux);
     if (bytes_written != NULL) {
         *bytes_written = size;
     }
@@ -86,6 +150,7 @@ esp_err_t i2s_channel_write(i2s_chan_handle_t handle, const void *src, size_t si
             break;
         }
     }
+    pthread_mutex_unlock(&s_i2s_shim_mux);
     return ESP_OK;
 }
 

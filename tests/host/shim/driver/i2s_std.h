@@ -95,6 +95,9 @@ void test_i2s_reset(void);
 size_t test_i2s_get_bytes_written(void);
 uint32_t test_i2s_get_write_count(void);
 bool test_i2s_last_write_was_silence(void);
+void test_i2s_set_write_fail(esp_err_t err);
+void test_i2s_set_write_delay_ms(uint32_t ms);
+bool test_i2s_multiple_writers_detected(void);
 
 #ifdef __cplusplus
 }

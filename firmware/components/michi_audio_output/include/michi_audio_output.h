@@ -79,6 +79,16 @@ extern "C" {
  * hardware volume). The API layer must answer with michi_volume_get().
  */
 
+typedef enum {
+    MICHI_AUDIO_STATE_UNINITIALIZED = 0,
+    MICHI_AUDIO_STATE_INITIALIZED,
+    MICHI_AUDIO_STATE_RUNNING,
+    MICHI_AUDIO_STATE_QUIESCED,
+    MICHI_AUDIO_STATE_STOPPING,
+    MICHI_AUDIO_STATE_STOPPED,
+    MICHI_AUDIO_STATE_FAULTED,
+} michi_audio_output_state_t;
+
 typedef struct {
     uint32_t sample_rate;    /*!< I2S sample rate in Hz (8000..96000) */
     uint8_t  bit_depth;      /*!< 16 or 24 */
@@ -203,6 +213,11 @@ esp_err_t michi_audio_output_deinit(void);
  * @return true while the pipeline is running (started, not stopped).
  */
 bool michi_audio_output_is_running(void);
+
+/**
+ * @brief Get the current audio output state machine state.
+ */
+michi_audio_output_state_t michi_audio_output_get_state(void);
 
 /**
  * @brief Get the I2S error counter (phase 14 diagnostics).
