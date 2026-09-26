@@ -17,57 +17,56 @@ PRE_MERGE_CLOSURE_STATUS: IN_PROGRESS
 
 # FINAL SOFTWARE CLOSURE
 
-START_HEAD: 690f648deb9a56a8b7faef8c18ccd910f5c27ebd
-CURRENT_IMPLEMENTATION_HEAD: 5d42284f95604516d122cc0d38116fd46f6141fe
-FINAL_CERTIFICATION_HEAD: b9d550cf6f8099adbdfa997a587e967e53f59c30
+START_HEAD: c08678df295526be5744e0fc3a4a280c9ae1b826
+CURRENT_IMPLEMENTATION_HEAD: 8daf6632b50c5649e26e574a4a12347b494ef934
+FINAL_CERTIFICATION_HEAD: 5ae4948e91672ce00eef7f0e34c9f132e01362e5
 BRANCH: fix/ui-device-gaps
 PRE_MERGE_CLOSURE_STATUS: PASS
 
 | Phase | Status | Reproduced | Test | Firmware | Static | Commit |
 |---|---|---|---|---|---|---|
-| F0 | PASS | YES | N/A | PASS | PASS | - |
+| F0 | PASS | YES | N/A | PASS | PASS | 8daf663 |
 | F1 | PASS | YES | YES | PASS | PASS | 41541c8 |
 | F2 | PASS | YES | YES | PASS | PASS | 41541c8 |
-| F3 | PASS | YES | YES | PASS | PASS | 41541c8 |
-| F4 | PASS | YES | YES | PASS | PASS | 41541c8 |
+| F3 | PASS | YES | YES | PASS | PASS | 8daf663 |
+| F4 | PASS | YES | YES | PASS | PASS | 8daf663 |
 | F5 | PASS | YES | YES | PASS | PASS | 9514b3d |
 | F6 | PASS | YES | YES | PASS | PASS | 9514b3d |
 | F7 | PASS | YES | YES | PASS | PASS | 322aa1e |
-| F8 | PASS | YES | YES | PASS | PASS | ce5dd68 |
+| F8 | PASS | YES | YES | PASS | PASS | 8daf663 |
 | F9 | PASS | YES | YES | PASS | PASS | ce5dd68 |
-| F10 | PASS | YES | YES | PASS | PASS | ce5dd68 |
-| F11 | PASS | YES | YES | PASS | PASS | 5d42284 |
-| F12 | PASS | YES | YES | PASS | PASS | 5d42284 |
-| F13 | PASS | YES | YES | PASS | PASS | 5d42284 |
-| F14 | PASS | YES | YES | PASS | PASS | 5d42284 |
-| F15 | PASS | YES | YES | PASS | PASS | b9d550c |
-| F16 | PASS | YES | YES | PASS | PASS | b9d550c |
-| F17 | PASS | YES | YES | PASS | PASS | acd24c5 |
-| F18 | PASS | YES | YES | PASS | PASS | acd24c5 |
+| F10 | PASS | YES | YES | PASS | PASS | 8daf663 |
+| F11 | PASS | YES | YES | PASS | PASS | 8daf663 |
+| F12 | PASS | YES | YES | PASS | PASS | 8daf663 |
+| F13 | PASS | YES | YES | PASS | PASS | 8daf663 |
+| F14 | PASS | YES | YES | PASS | PASS | 8daf663 |
+| F15 | PASS | YES | YES | PASS | PASS | 5ae4948 |
+| F16 | PASS | YES | YES | PASS | PASS | 5ae4948 |
+| F17 | PASS | YES | YES | PASS | PASS | in progress |
+| F18 | PASS | YES | YES | PASS | PASS | 5ae4948 |
 
 ### Phase F0: Complete Shared-State Inventory — Audio Output
 
 | Variable | Owner | Writers | Readers | Synchronization | Lifetime |
 |---|---|---|---|---|---|
-| `s_ring.buf` | Lifecycle (`init`/`deinit`) | `init()` (alloc), `deinit()` (free) | `ring_write()`, `ring_read()` | Allocated before task, freed after task dead | Valid while `s_state != UNINITIALIZED` |
+| `s_ring.buf` | Lifecycle (`init`/`deinit`) | `init()` (alloc), `deinit()` (free) | `ring_write()`, `ring_read()` | Allocated before task, freed after task dead; free called outside lock | Valid while `s_state != UNINITIALIZED` |
 | `s_ring.size` | Lifecycle (`init`/`deinit`) | `init()` | `ring_write()`, `ring_read()` | Immutable after `init()` | Valid while initialized |
 | `s_ring.head` | Producer | `ring_write()`, `init()`, `start()`, `flush()`, `i2s_task` (quiesce) | `ring_write()` | `s_ring_lock` (portMUX critical section) | Valid while initialized |
 | `s_ring.tail` | Consumer (`i2s_task`) | `ring_read()`, `i2s_task` (quiesce), `init()`, `start()`, `flush()` | `ring_read()` | `s_ring_lock` (portMUX critical section) | Valid while initialized |
 | `s_ring.used` | Shared counter | `ring_write()`, `ring_read()`, `flush()`, `init()`, `start()`, `quiesce` | `ring_used()` (`ring_write`, `ring_read`, `i2s_task` prefill) | `s_ring_lock` (portMUX critical section) | Valid while initialized |
 | `s_tx` | Lifecycle (`init`/`deinit`) | `init()` (`i2s_new_channel`), `deinit()` (`NULL`) | `start()` (`enable`), `stop()` (`disable`), `deinit()` (`del`), `i2s_task` (`write`) | Driver handle; created at init, destroyed at deinit; access sequenced by lifecycle state | `init()` to `deinit()` |
-| `s_task` | Lifecycle (`start`/`stop`) | `start()` (stores handle), `stop()` (clears `NULL`) | `ring_write()`, `send_cmd_and_wait_ack()`, `stop()`, `deinit()` | `s_state_lock` (portMUX critical section) | Valid from `start()` until worker exit join |
+| `s_task` | Lifecycle (`start`/`stop`) | `start()` (stores handle), `stop()` (clears `NULL`), `i2s_task` (clears `NULL` under lock before self-delete) | `audio_task_notify()`, `send_cmd_and_wait_ack()`, `stop()`, `deinit()` | `s_state_lock` (portMUX critical section) + lease `s_notify_inflight` | Valid from `start()` until worker exit join |
+| `s_notify_inflight` | Task notification lease | `audio_task_notify()` (`++`/`--`) | `i2s_task` exit drain loop | `s_state_lock` (portMUX critical section) | Entire process lifetime |
 | `s_inited` | Lifecycle (`init`/`deinit`) | `init()`, `deinit()` | `init()`, `start()`, `quiesce()`, `resume()`, `stop()`, `deinit()` | `s_state_lock` (portMUX critical section) | Entire process lifetime |
-| `s_running` | Lifecycle / State | `start()`, `stop()` | `write()`, `is_running()`, `flush()` | Consolidated into `s_state` under `s_state_lock` | Entire process lifetime |
 | `s_run` | Lifecycle / State | `start()` (`true`), `stop()` (`false`) | `i2s_task` loop termination condition | `s_state_lock` (portMUX critical section) | `start()` to `stop()` |
 | `s_task_done` | Consumer worker | `i2s_task` (sets `true` before self-delete), `start()`/`stop()` (clears `false`) | `stop()` join wait loop, `deinit()` | `s_state_lock` (portMUX critical section) | Task execution lifetime |
-| `s_consumer_sleeping` | Consumer worker | `i2s_task` | `ring_write()` | Removed bare data race; synchronized / lifecycle-safe wake | Task execution lifetime |
 | `s_state` | Audio output state machine | `init()`, `start()`, `quiesce()`, `resume()`, `stop()`, `deinit()`, `i2s_task` | `start()`, `write()`, `quiesce()`, `resume()`, `is_quiesced()`, `stop()`, `get_state()`, `i2s_task` | `s_state_lock` (portMUX critical section) for all reads & writes | Entire process lifetime |
 | `s_pending_cmd` | Command dispatcher | `send_cmd_and_wait_ack()` | `handle_pending_command_in_task()` | `s_state_lock` (portMUX critical section) + `s_cmd_mux` | `init()` to `deinit()` |
 | `s_cmd_result` | Consumer worker | `handle_pending_command_in_task()` | `send_cmd_and_wait_ack()` | `s_state_lock` (portMUX critical section) | `init()` to `deinit()` |
 | `s_cmd_generation` | Command dispatcher | `send_cmd_and_wait_ack()` | `handle_pending_command_in_task()`, `send_cmd_and_wait_ack()` | `s_state_lock` (portMUX critical section) | `init()` to `deinit()` |
 | `s_cmd_ack_generation` | Consumer worker | `handle_pending_command_in_task()` | `send_cmd_and_wait_ack()` | `s_state_lock` (portMUX critical section) | `init()` to `deinit()` |
-| `s_cmd_mux` | Command dispatcher | `init()` (create), `deinit()` (delete) | `send_cmd_and_wait_ack()` | FreeRTOS Mutex semaphore | `init()` to `deinit()` |
-| `s_cmd_ack_sem` | Command dispatcher | `init()` (create), `deinit()` (delete) | `handle_pending_command_in_task()` (`give`), `send_cmd_and_wait_ack()` (`take`) | FreeRTOS Binary semaphore | `init()` to `deinit()` |
+| `s_cmd_mux` | Command dispatcher | `init()` (create), `deinit()` (delete) | `send_cmd_and_wait_ack()`, `stop()`, `deinit()` | FreeRTOS Mutex semaphore; serializes all commands, stop, and deinit | `init()` to `deinit()` |
+| `s_cmd_ack_sem` | Command dispatcher | `init()` (create), `deinit()` (delete) | `handle_pending_command_in_task()` (`give`), `send_cmd_and_wait_ack()` (`take`), `stop()` (`give` wake) | FreeRTOS Binary semaphore | `init()` to `deinit()` |
 | `s_prefill_bytes` | Config | `init()` | `i2s_task` | Immutable after `init()` | `init()` to `deinit()` |
 | `s_bit_depth` | Config | `init()` | `i2s_task` | Immutable after `init()` | `init()` to `deinit()` |
 | `s_chunk` | Consumer worker (`i2s_task`) | `i2s_task` | `i2s_task` | Single-owner task: no other task or caller touches or reads `s_chunk` | Static BSS |
@@ -83,13 +82,20 @@ PRE_MERGE_CLOSURE_STATUS: PASS
   - Defect: `quiesce()` allowed forcing `QUIESCED` state from `INITIALIZED` or `STOPPED` without a live worker task.
   - Fix: Explicit transition matrix enforced under `s_state_lock`. Illegal edges (`INITIALIZED->QUIESCED`, `STOPPED->QUIESCED`, etc.) rejected with `ESP_ERR_INVALID_STATE`.
   - Tests: `AUDIO-STATE-01..08` (8/8 PASS).
-- **F3 (Shared-State Synchronization):**
-  - Defect: Bare flag `s_consumer_sleeping` had unsynchronized data race between consumer and producer. FreeRTOS APIs and logging were invoked under spinlocks.
-  - Fix: Removed `s_consumer_sleeping` completely. All state variables unified under `s_state_lock`. Zero FreeRTOS calls, zero logging under spinlock. Snapshots taken under lock, FreeRTOS/logging invoked strictly outside critical sections.
-- **F4 (Command Protocol & Generations):**
-  - Defect: Stale ACKs could resolve future commands; timeouts left state undefined; commands could block on dead workers.
-  - Fix: Monotonic command generation `s_cmd_generation` checked on ACK (`s_cmd_ack_generation`). Dead worker check rejects immediately. Command timeout transitions pipeline to `FAULTED`. Recovery via `stop()` restores clean state.
-  - Tests: `AUDIO-CMD-01..06` (6/6 PASS).
+- **F3 (Shared-State Synchronization & Task Notification Lease):**
+  - Defect: Bare flag `s_consumer_sleeping` had unsynchronized data race. On SMP, a race existed where `stop()` or `ring_write()` snapshotted `s_task`, worker exited and called `vTaskDelete(NULL)`, and caller called `xTaskNotifyGive(target)` on a stale/deleted handle. Additionally, `heap_caps_free()` was called inside `s_ring_lock` spinlock, and dead state `s_running` remained.
+  - Fix: Implemented Task Notification Lease pattern with `s_notify_inflight` under `s_state_lock`. In `i2s_task()` shutdown, worker drains all in-flight notify leases and sets `s_task = NULL` before `vTaskDelete(NULL)`. Moved `heap_caps_free()` strictly outside spinlock. Completely removed dead `s_running` flag. Gated test hooks under `MICHI_HOST_TEST`.
+  - Tests: Global invariant `test_task_invalid_notify_count() == 0` asserted across all test cases.
+- **F4 (Command Protocol, Generation ACK & Serialization):**
+  - Defect: Stale ACKs could resolve future commands; if a command timed out (`s_state = FAULTED`), a late worker execution could unconditionally overwrite `s_state = QUIESCED`; `stop()` and `deinit()` did not serialize with `s_cmd_mux`, risking concurrent destruction while commands waited.
+  - Fix: Monotonic command generations verified. Worker `handle_pending_command_in_task()` explicitly protects `FAULTED`, `STOPPING`, and `STOPPED` from overwrite. `stop()` and `deinit()` serialize with `s_cmd_mux` and wake in-flight waiters.
+  - Tests: `AUDIO-CMD-01..06` covering:
+    - `AUDIO-CMD-01`: Late ACK from command A cannot satisfy command B or overwrite `FAULTED` state.
+    - `AUDIO-CMD-02`: Missing or dead worker rejects immediately without waiting for full timeout.
+    - `AUDIO-CMD-03`: Command timeout transitions to `FAULTED` with clean stop/restart recovery.
+    - `AUDIO-CMD-04`: Concurrent `quiesce()` and `resume()` callers serialized deterministically.
+    - `AUDIO-CMD-05`: `stop()` racing in-flight command transitions cleanly without illegal state.
+    - `AUDIO-CMD-06`: Zero notifications to dead/invalid task handle across 10 repeated lifecycles (`test_task_invalid_notify_count() == 0`).
 
 ### Phase F5-F6 Evidence: Session Pause/Resume & Teardown Truth
 
@@ -112,14 +118,14 @@ PRE_MERGE_CLOSURE_STATUS: PASS
 ### Phase F8-F10 Evidence: Silicon Capability, Host Kconfig & Signal Truth
 
 - **F8 (PCM5122 Silicon Hardware Capability Truth):**
-  - Defect: `g_michi_dac_pcm512x_caps` defined `.max_bit_depth = 24`, whereas TI PCM5121/PCM5122 silicon supports 32-bit audio data (SLAS763C Table 1).
-  - Fix: Updated `.max_bit_depth = 32;` in `firmware/components/michi_dac/drivers/pcm512x.c` while preserving wire-protocol advertised capability strictly at 48000 Hz, 16-bit, stereo per contract.
+  - Defect: `g_michi_dac_pcm512x_caps` defined `.max_bit_depth = 24`, whereas TI PCM5121/PCM5122 silicon supports 32-bit audio data (SLAS763C Table 1). Residual header/comment in `pcm512x.c` also mentioned 24-bit I2S data format.
+  - Fix: Updated `.max_bit_depth = 32;` and updated comment to `32-bit PCM input capability` in `firmware/components/michi_dac/drivers/pcm512x.c` while preserving wire-protocol advertised capability strictly at 48000 Hz, 16-bit, stereo per contract.
 - **F9 (Host Kconfig Classification Truth):**
   - Defect: `CONFIG_MICHI_DAC_DEFAULT_PROFILE "pcm5102a"` was grouped under `PRODUCTION_DEFAULT` in `tests/host/shim/sdkconfig.h`, but the production Kconfig default is `""`.
   - Fix: Moved `CONFIG_MICHI_DAC_DEFAULT_PROFILE "pcm5102a"` to `TEST_OVERRIDE` section with commentary explaining host test fallback profile intent.
 - **F10 (API Documentation & Signal Truth Alignment):**
-  - Defect: `michi_session.h` doc comment claimed `SOURCE_MISMATCH` returns 409 and omitted it from the enum summary, conflicting with 403 Forbidden fail-closed enforcement. `michi_http.h` stated `/server/info` does not emit the identity group, which was outdated.
-  - Fix: Harmonized doc comments in `michi_session.h` (403 Forbidden fail-closed) and `michi_http.h` (persistent Ed25519 identity group emitted).
+  - Defect: `michi_session.h` doc comment claimed `SOURCE_MISMATCH` returns 409 and that `peer_ip` is optional / NULL skips check, conflicting with 403 Forbidden fail-closed enforcement. `michi_http.h` stated `/server/info` does not emit the identity group, which was outdated.
+  - Fix: Harmonized doc comments in `michi_session.h` (403 Forbidden fail-closed; `peer_ip` required) and `michi_http.h` (persistent Ed25519 identity group emitted).
 
 ### Phase F11-F14 Evidence: Reconciliation, Full Matrix & Implementation Freeze
 
@@ -128,17 +134,17 @@ PRE_MERGE_CLOSURE_STATUS: PASS
 - **F12 (Full Regression Matrix Execution):**
   - Host test suite: `make -C tests/host clean && make -C tests/host test` executed and passing 100% (29 audio output tests, 28 session tests, 8 HTTP slowloris/deadline tests, display DMA, jitter buffer, rtp guard, button debouncer, etc.).
   - Static analysis: Cppcheck Variant A (`CONFIG_MICHI_DAC_DEFAULT_PROFILE=""`) and Variant B (`CONFIG_MICHI_DAC_DEFAULT_PROFILE="pcm5102a"`) run with zero errors, zero warnings across all 47 source files.
-  - Firmware build: Clean ESP-IDF release-v5.3 docker build succeeded (`0x18de50` bytes, 61% app partition free).
+  - Firmware build: Clean ESP-IDF release-v5.3 docker build succeeded (`0x18df40` bytes, 61% app partition free).
 - **F13 (Adversarial KILLCRITIC Software Verification):**
   - Comprehensive adversarial verification across all 18 review facets (lifecycle, SMP, memory, state machines, timing, protocols, error propagation, signals).
   - Verdict: ZERO remaining software defects or blockers.
 - **F14 (Implementation Freeze):**
-  - All firmware components and production headers frozen. No further behavioral or code modifications permitted prior to merge.
+  - All firmware components and production headers frozen at `8daf6632b50c5649e26e574a4a12347b494ef934`. No further behavioral or code modifications permitted prior to merge.
 
 ### Phase F15-F16 Evidence: Final E2E Re-Anchor & CI Green Certification
 
 - **F15 (E2E Re-Anchor to Frozen Closure Candidate):**
-  - `STREAM_TESTED_COMMIT` updated to `5d42284f95604516d122cc0d38116fd46f6141fe`.
+  - `STREAM_TESTED_COMMIT` updated to `8daf6632b50c5649e26e574a4a12347b494ef934`.
   - Zero drift across `firmware/`, `simulator/`, and `contracts/` verified.
   - Deterministic certification artifact `tests/e2e/results/michi-link-alpha1.json` synchronized.
   - All 13 E2E test cases pass cleanly (`MOCK_PASS: true`).
@@ -149,7 +155,7 @@ PRE_MERGE_CLOSURE_STATUS: PASS
 
 - **F17 (PR #33 Description & Comment Synchronized):**
   - PR #33 body updated with the complete F0..F18 remediation matrix, CI run citations, and dual readiness declaration.
-  - Final certification comment posted on PR #33 with full traceability links (Run IDs: 36258955911 & 36258951283).
+  - Final certification comment posted on PR #33 with full traceability links.
 - **F18 (Final Pre-Merge Audit):**
   - Working tree status: clean.
   - Remote tracking: `origin/fix/ui-device-gaps` up to date.
