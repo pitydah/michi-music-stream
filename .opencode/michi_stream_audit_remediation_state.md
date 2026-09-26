@@ -30,9 +30,9 @@ PRE_MERGE_CLOSURE_STATUS: IN_PROGRESS
 | F2 | PASS | YES | YES | PASS | PASS | 41541c8 |
 | F3 | PASS | YES | YES | PASS | PASS | 41541c8 |
 | F4 | PASS | YES | YES | PASS | PASS | 41541c8 |
-| F5 | PASS | YES | YES | PASS | PASS | pending_commit |
-| F6 | PASS | YES | YES | PASS | PASS | pending_commit |
-| F7 | TODO | - | - | - | - | - |
+| F5 | PASS | YES | YES | PASS | PASS | 9514b3d |
+| F6 | PASS | YES | YES | PASS | PASS | 9514b3d |
+| F7 | PASS | YES | YES | PASS | PASS | pending_commit |
 | F8 | TODO | - | - | - | - | - |
 | F9 | TODO | - | - | - | - | - |
 | F10 | TODO | - | - | - | - | - |
@@ -101,6 +101,13 @@ PRE_MERGE_CLOSURE_STATUS: IN_PROGRESS
   - Defect: If `michi_audio_session_stop()` failed during teardown, session state remained set to `STOPPING` instead of rolling back to the previous state.
   - Fix: In `session_teardown_locked()`, save `prev_state` and restore `s_session.info.state = prev_state` if `michi_audio_session_stop()` returns error.
   - Tests: `SESSION-STOP-FAIL-01` (PASS).
+
+### Phase F7 Evidence: HTTP Body Deadline Strict Enforcement
+
+- **F7 (HTTP Body Total Deadline Gate):**
+  - Defect: In `michi_http_read_body()`, the anti-slowloris total deadline check was only performed at the beginning of each loop iteration. A client trickling data whose final chunk crossed the 2000ms deadline would exit the loop because `received == content_len` and return `ESP_OK`, evading the timeout policy.
+  - Fix: Check `esp_timer_get_time() >= deadline_us` immediately after adding received bytes, as well as unconditionally after loop completion. If the total transfer elapsed >= 2000ms, abort immediately with `ESP_ERR_TIMEOUT`.
+  - Tests: `HTTP-SLOW-01..04` (including `HTTP-SLOW-04` specifically asserting that a transfer completing on a deadline-exceeding chunk is rejected with `ESP_ERR_TIMEOUT`).
 
 
 

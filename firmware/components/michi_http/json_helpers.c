@@ -624,6 +624,12 @@ esp_err_t michi_http_read_body(httpd_req_t *req, char *buf, size_t buf_len,
             return ESP_ERR_INVALID_STATE;
         }
         received += (size_t)ret;
+        if (esp_timer_get_time() >= deadline_us) {
+            return ESP_ERR_TIMEOUT;
+        }
+    }
+    if (esp_timer_get_time() >= deadline_us) {
+        return ESP_ERR_TIMEOUT;
     }
     buf[received] = '\0';
     *out_len = received;
