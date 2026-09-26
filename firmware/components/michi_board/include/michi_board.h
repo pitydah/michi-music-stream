@@ -170,6 +170,23 @@ typedef void (*michi_board_render_fn)(uint16_t *fb, uint16_t fb_w, uint16_t fb_h
 esp_err_t michi_board_display_render(michi_board_render_fn fn);
 
 /**
+ * @brief Recover the display from a DMA timeout or faulted state.
+ *
+ * Waits for any pending DMA in-flight transaction to finish and clears the
+ * faulted quarantine state so subsequent rendering can proceed safely.
+ *
+ * @return ESP_OK on recovery; ESP_ERR_TIMEOUT if DMA remains in flight.
+ */
+esp_err_t michi_board_display_recover(void);
+
+/**
+ * @brief Check if the display DMA is currently in a faulted/quarantined state.
+ *
+ * @return true if quarantined after timeout, false otherwise.
+ */
+bool michi_board_display_is_quarantined(void);
+
+/**
  * @brief Draw a 5x7 text string (embedded font) into a framebuffer, with
  *        out-of-bounds pixels clipped.
  *

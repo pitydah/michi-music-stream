@@ -110,7 +110,8 @@ typedef enum {
 /**
  * @brief Result of michi_session_heartbeat() (the HTTP layer maps it:
  *        TOKEN_MISMATCH -> 401, NO_SESSION/SESSION_MISMATCH -> 404,
- *        SEQUENCE_REPLAY -> 409 CONFLICT without renewing).
+ *        SEQUENCE_REPLAY -> 409 CONFLICT without renewing,
+ *        SOURCE_MISMATCH -> 403 FORBIDDEN fail-closed).
  */
 typedef enum {
     MICHI_SESSION_HEARTBEAT_OK = 0,      /*!< Lease renewed to 30 s */
@@ -118,6 +119,7 @@ typedef enum {
     MICHI_SESSION_HEARTBEAT_TOKEN_MISMATCH, /*!< Wrong/malformed session token */
     MICHI_SESSION_HEARTBEAT_SESSION_MISMATCH, /*!< session_id != active session */
     MICHI_SESSION_HEARTBEAT_SEQUENCE_REPLAY,  /*!< sequence repeated/older: no renew */
+    MICHI_SESSION_HEARTBEAT_SOURCE_MISMATCH,  /*!< peer IP != session source IP: 403 forbidden */
 } michi_session_heartbeat_result_t;
 
 /**
@@ -330,12 +332,15 @@ esp_err_t michi_session_patch(const char *session_token, bool volume_set,
  * @param session_token The 43-char base64url session token.
  * @param session_id    UUID v4 of the active session (from the body).
  * @param sequence      Unsigned heartbeat sequence (strictly increasing).
+ * @param peer_ip       TCP peer IP of the request (optional, NULL skips check).
  * @return MICHI_SESSION_HEARTBEAT_OK on renewal; NO_SESSION (404);
  *         TOKEN_MISMATCH (401); SESSION_MISMATCH (404);
- *         SEQUENCE_REPLAY (409, no renewal).
+ *         SEQUENCE_REPLAY (409, no renewal);
+ *         SOURCE_MISMATCH (403 FORBIDDEN, peer IP != session source IP).
  */
 michi_session_heartbeat_result_t michi_session_heartbeat(
-    const char *session_token, const char *session_id, uint32_t sequence);
+    const char *session_token, const char *session_id, uint32_t sequence,
+    const char *peer_ip);
 
 /**
  * @brief Cumulative lease-expiry close count (contract metric, MS-08).

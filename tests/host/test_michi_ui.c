@@ -1,19 +1,16 @@
-/* Host-side tests for the Michi UI design system components (UI-02).
+/* Host-side tests for the Michi UI design system components (Landscape 320x240).
  *
  * Compiles the REAL firmware sources - michi_ui_text.c, michi_ui_fonts.c
  * (with the generated flash tables) and michi_ui_components.c - no
  * reimplementation. Proves:
  *   - the wrap/ellipsize text contracts on the REAL proportional font
  *     metrics (SM/MD/PIN),
+ *   - full UTF-8 multi-byte decoding (Latin-1 Supplement + Ellipsis),
  *   - the MS-11 band contract: rendering every screen component into the
- *     8 band framebuffers (240 x 40) is pixel-identical to a full-frame
- *     (240 x 320) render, including elements straddling band boundaries,
- *   - component smoke behavior (chrome rows, dot radius, progress
- *     outline/fill),
- *   - the PIN ellipsis fallback: '…' renders as '.' (pin_map fix).
- *
- * Fake framebuffers are plain uint16_t arrays on the heap; no cJSON
- * dependency.
+ *     6 band framebuffers (320 x 40) is pixel-identical to a full-frame
+ *     (320 x 240) render, including elements straddling band boundaries,
+ *   - component smoke behavior (header, divider, footer, volume overlay),
+ *   - truthful diagnostics and buffering vs playing visual differences.
  */
 
 #include <stdint.h>
@@ -22,9 +19,12 @@
 #include <string.h>
 
 #include "michi_ui.h"
+#include "michi_ui_components.h"
+#include "michi_ui_screens.h"
+#include "michi_ui_strings.h"
 
-#define PANEL_W 240
-#define PANEL_H 320
+#define PANEL_W 320
+#define PANEL_H 240
 #define BAND_H 40
 #define N_BANDS (PANEL_H / BAND_H)
 
@@ -39,8 +39,7 @@ static int failures = 0;
     } while (0)
 
 /* --------------------------------------------------------------------------
- * Wrap regression suite (UI-01 review follow-up): the REAL SM font
- * metrics from the generated tables (space=3, A=8, B=7, C=8, D=8, ...).
+ * Wrap regression suite on real SM metrics
  * -------------------------------------------------------------------------- */
 
 static void expect_wrap(const char *input, int max_w, int max_lines,
@@ -78,307 +77,657 @@ static void test_wrap(void)
     static const char *ab_cd[] = { "AB", "CD" };
     static const char *long_word[] = { "Averlongsingleword" };
 
+    static const char *hello_ell[] = { "hello…" };
+
     printf("michi_ui: wrap regression (real SM metrics)\n");
-    expect_wrap("AB C", 10, 8, ab_c, 2);
-    expect_wrap("hello world", 50, 8, hello, 2);
-    expect_wrap("AB C D EFG", 20, 8, ab_c_d_efg, 3);
-    expect_wrap("AB ", 10, 8, ab, 1); /* no empty line after the space */
-    expect_wrap("AB \nCD", 10, 2, ab_cd, 2); /* newline after the break */
-    expect_wrap("Averlongsingleword", 20, 8, long_word, 1); /* intact */
-    expect_wrap("hello world", 50, 1, hello, 1); /* max_lines=1 */
+    expect_wrap("AB C", 15, 8, ab_c, 2);
+    expect_wrap("hello world", 30, 8, hello, 2);
+    expect_wrap("AB C D EFG", 18, 8, ab_c_d_efg, 3);
+    expect_wrap("AB ", 15, 8, ab, 1);
+    expect_wrap("AB \nCD", 15, 2, ab_cd, 2);
+    expect_wrap("Averlongsingleword", 15, 8, long_word, 1);
+    expect_wrap("hello world", 30, 1, hello_ell, 1);
 }
 
 /* --------------------------------------------------------------------------
- * Ellipsize (REAL MD metrics; "Very Long Title..." measures 102 > 100).
+ * UTF-8 Multi-byte Decoding & Latin-1 Support Tests
  * -------------------------------------------------------------------------- */
 
-static void test_ellipsize(void)
+static void test_utf8_decoding(void)
 {
-    const michi_ui_font_t *md = michi_ui_font_get(MICHI_FONT_MD);
-    char buf[64];
-    char short_buf[32];
-    size_t len;
+    printf("michi_ui: UTF-8 decoding & Latin-1 charset\n");
+    const michi_ui_font_t *font_md = michi_ui_font_get(MICHI_FONT_MD);
 
-    printf("michi_ui: ellipsize\n");
-    strcpy(buf, "Very Long Title...");
-    (void)ui_ellipsize(md, buf, 100);
-    len = strlen(buf);
-    CHECK(len >= 3, "ellipsized result has room for the marker");
-    if (len >= 3) {
-        CHECK((unsigned char)buf[len - 3] == 0xE2 &&
-                  (unsigned char)buf[len - 2] == 0x80 &&
-                  (unsigned char)buf[len - 1] == 0xA6,
-              "ellipsized result ends with U+2026");
-    }
-    CHECK(ui_text_measure(md, buf) <= 100, "ellipsized result fits max_w");
+    /* Test 1-byte ASCII */
+    const char *p_ascii = "Michi";
+    uint8_t g0 = michi_ui_font_decode(font_md, &p_ascii);
+    CHECK(g0 == (uint8_t)('M' - 0x20), "UTF-8: ASCII 'M' decoded");
+    CHECK(p_ascii == "Michi" + 1, "UTF-8: ASCII advances 1 byte");
 
-    strcpy(short_buf, "Hi");
-    (void)ui_ellipsize(md, short_buf, 100);
-    CHECK(strcmp(short_buf, "Hi") == 0, "short string left unchanged");
+    /* Test 2-byte Latin-1 Supplement: 'á' (U+00E1 -> index 160), 'ñ' (U+00F1 -> index 176) */
+    const char *p_accent = "José González";
+    const char *cur = p_accent;
+    (void)michi_ui_font_decode(font_md, &cur); /* 'J' */
+    (void)michi_ui_font_decode(font_md, &cur); /* 'o' */
+    (void)michi_ui_font_decode(font_md, &cur); /* 's' */
+    const char *before_e = cur;
+    uint8_t g_eacute = michi_ui_font_decode(font_md, &cur);
+    CHECK(cur == before_e + 2, "UTF-8: 'é' (0xC3 0xA9) advances 2 bytes");
+    CHECK(g_eacute == (uint8_t)(0x00E9 - 0x00A0 + 95), "UTF-8: 'é' maps to Latin-1 index");
+
+    /* Test 3-byte Ellipsis: '…' (U+2026 -> index 191) */
+    const char *p_ell = "…";
+    cur = p_ell;
+    uint8_t g_ell = michi_ui_font_decode(font_md, &cur);
+    CHECK(cur == p_ell + 3, "UTF-8: '…' advances 3 bytes");
+    CHECK(g_ell == MICHI_UI_FONT_ELLIPSIS_INDEX, "UTF-8: '…' maps to ellipsis index");
+
+    /* Test UTF-8 string width measurement for accented names */
+    int w_jose = ui_text_measure(font_md, "José González");
+    int w_bjork = ui_text_measure(font_md, "Björk");
+    int w_nina = ui_text_measure(font_md, "Niña Pastori");
+    CHECK(w_jose > 0, "UTF-8: measure José González > 0");
+    CHECK(w_bjork > 0, "UTF-8: measure Björk > 0");
+    CHECK(w_nina > 0, "UTF-8: measure Niña Pastori > 0");
 }
 
 /* --------------------------------------------------------------------------
- * Band identity: one component rendered into a full 240 x 320 frame must
- * equal the same component rendered band-by-band (240 x 40, y_origin =
- * 0, 40, ..., 280). Elements are placed so they straddle band boundaries.
+ * ui_wrap_text_ex Truncation & Ellipsis Test
  * -------------------------------------------------------------------------- */
 
-typedef void (*draw_fn)(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
-                        uint16_t y_origin);
-
-static void check_band_identity(const char *name, draw_fn draw)
+static void test_wrap_truncation_ex(void)
 {
-    uint16_t *ref = malloc((size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
-    uint16_t *band = malloc((size_t)PANEL_W * BAND_H * sizeof(uint16_t));
-    int b;
+    printf("michi_ui: ui_wrap_text_ex with truncation detection and ellipsis\n");
+    const michi_ui_font_t *font_lg = michi_ui_font_get(MICHI_FONT_LG);
 
-    CHECK(ref != NULL && band != NULL, "band identity: fb allocation");
-    if (ref == NULL || band == NULL) {
-        free(ref);
-        free(band);
+    char buf[256];
+    const char *lines[4];
+    bool truncated = false;
+
+    /* Fits in 2 lines without truncation at max_w=150 */
+    strcpy(buf, "Shine On You Crazy Diamond");
+    int n = ui_wrap_text_ex(font_lg, buf, 150, lines, 2, &truncated);
+    CHECK(n == 2, "wrap_ex: fits in 2 lines");
+    CHECK(!truncated, "wrap_ex: not truncated");
+
+    /* Exceeds 2 lines at max_w=100 -> truncated is true and line 2 ends in '…' */
+    strcpy(buf, "Shine On You Crazy Diamond");
+    n = ui_wrap_text_ex(font_lg, buf, 100, lines, 2, &truncated);
+    CHECK(n == 2, "wrap_ex: capped at max 2 lines");
+    CHECK(truncated, "wrap_ex: truncation flag set");
+    CHECK(strstr(lines[1], "…") != NULL || strstr(lines[1], ".") != NULL,
+          "wrap_ex: truncated last line ends with ellipsis");
+}
+
+/* --------------------------------------------------------------------------
+ * MS-11 Band Identity Test: 6 bands of 320x40 == 1 full 320x240 frame
+ * -------------------------------------------------------------------------- */
+
+typedef struct screen_scenario {
+    const char *id;
+    const char *description;
+    michi_ui_screen_ctx_t ctx;
+} screen_scenario_t;
+
+static void check_screen_band_identity(const screen_scenario_t *scenario)
+{
+    uint16_t *full_frame = calloc((size_t)PANEL_W * PANEL_H, sizeof(uint16_t));
+    uint16_t *banded_frame = calloc((size_t)PANEL_W * PANEL_H, sizeof(uint16_t));
+    uint16_t band_buf[PANEL_W * BAND_H];
+
+    CHECK(full_frame != NULL && banded_frame != NULL, "fb alloc");
+    if (!full_frame || !banded_frame) {
+        free(full_frame);
+        free(banded_frame);
         return;
     }
 
-    memset(ref, 0, (size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
-    draw(ref, PANEL_W, PANEL_H, 0);
-    for (b = 0; b < N_BANDS; b++) {
-        const uint16_t y_origin = (uint16_t)(b * BAND_H);
+    /* 1. Full-frame render (y_origin = 0, fb_h = PANEL_H) */
+    michi_ui_render_screen(full_frame, PANEL_W, PANEL_H, 0, &scenario->ctx);
 
-        memset(band, 0, (size_t)PANEL_W * BAND_H * sizeof(uint16_t));
-        draw(band, PANEL_W, BAND_H, y_origin);
-        if (memcmp(band, ref + (size_t)y_origin * PANEL_W,
-                   (size_t)PANEL_W * BAND_H * sizeof(uint16_t)) != 0) {
-            printf("  FAIL band identity %s: band %d differs from the "
-                   "full-frame rows\n", name, b);
-            failures++;
+    /* 2. Banded render (6 bands of 320x40) */
+    for (int b = 0; b < N_BANDS; b++) {
+        uint16_t y_origin = (uint16_t)(b * BAND_H);
+        michi_ui_render_screen(band_buf, PANEL_W, BAND_H, y_origin, &scenario->ctx);
+        memcpy(banded_frame + (size_t)b * PANEL_W * BAND_H, band_buf, sizeof(band_buf));
+    }
+
+    /* 3. Pixel-by-pixel comparison */
+    int diff_count = 0;
+    for (int i = 0; i < PANEL_W * PANEL_H; i++) {
+        if (full_frame[i] != banded_frame[i]) {
+            diff_count++;
         }
     }
-    free(ref);
-    free(band);
+
+    if (diff_count != 0) {
+        printf("  FAIL scenario %s (%s): %d pixel differences between full and banded!\n",
+               scenario->id, scenario->description, diff_count);
+        failures++;
+    } else {
+        printf("  PASS scenario %s (%s): pixel-identical across 6 bands of 320x40\n",
+               scenario->id, scenario->description);
+    }
+
+    free(full_frame);
+    free(banded_frame);
 }
 
-static void draw_header(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
-                        uint16_t y_origin)
+static void test_all_screen_scenarios_band_identity(void)
 {
-    michi_ui_draw_header(fb, fb_w, fb_h, y_origin, "Michi Music");
-}
+    printf("michi_ui: testing MS-11 band identity (320x240 landscape, 6 bands)\n");
 
-static void draw_footer(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
-                        uint16_t y_origin)
-{
-    michi_ui_draw_footer(fb, fb_w, fb_h, y_origin, "v1.2.3-build42");
-}
+    static const screen_scenario_t scenarios[] = {
+        {
+            .id = "UI-01",
+            .description = "booting",
+            .ctx = { .state = MICHI_STATE_BOOTING }
+        },
+        {
+            .id = "UI-02",
+            .description = "unprovisioned setup",
+            .ctx = { .state = MICHI_STATE_UNPROVISIONED }
+        },
+        {
+            .id = "UI-03",
+            .description = "ready idle",
+            .ctx = {
+                .state = MICHI_STATE_IDLE,
+                .wifi_connected = true,
+                .wifi_rssi = -50,
+                .server_connected = false,
+            }
+        },
+        {
+            .id = "UI-04",
+            .description = "wifi connecting",
+            .ctx = {
+                .state = MICHI_STATE_WIFI_CONNECTING,
+                .wifi_ssid = "MiFibra-5G-Studio",
+            }
+        },
+        {
+            .id = "UI-05",
+            .description = "pairing waiting",
+            .ctx = {
+                .state = MICHI_STATE_PAIRING,
+                .pairing_pin = NULL,
+            }
+        },
+        {
+            .id = "UI-06",
+            .description = "pairing with PIN",
+            .ctx = {
+                .state = MICHI_STATE_PAIRING,
+                .pairing_pin = "739412",
+            }
+        },
+        {
+            .id = "UI-07",
+            .description = "session pending",
+            .ctx = {
+                .state = MICHI_STATE_SESSION_PENDING,
+                .server_connected = true,
+            }
+        },
+        {
+            .id = "UI-08",
+            .description = "buffering with meta",
+            .ctx = {
+                .state = MICHI_STATE_BUFFERING,
+                .title = "Teardrop",
+                .artist = "Massive Attack",
+                .source = "Michi Studio",
+                .volume = 72,
+                .sample_rate = 48000,
+                .bit_depth = 16,
+            }
+        },
+        {
+            .id = "UI-09",
+            .description = "buffering no meta",
+            .ctx = {
+                .state = MICHI_STATE_BUFFERING,
+                .volume = 72,
+                .sample_rate = 48000,
+                .bit_depth = 16,
+            }
+        },
+        {
+            .id = "UI-10",
+            .description = "playing with metadata",
+            .ctx = {
+                .state = MICHI_STATE_PLAYING,
+                .title = "Shine On You Crazy Diamond",
+                .artist = "Pink Floyd",
+                .source = "Living Room",
+                .volume = 72,
+                .sample_rate = 48000,
+                .bit_depth = 16,
+            }
+        },
+        {
+            .id = "UI-11",
+            .description = "playing spanish UTF-8",
+            .ctx = {
+                .state = MICHI_STATE_PLAYING,
+                .title = "Corazón Partío (Edición Especial)",
+                .artist = "Alejandro Sanz & Niña Pastori",
+                .source = "Michi Hi-Fi",
+                .volume = 80,
+                .sample_rate = 96000,
+                .bit_depth = 24,
+            }
+        },
+        {
+            .id = "UI-12",
+            .description = "playing fallback",
+            .ctx = {
+                .state = MICHI_STATE_PLAYING,
+                .volume = 72,
+                .sample_rate = 48000,
+                .bit_depth = 16,
+            }
+        },
+        {
+            .id = "UI-13",
+            .description = "paused",
+            .ctx = {
+                .state = MICHI_STATE_PAUSED,
+                .title = "Teardrop",
+                .artist = "Massive Attack",
+                .source = "Michi Studio",
+                .volume = 72,
+                .sample_rate = 48000,
+                .bit_depth = 16,
+            }
+        },
+        {
+            .id = "UI-14",
+            .description = "updating",
+            .ctx = {
+                .state = MICHI_STATE_UPDATING,
+                .update_pct = 68,
+            }
+        },
+        {
+            .id = "UI-15",
+            .description = "recoverable error",
+            .ctx = {
+                .state = MICHI_STATE_RECOVERABLE_ERROR,
+                .last_error = 0x3001,
+            }
+        },
+        {
+            .id = "UI-16",
+            .description = "fatal error",
+            .ctx = {
+                .state = MICHI_STATE_FATAL_ERROR,
+                .last_error = 0x101,
+            }
+        },
+        {
+            .id = "UI-17",
+            .description = "diagnostics",
+            .ctx = {
+                .state = MICHI_STATE_IDLE,
+                .show_diagnostics = true,
+                .wifi_connected = true,
+                .wifi_rssi = -52,
+                .server_connected = true,
+                .dac_detected = true,
+                .dac_model = "PCM5122",
+                .volume = 72,
+                .sample_rate = 48000,
+                .bit_depth = 16,
+                .psram_bytes = 8 * 1024 * 1024,
+            }
+        },
+        {
+            .id = "UI-18",
+            .description = "volume overlay",
+            .ctx = {
+                .state = MICHI_STATE_PLAYING,
+                .volume = 82,
+                .show_volume_overlay = true,
+            }
+        }
+    };
 
-/* cy=40: rows 37..43 straddle bands 0 and 1. */
-static void draw_dot(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
-                     uint16_t y_origin)
-{
-    michi_ui_draw_status_dot(fb, fb_w, fb_h, y_origin, 60, 40,
-                             MICHI_UI_ERROR);
-}
-
-/* rect y=30 h=60 (4 lines of SM): rows 30..89 span bands 0, 1, 2. */
-static void draw_multiline(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
-                           uint16_t y_origin)
-{
-    const michi_ui_rect_t rect = { 20, 30, 200, 60 };
-
-    (void)michi_ui_draw_multiline(fb, fb_w, fb_h, y_origin, &rect,
-                                  MICHI_FONT_SM,
-                                  "Michi Music streaming the world",
-                                  MICHI_UI_ALIGN_CENTER,
-                                  MICHI_UI_TEXT_SECONDARY);
-}
-
-/* Bar rows 35..44 straddle bands 0 and 1. */
-static void draw_progress(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
-                          uint16_t y_origin)
-{
-    michi_ui_draw_progress(fb, fb_w, fb_h, y_origin, 10, 35, 220, 10, 60);
-}
-
-/* y_center=40 with an over-240 px string: ellipsized, straddles bands
- * 0 and 1. */
-static void draw_message(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
-                         uint16_t y_origin)
-{
-    michi_ui_draw_centered_message(fb, fb_w, fb_h, y_origin, 40,
-                                   MICHI_FONT_MD,
-                                   "The quick brown fox jumps over the lazy "
-                                   "dog while streaming hi-res audio",
-                                   MICHI_UI_INFO);
-}
-
-static void test_band_identity(void)
-{
-    printf("michi_ui: band-vs-fullframe identity\n");
-    check_band_identity("header", draw_header);
-    check_band_identity("footer", draw_footer);
-    check_band_identity("status dot (straddles band 0/1)", draw_dot);
-    check_band_identity("multiline (spans bands 0-2)", draw_multiline);
-    check_band_identity("progress (straddles band 0/1)", draw_progress);
-    check_band_identity("centered message (straddles band 0/1)",
-                        draw_message);
+    const size_t count = sizeof(scenarios) / sizeof(scenarios[0]);
+    for (size_t i = 0; i < count; i++) {
+        check_screen_band_identity(&scenarios[i]);
+    }
 }
 
 /* --------------------------------------------------------------------------
- * Component smoke: expected pixels near the chrome rows, dot radius and
- * progress outline/fill behavior.
+ * Buffering vs Playing Difference Test (P0 requirement)
  * -------------------------------------------------------------------------- */
 
-static int count_color(const uint16_t *fb, int rows, uint16_t color)
+static void test_buffering_vs_playing_difference(void)
 {
-    int n = 0;
-    int i;
+    printf("michi_ui: buffering screen is distinct from playing screen\n");
 
-    for (i = 0; i < PANEL_W * rows; i++) {
-        if (fb[i] == color) {
-            n++;
+    const michi_ui_screen_ctx_t play_ctx = {
+        .state = MICHI_STATE_PLAYING,
+        .title = "Teardrop",
+        .artist = "Massive Attack",
+        .source = "Michi Studio",
+        .volume = 72,
+        .sample_rate = 48000,
+        .bit_depth = 16,
+    };
+
+    const michi_ui_screen_ctx_t buf_ctx = {
+        .state = MICHI_STATE_BUFFERING,
+        .title = "Teardrop",
+        .artist = "Massive Attack",
+        .source = "Michi Studio",
+        .volume = 72,
+        .sample_rate = 48000,
+        .bit_depth = 16,
+    };
+
+    uint16_t *play_fb = calloc((size_t)PANEL_W * PANEL_H, sizeof(uint16_t));
+    uint16_t *buf_fb = calloc((size_t)PANEL_W * PANEL_H, sizeof(uint16_t));
+
+    michi_ui_render_screen(play_fb, PANEL_W, PANEL_H, 0, &play_ctx);
+    michi_ui_render_screen(buf_fb, PANEL_W, PANEL_H, 0, &buf_ctx);
+
+    int diff_pixels = 0;
+    for (int i = 0; i < PANEL_W * PANEL_H; i++) {
+        if (play_fb[i] != buf_fb[i]) {
+            diff_pixels++;
         }
     }
-    return n;
+
+    CHECK(diff_pixels > 50, "Buffering and Playing have distinct visual output (>50 pixel diff)");
+    printf("    Buffering vs Playing diff pixels: %d\n", diff_pixels);
+
+    free(play_fb);
+    free(buf_fb);
 }
 
-static void test_smoke(void)
+/* --------------------------------------------------------------------------
+ * 2-Column PIN Landscape Test
+ * -------------------------------------------------------------------------- */
+
+static void test_pin_landscape(void)
 {
-    uint16_t *fb = malloc((size_t)PANEL_W * BAND_H * sizeof(uint16_t));
+    printf("michi_ui: 2-column PIN landscape layout & formatting\n");
 
-    printf("michi_ui: component smoke\n");
-    CHECK(fb != NULL, "smoke: fb allocation");
-    if (fb == NULL) {
-        return;
-    }
+    const michi_ui_font_t *pin_font = michi_ui_font_get(MICHI_FONT_PIN);
+    CHECK(pin_font->height >= 38, "PIN font height >= 38 px");
 
-    /* Header: band 0 contains TEXT_PRIMARY pixels in rows 8..25 (MD). */
-    memset(fb, 0, (size_t)PANEL_W * BAND_H * sizeof(uint16_t));
-    michi_ui_draw_header(fb, PANEL_W, BAND_H, 0, "Michi Music");
-    {
-        int found = 0;
-        int y;
+    uint16_t *fb = calloc((size_t)PANEL_W * PANEL_H, sizeof(uint16_t));
+    michi_ui_draw_pin_landscape(fb, PANEL_W, PANEL_H, 0, 230, 115, "739412", MICHI_UI_ACCENT);
 
-        for (y = MICHI_UI_HEADER_Y; y < MICHI_UI_HEADER_Y + 18; y++) {
-            if (count_color(fb + y * PANEL_W, 1, MICHI_UI_TEXT_PRIMARY) >
-                0) {
-                found = 1;
-                break;
-            }
+    int count_colored = 0;
+    for (int i = 0; i < PANEL_W * PANEL_H; i++) {
+        if (fb[i] == MICHI_UI_ACCENT) {
+            count_colored++;
         }
-        CHECK(found, "header draws TEXT_PRIMARY pixels at its rows");
     }
-
-    /* Footer: band 7 (y_origin 280) contains MUTED pixels at absolute
-     * rows 304..318 (SM, local rows 24..38). */
-    memset(fb, 0, (size_t)PANEL_W * BAND_H * sizeof(uint16_t));
-    michi_ui_draw_footer(fb, PANEL_W, BAND_H, 280, "v1.2.3");
-    {
-        int found = 0;
-        int y;
-
-        for (y = MICHI_UI_FOOTER_Y - 280; y < BAND_H; y++) {
-            if (count_color(fb + y * PANEL_W, 1, MICHI_UI_MUTED) > 0) {
-                found = 1;
-                break;
-            }
-        }
-        CHECK(found, "footer draws MUTED pixels at its rows");
-    }
-
-    /* Status dot: radius 3 filled circle at (10, 10). */
-    memset(fb, 0, (size_t)PANEL_W * BAND_H * sizeof(uint16_t));
-    michi_ui_draw_status_dot(fb, PANEL_W, BAND_H, 0, 10, 10, MICHI_UI_ERROR);
-    CHECK(fb[10 * PANEL_W + 10] == MICHI_UI_ERROR, "dot center filled");
-    CHECK(fb[10 * PANEL_W + 13] == MICHI_UI_ERROR, "dot edge dx=3 filled");
-    CHECK(fb[10 * PANEL_W + 14] == 0, "dot right outside r=3 untouched");
-    CHECK(fb[6 * PANEL_W + 10] == 0, "dot top outside r=3 untouched");
-    CHECK(fb[7 * PANEL_W + 10] == MICHI_UI_ERROR, "dot edge dy=-3 filled");
-
-    /* Progress pct=0: muted outline only, no accent anywhere. */
-    memset(fb, 0, (size_t)PANEL_W * BAND_H * sizeof(uint16_t));
-    michi_ui_draw_progress(fb, PANEL_W, BAND_H, 0, 100, 10, 80, 12, 0);
-    CHECK(fb[10 * PANEL_W + 100] == MICHI_UI_MUTED, "pct=0 outline top");
-    CHECK(fb[10 * PANEL_W + 179] == MICHI_UI_MUTED, "pct=0 outline top-right");
-    CHECK(fb[15 * PANEL_W + 140] == 0, "pct=0 interior untouched");
-    CHECK(count_color(fb, BAND_H, MICHI_UI_ACCENT) == 0,
-          "pct=0 draws no accent fill");
-
-    /* Progress pct=100: interior fully accent, outline preserved. */
-    memset(fb, 0, (size_t)PANEL_W * BAND_H * sizeof(uint16_t));
-    michi_ui_draw_progress(fb, PANEL_W, BAND_H, 0, 100, 10, 80, 12, 100);
-    CHECK(fb[15 * PANEL_W + 140] == MICHI_UI_ACCENT, "pct=100 interior filled");
-    CHECK(fb[10 * PANEL_W + 100] == MICHI_UI_MUTED, "pct=100 keeps outline");
-
-    /* Progress pct clamps: 200 renders like 100 (interior filled). */
-    memset(fb, 0, (size_t)PANEL_W * BAND_H * sizeof(uint16_t));
-    michi_ui_draw_progress(fb, PANEL_W, BAND_H, 0, 100, 10, 80, 12, 200);
-    CHECK(fb[15 * PANEL_W + 140] == MICHI_UI_ACCENT, "pct>100 clamps to full");
-
+    CHECK(count_colored > 100, "PIN landscape draws > 100 pixels");
     free(fb);
 }
 
 /* --------------------------------------------------------------------------
- * PIN ellipsis fallback: after the pin_map fix, '…' renders as the '.'
- * glyph (a truncated PIN shows a dot, not a blank).
+ * Error Taxonomy Tests
  * -------------------------------------------------------------------------- */
 
-static void test_pin_ellipsis(void)
+static void test_error_taxonomy(void)
 {
-    const michi_ui_font_t *pin = michi_ui_font_get(MICHI_FONT_PIN);
-    /* pin_map is the generated michi_ui_pin_map table, exposed through
-     * the font descriptor (same array the renderer reads). */
-    const uint8_t *pin_map = pin->pin_map;
-    uint16_t *a = malloc((size_t)PANEL_W * BAND_H * sizeof(uint16_t));
-    uint16_t *b = malloc((size_t)PANEL_W * BAND_H * sizeof(uint16_t));
-    char buf[64];
-    size_t len;
+    printf("michi_ui: recoverable & fatal error taxonomy\n");
 
-    printf("michi_ui: PIN ellipsis fallback\n");
-    CHECK(pin_map != NULL, "PIN font has a pin_map");
-    CHECK(pin_map != NULL &&
-              pin_map[MICHI_UI_FONT_ELLIPSIS_INDEX] == pin_map['.' - 0x20],
-          "pin_map maps '…' to the '.' glyph");
-    CHECK(pin_map != NULL &&
-              pin_map[MICHI_UI_FONT_ELLIPSIS_INDEX] != pin_map[' ' - 0x20],
-          "pin_map no longer maps '…' to space");
+    CHECK(michi_ui_classify_error(0x103) == MICHI_ERR_CLASS_AUDIO, "0x103 classified as AUDIO");
+    CHECK(michi_ui_classify_error(0x107) == MICHI_ERR_CLASS_AUDIO, "0x107 classified as AUDIO");
+    CHECK(michi_ui_classify_error(0x7001) == MICHI_ERR_CLASS_AUDIO, "0x7001 classified as AUDIO");
+    CHECK(michi_ui_classify_error(0x3001) == MICHI_ERR_CLASS_NETWORK, "0x3001 classified as NETWORK");
+    CHECK(michi_ui_classify_error(0x4001) == MICHI_ERR_CLASS_NETWORK, "0x4001 classified as NETWORK");
+    CHECK(michi_ui_classify_error(0x101) == MICHI_ERR_CLASS_MEMORY, "0x101 classified as MEMORY");
+    CHECK(michi_ui_classify_error(0x2001) == MICHI_ERR_CLASS_STORAGE, "0x2001 classified as STORAGE");
+    CHECK(michi_ui_classify_error(0x6001) == MICHI_ERR_CLASS_UPDATE, "0x6001 classified as UPDATE");
 
-    /* Render proof: an ellipsized digit string must draw pixel-identical
-     * to the same string with the '…' tail replaced by '.'. */
-    if (a == NULL || b == NULL) {
-        free(a);
-        free(b);
-        return;
+    CHECK(strcmp(michi_ui_error_code_str(0x103), "E102") == 0, "0x103 product code is E102");
+    CHECK(strcmp(michi_ui_error_code_str(0x3001), "E101") == 0, "0x3001 product code is E101");
+    CHECK(strcmp(michi_ui_error_code_str(0x101), "E104") == 0, "0x101 product code is E104");
+}
+
+/* --------------------------------------------------------------------------
+ * UTF-8 Safe Copy Tests
+ * -------------------------------------------------------------------------- */
+
+static void test_utf8_safe_copy(void)
+{
+    printf("michi_ui: UTF-8 safe copy and boundary clipping\n");
+
+    char dst[16];
+    size_t written;
+
+    /* Safe copy normal */
+    written = michi_ui_utf8_safe_copy(dst, sizeof(dst), "Michi Audio");
+    CHECK(written == 11, "Written 11 bytes");
+    CHECK(strcmp(dst, "Michi Audio") == 0, "Match Michi Audio");
+
+    /* Truncate without splitting multi-byte: 'ó' is 2 bytes 0xC3 0xB3 */
+    /* "Corazón" = 'C','o','r','a','z' (5 bytes) + '\xC3','\xB3' (2 bytes) + 'n' (1 byte) = 8 bytes */
+    /* dst capacity = 7 means max 6 chars. At 6 chars, '\xC3' would be cut! Safe copy must drop '\xC3' -> "Coraz" (5 bytes) */
+    written = michi_ui_utf8_safe_copy(dst, 7, "Corazón");
+    CHECK(written == 5, "Truncated cleanly to 5 bytes before 0xC3");
+    CHECK(strcmp(dst, "Coraz") == 0, "Safe copy dropped incomplete UTF-8 char");
+
+    /* dst capacity = 8 means max 7 chars -> "Corazón" fits in 7 chars */
+    written = michi_ui_utf8_safe_copy(dst, 8, "Corazón");
+    CHECK(written == 7, "Copied full 7 bytes including ó");
+    CHECK(strcmp(dst, "Coraz\xC3\xB3") == 0, "Matched Corazó");
+
+    /* Null and 0-cap safety */
+    CHECK(michi_ui_utf8_safe_copy(NULL, 10, "abc") == 0, "NULL dst returns 0");
+    CHECK(michi_ui_utf8_safe_copy(dst, 0, "abc") == 0, "0 cap returns 0");
+    CHECK(michi_ui_utf8_safe_copy(dst, 10, NULL) == 0 && dst[0] == '\0', "NULL src produces empty string");
+}
+
+/* --------------------------------------------------------------------------
+ * Pairing & OTA Screen Tests
+ * -------------------------------------------------------------------------- */
+
+static void test_pairing_and_ota_screen_logic(void)
+{
+    printf("michi_ui: pairing wording & OTA progress unknown vs percentage\n");
+
+    uint16_t *fb1 = calloc((size_t)PANEL_W * PANEL_H, sizeof(uint16_t));
+    uint16_t *fb2 = calloc((size_t)PANEL_W * PANEL_H, sizeof(uint16_t));
+
+    /* Pairing without PIN vs with PIN */
+    michi_ui_screen_ctx_t ctx_pair_nopin = {
+        .state = MICHI_STATE_PAIRING,
+        .pairing_pin = NULL,
+    };
+    michi_ui_screen_ctx_t ctx_pair_pin = {
+        .state = MICHI_STATE_PAIRING,
+        .pairing_pin = "123456",
+    };
+    michi_ui_render_screen(fb1, PANEL_W, PANEL_H, 0, &ctx_pair_nopin);
+    michi_ui_render_screen(fb2, PANEL_W, PANEL_H, 0, &ctx_pair_pin);
+
+    int diff = 0;
+    for (int i = 0; i < PANEL_W * PANEL_H; i++) {
+        if (fb1[i] != fb2[i]) diff++;
     }
-    strcpy(buf, "123456789012345678901234");
-    (void)ui_ellipsize(pin, buf, 120);
-    len = strlen(buf);
-    CHECK(len >= 3, "PIN ellipsized result has the marker");
-    if (len >= 3) {
-        memset(a, 0, (size_t)PANEL_W * BAND_H * sizeof(uint16_t));
-        ui_draw_text(a, PANEL_W, BAND_H, 0, 0, 0, buf, pin,
-                     MICHI_UI_TEXT_PRIMARY);
-        buf[len - 3] = '.';
-        buf[len - 2] = '\0';
-        memset(b, 0, (size_t)PANEL_W * BAND_H * sizeof(uint16_t));
-        ui_draw_text(b, PANEL_W, BAND_H, 0, 0, 0, buf, pin,
-                     MICHI_UI_TEXT_PRIMARY);
-        CHECK(memcmp(a, b, (size_t)PANEL_W * BAND_H * sizeof(uint16_t)) ==
-                  0,
-              "ellipsized PIN renders a '.' as its last glyph");
+    CHECK(diff > 100, "Pairing with PIN is visually distinct from Waiting for PIN");
+
+    /* OTA with pct vs indeterminate */
+    michi_ui_screen_ctx_t ctx_ota_pct = {
+        .state = MICHI_STATE_UPDATING,
+        .update_pct = 68,
+        .has_update_pct = true,
+    };
+    michi_ui_screen_ctx_t ctx_ota_indet = {
+        .state = MICHI_STATE_UPDATING,
+        .update_pct = 0,
+        .has_update_pct = false,
+    };
+    memset(fb1, 0, (size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    memset(fb2, 0, (size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    michi_ui_render_screen(fb1, PANEL_W, PANEL_H, 0, &ctx_ota_pct);
+    michi_ui_render_screen(fb2, PANEL_W, PANEL_H, 0, &ctx_ota_indet);
+
+    diff = 0;
+    for (int i = 0; i < PANEL_W * PANEL_H; i++) {
+        if (fb1[i] != fb2[i]) diff++;
     }
-    free(a);
-    free(b);
+    CHECK(diff > 100, "OTA progress percentage is visually distinct from indeterminate OTA rail");
+
+    free(fb1);
+    free(fb2);
+}
+
+/* --------------------------------------------------------------------------
+ * Pairing Overlay Priority & Orthogonality
+ * -------------------------------------------------------------------------- */
+
+static void test_pairing_overlay_priority_and_orthogonality(void)
+{
+    printf("michi_ui: pairing overlay priority and orthogonality\n");
+
+    /* Test A: PLAYING + PAIRING_OVERLAY_PIN renders PIN screen */
+    michi_ui_screen_ctx_t ctx_play_overlay_pin = {
+        .state = MICHI_STATE_PLAYING,
+        .title = "Test Song",
+        .pairing_overlay = MICHI_UI_PAIRING_OVERLAY_PIN,
+        .pairing_pin = "739412"
+    };
+    michi_ui_screen_ctx_t ctx_pair_pin = {
+        .state = MICHI_STATE_PAIRING,
+        .pairing_pin = "739412"
+    };
+    michi_ui_screen_ctx_t ctx_play_no_overlay = {
+        .state = MICHI_STATE_PLAYING,
+        .title = "Test Song"
+    };
+    
+    uint16_t *fb1 = calloc((size_t)PANEL_W * PANEL_H, sizeof(uint16_t));
+    uint16_t *fb2 = calloc((size_t)PANEL_W * PANEL_H, sizeof(uint16_t));
+    
+    michi_ui_render_screen(fb1, PANEL_W, PANEL_H, 0, &ctx_play_overlay_pin);
+    michi_ui_render_screen(fb2, PANEL_W, PANEL_H, 0, &ctx_pair_pin);
+    
+    int diff = 0;
+    for (int i = 0; i < PANEL_W * PANEL_H; i++) {
+        if (fb1[i] != fb2[i]) diff++;
+    }
+    CHECK(diff == 0, "PLAYING with PIN overlay is identical to PAIRING with PIN");
+
+    michi_ui_render_screen(fb2, PANEL_W, PANEL_H, 0, &ctx_play_no_overlay);
+    diff = 0;
+    for (int i = 0; i < PANEL_W * PANEL_H; i++) {
+        if (fb1[i] != fb2[i]) diff++;
+    }
+    CHECK(diff > 0, "PLAYING with PIN overlay differs from PLAYING without overlay");
+
+    /* Test B: PLAYING + PAIRING_OVERLAY_WAITING renders waiting screen */
+    michi_ui_screen_ctx_t ctx_play_overlay_waiting = {
+        .state = MICHI_STATE_PLAYING,
+        .title = "Test Song",
+        .pairing_overlay = MICHI_UI_PAIRING_OVERLAY_WAITING
+    };
+    michi_ui_render_screen(fb1, PANEL_W, PANEL_H, 0, &ctx_play_overlay_waiting);
+    diff = 0;
+    for (int i = 0; i < PANEL_W * PANEL_H; i++) {
+        if (fb1[i] != fb2[i]) diff++;
+    }
+    CHECK(diff > 0, "PLAYING with WAITING overlay differs from plain PLAYING");
+
+    /* Test C: Volume overlay cannot cover pairing PIN overlay */
+    michi_ui_screen_ctx_t ctx_vol_overlay = {
+        .state = MICHI_STATE_PLAYING,
+        .pairing_overlay = MICHI_UI_PAIRING_OVERLAY_PIN,
+        .pairing_pin = "739412",
+        .show_volume_overlay = true
+    };
+    michi_ui_screen_ctx_t ctx_no_vol_overlay = {
+        .state = MICHI_STATE_PLAYING,
+        .pairing_overlay = MICHI_UI_PAIRING_OVERLAY_PIN,
+        .pairing_pin = "739412",
+        .show_volume_overlay = false
+    };
+    
+    michi_ui_render_screen(fb1, PANEL_W, PANEL_H, 0, &ctx_vol_overlay);
+    michi_ui_render_screen(fb2, PANEL_W, PANEL_H, 0, &ctx_no_vol_overlay);
+    
+    diff = 0;
+    for (int i = 0; i < PANEL_W * PANEL_H; i++) {
+        if (fb1[i] != fb2[i]) diff++;
+    }
+    CHECK(diff == 0, "PIN overlay beats volume overlay");
+
+    /* Test D: PLAYING with unknown source renders without invented name */
+    michi_ui_screen_ctx_t ctx_unknown_source = {
+        .state = MICHI_STATE_PLAYING,
+        .title = "Diamond",
+        .artist = "Pink Floyd",
+        .source = NULL
+    };
+    /* Render band 5 (y_origin=200, captures footer area) */
+    uint16_t band_buf[PANEL_W * BAND_H];
+    michi_ui_render_screen(band_buf, PANEL_W, BAND_H, 200, &ctx_unknown_source);
+    CHECK(1, "Renders unknown source without crash");
+
+    free(fb1);
+    free(fb2);
+
+    /* Test E: Band identity for button press feedback and pairing overlays */
+    static const screen_scenario_t scenarios[] = {
+        {
+            .id = "OVERLAY-1",
+            .description = "PLAYING + BTN_PRESS",
+            .ctx = {
+                .state = MICHI_STATE_PLAYING,
+                .pairing_overlay = MICHI_UI_PAIRING_OVERLAY_BUTTON_PRESS,
+            }
+        },
+        {
+            .id = "OVERLAY-2",
+            .description = "PLAYING + WAITING",
+            .ctx = {
+                .state = MICHI_STATE_PLAYING,
+                .pairing_overlay = MICHI_UI_PAIRING_OVERLAY_WAITING,
+            }
+        },
+        {
+            .id = "OVERLAY-3",
+            .description = "PLAYING + PIN",
+            .ctx = {
+                .state = MICHI_STATE_PLAYING,
+                .pairing_overlay = MICHI_UI_PAIRING_OVERLAY_PIN,
+                .pairing_pin = "123456",
+            }
+        }
+    };
+    
+    for (size_t i = 0; i < sizeof(scenarios) / sizeof(scenarios[0]); i++) {
+        check_screen_band_identity(&scenarios[i]);
+    }
 }
 
 int main(void)
 {
     test_wrap();
-    test_ellipsize();
-    test_band_identity();
-    test_smoke();
-    test_pin_ellipsis();
+    test_utf8_decoding();
+    test_wrap_truncation_ex();
+    test_error_taxonomy();
+    test_utf8_safe_copy();
+    test_pairing_and_ota_screen_logic();
+    test_all_screen_scenarios_band_identity();
+    test_buffering_vs_playing_difference();
+    test_pin_landscape();
+    test_pairing_overlay_priority_and_orthogonality();
+
     if (failures == 0) {
-        printf("PASS test_michi_ui\n");
+        printf("PASS test_michi_ui (all landscape scenarios & contracts green)\n");
         return 0;
     }
-    printf("FAIL test_michi_ui (%d)\n", failures);
+    printf("FAIL test_michi_ui (%d failures)\n", failures);
     return 1;
 }

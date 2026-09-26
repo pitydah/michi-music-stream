@@ -204,6 +204,21 @@ esp_err_t michi_discovery_build_announce(const michi_discovery_announce_t *a,
                                          char *out, size_t out_len,
                                          size_t *out_written);
 
+#ifdef MICHI_HOST_TEST
+/* Test hooks for deterministic worker pressure and event coalescing verification */
+void michi_discovery_test_lock(void);
+void michi_discovery_test_unlock(void);
+bool michi_discovery_test_is_timer_active(void);
+bool michi_discovery_test_is_active(void);
+void michi_discovery_test_notify_tick(void);
+void michi_discovery_test_hold_worker(bool hold);
+int michi_discovery_test_worker_state(void);
+bool michi_discovery_test_has_mutex(void);
+bool michi_discovery_test_has_timer(void);
+int michi_discovery_test_socket_fd(void);
+void michi_discovery_test_hold_api(bool hold);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

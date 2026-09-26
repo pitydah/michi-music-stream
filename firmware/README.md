@@ -395,7 +395,7 @@ documented as such.
 |---|------------------|----------|--------|
 | 1 | Use-after-free in `pair_confirm_handler` (cJSON pointers used after `cJSON_Delete`) | `michi_http` handler contract: copy ALL values into local buffers BEFORE delete; returning tree pointers is PROHIBITED. Phase-10 pairing handlers use this pattern | fixed-by-construction |
 | 2 | Use-after-free in `session_start_post_handler` | Same handler contract (phase-12 session handlers) | fixed-by-construction |
-| 3 | Partial HTTP body reads (`httpd_req_recv` once, truncated bodies) | `michi_http_read_body()`: full `Content-Length`, caller buffer IS the limit, bounded stall retries | fixed |
+| 3 | Partial HTTP body reads (`httpd_req_recv` once, truncated bodies) | `michi_http_read_body()`: full `Content-Length`, caller buffer IS the limit, bounded stall retries (1s socket recv timeout, 2s total anti-slowloris deadline) | fixed |
 | 4 | No JSON type/length validation (`->valuestring`/`->valueint` on anything) | Checked helpers `michi_http_json_get_string/int/bool()`: exact type + limit, fail-not-truncate | fixed |
 | 5 | Errors swallowed by `audio_output` (malloc/bind/i2s) | `michi_audio_output` propagates EVERY error (init/start/stop) and cleans up on the way out; no `ESP_ERROR_CHECK` | fixed |
 | 6 | Session marked active before audio started | `michi_audio_output_start()` returns an error; the phase-12 session layer only marks the session active when start returned `ESP_OK` | fixed |
@@ -675,7 +675,7 @@ renderer (`michi_board_display_draw_text`).
 
 | State | Screen |
 |-------|--------|
-| BOOTING, SELF_TEST | none — covered by the BSP boot screen (division below) |
+| BOOTING, SELF_TEST | product boot screen — cat icon, `michi`, `iniciando` (division below) |
 | IDLE | `IDLE` / `Ready to pair` |
 | UNPROVISIONED | `Not configured` / `Press pairing button` |
 | PROVISIONING, WIFI_CONNECTING | `Connecting...` |
@@ -710,14 +710,21 @@ image pipeline is not planned.
 
 ### Division with the BSP boot screen
 
-`app_main` renders the boot screen (board self-test results) **before**
-posting the boot events, and the render task skips BOOTING/SELF_TEST: the
-boot screen covers that window and is never painted over. The dynamic
-screens take over as soon as the FSM reaches a stable state (IDLE at boot
-with the current phase-5 routing; UNPROVISIONED once phase 9 routes it).
+The render task paints the product boot screen (cat icon, `michi`,
+`iniciando` — `michi_ui_draw_screen_boot` via the state dispatcher) for
+BOOTING/SELF_TEST. `app_main` triggers an early redraw
+(`michi_display_request_redraw`) once the panel is available after
+`michi_board_init`, so the screen shows while the rest of the boot
+continues; the boot events then drive BOOTING → SELF_TEST → IDLE through
+the same task. The BSP legacy boot screen (`michi_board_display_boot_screen`)
+is **not** called in the normal flow anymore — its technical content
+(`Board:`/`Flash:`/.../`Result:`) lives in the logs and on the diagnostics
+screen. The dynamic screens take over as soon as the FSM reaches a stable
+state (IDLE at boot with the current phase-5 routing; UNPROVISIONED once
+phase 9 routes it).
 
 Init: `michi_display_init()` right after `michi_state_init()`; a failure
-continues degraded (no dynamic screens, boot screen still shows,
+continues degraded (no dynamic screens, the panel stays black,
 `subsystem=display state=failed phase=6`). Success logs
 `subsystem=display state=ok phase=6`. Kconfig: render task stack
 (`MICHI_DISPLAY_TASK_STACK_BYTES`, 4096) and render queue length
@@ -1319,10 +1326,11 @@ security belongs to the production hardening package (MS-12).
 ### Canonical session integration (MS-07/MS-08)
 
 The session engine is idle at boot. `components/michi_session` starts and
-stops sessions through `michi_audio_session_start(port, ssrc, source_ip)`:
+stops sessions through `michi_audio_session_start(port, ssrc, source_ip, buffer_ms)`:
 the session layer picks a free UDP port in 49152..65535 (0 = pick a
-port), passes the negotiated SSRC (1..2^32-1; 0 is invalid) and the
-dotted IPv4 of the HTTP request peer (the ONLY accepted RTP source).
+port), passes the negotiated SSRC (1..2^32-1; 0 is invalid), the
+dotted IPv4 of the HTTP request peer (the ONLY accepted RTP source), and
+the negotiated jitter buffer target `buffer_ms` (50..500 ms).
 `michi_audio_session_stop()` tears the engine down; metrics feed
 `GET /api/v1/receiver-lite/diagnostics`; the session layer posts the
 `MICHI_EVENT_SESSION_*` events (the engine itself does not post them).
@@ -1541,7 +1549,7 @@ Field contract (the RTP metrics keep living under `audio`, not `rtp`):
 | `wifi.ssid` | `michi_wifi_get_ssid()` | Network NAME only (intentional exposure, see above); `""` when unprovisioned |
 | `wifi.rssi_dbm` | `michi_wifi_get_rssi()` | Omitted when not connected |
 | `wifi.reconnects` | `michi_wifi_get_reconnect_count()` | Backoff attempts armed this boot (monotonic, not reset on link-up) |
-| `audio.*` | `michi_audio_get_metrics()` | RTP engine counters (received/lost/late/duplicate/reordered/underruns/overruns/drops_*/jitter_us/buffer_ms/packets_in_buffer/last_seq/last_timestamp) + `session_active`, `ssrc`; keep name for phase 11/12 clients |
+| `audio.*` | `michi_audio_get_metrics()` | RTP engine counters (received/lost/provisionally_missing/late/duplicate/reordered/underruns/overruns/drops_*/jitter_us/rtp_interarrival_jitter_us/clock_offset_us/buffer_ms/packets_in_buffer/last_seq/last_timestamp) + `session_active`, `ssrc`; keep name for phase 11/12 clients |
 | `session` | `michi_session_get_info()` | `{active:false}` when no session; else `session_id`, `codec`, `sample_rate`, `bit_depth`, `channels`, `stream_port`, `buffer_ms` (clamped), `volume` (applied), `paused`, `ssrc`, `source_addr`. The session TOKEN is never exposed |
 | `i2s_errors` | `michi_audio_output_get_error_count()` | `i2s_channel_write` (transient drop) + `i2s_channel_disable` failures |
 | `dac.model` / `detected` / `initialized` | `michi_dac_get_caps()` | |

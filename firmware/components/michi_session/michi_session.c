@@ -53,6 +53,8 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
 
 #include "esp_err.h"
 #include "esp_log.h"
@@ -61,6 +63,7 @@
 
 #include "michi_audio.h"
 #include "michi_display.h"
+#include "michi_ota.h"
 #include "michi_session.h"
 #include "michi_state.h"
 #include "michi_volume.h"
@@ -95,6 +98,9 @@ static session_ctx_t s_session;
 static bool s_active;
 static uint32_t s_lease_expirations;      /* cumulative, reset by reboot */
 static esp_timer_handle_t s_watchdog;     /* armed ONLY with a session */
+static uint32_t s_lease_generation;       /* counter for lease renewals */
+static QueueHandle_t s_watchdog_queue;
+static TaskHandle_t s_session_task;
 
 /* ------------------------------------------------------------------
  * Encoding / validation helpers
@@ -337,6 +343,7 @@ static bool session_reconcile_dead_engine_locked(void)
     ESP_LOGW(TAG, "session: cleaned dead engine session id=%s",
              s_session.info.session_id);
     esp_timer_stop(s_watchdog); /* the session is gone: watchdog off */
+    s_lease_generation++;
     s_active = false;
     memset(&s_session, 0, sizeof(s_session));
     post_event(MICHI_EVENT_SESSION_CLOSED);
@@ -355,12 +362,15 @@ static bool session_reconcile_dead_engine_locked(void)
  * watchdog re-arms). by_lease increments lease_expirations. */
 static esp_err_t session_teardown_locked(bool by_lease)
 {
+    const michi_session_state_t prev_state = s_session.info.state;
     s_session.info.state = MICHI_SESSION_STATE_STOPPING;
     const esp_err_t err = michi_audio_session_stop();
     if (err != ESP_OK) {
+        s_session.info.state = prev_state;
         return err;
     }
     esp_timer_stop(s_watchdog); /* armed only with a session */
+    s_lease_generation++;
     s_active = false;
     memset(&s_session, 0, sizeof(s_session)); /* token wiped from RAM */
     if (by_lease) {
@@ -413,24 +423,44 @@ static bool session_expire_if_needed_locked(void)
 static void lease_watchdog_cb(void *arg)
 {
     (void)arg;
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    if (!s_active) {
-        xSemaphoreGive(s_mutex); /* defensive: armed only with a session */
-        return;
+    /* esp_timer callbacks run in the esp_timer service task, NOT in a
+     * hardware ISR context. It is safe to call xQueueSend (not FromISR).
+     * The callback only posts the current generation counter; all
+     * blocking work happens in the session_task_func consumer. */
+    const uint32_t gen = s_lease_generation;
+    xQueueSend(s_watchdog_queue, &gen, 0); /* non-blocking send */
+}
+
+static void session_task_func(void *arg)
+{
+    (void)arg;
+    while (1) {
+        uint32_t event_generation;
+        if (xQueueReceive(s_watchdog_queue, &event_generation, portMAX_DELAY) == pdTRUE) {
+            xSemaphoreTake(s_mutex, portMAX_DELAY);
+            if (!s_active || event_generation != s_lease_generation) {
+                xSemaphoreGive(s_mutex);
+                continue;
+            }
+            
+            const int64_t now = esp_timer_get_time();
+            if (now < s_session.lease_deadline_us) {
+                s_lease_generation++;
+                (void)esp_timer_start_once(
+                    s_watchdog, (uint64_t)(s_session.lease_deadline_us - now));
+                xSemaphoreGive(s_mutex);
+                continue;
+            }
+            
+            if (!session_expire_if_needed_locked() && s_active) {
+                /* Engine did not join: keep the session, retry shortly. */
+                s_lease_generation++;
+                (void)esp_timer_start_once(s_watchdog, MICHI_SESSION_LEASE_RETRY_US);
+                ESP_LOGW(TAG, "lease: engine did not stop - watchdog retry");
+            }
+            xSemaphoreGive(s_mutex);
+        }
     }
-    const int64_t now = esp_timer_get_time();
-    if (now < s_session.lease_deadline_us) {
-        (void)esp_timer_start_once(
-            s_watchdog, (uint64_t)(s_session.lease_deadline_us - now));
-        xSemaphoreGive(s_mutex);
-        return;
-    }
-    if (!session_expire_if_needed_locked() && s_active) {
-        /* Engine did not join: keep the session, retry shortly. */
-        (void)esp_timer_start_once(s_watchdog, MICHI_SESSION_LEASE_RETRY_US);
-        ESP_LOGW(TAG, "lease: engine did not stop - watchdog retry");
-    }
-    xSemaphoreGive(s_mutex);
 }
 
 /* FSM reconciliation: the FSM follows the session layer best-effort - a
@@ -490,8 +520,25 @@ esp_err_t michi_session_init(void)
         ESP_LOGE(TAG, "init: watchdog timer creation failed");
         return ESP_ERR_NO_MEM;
     }
+    s_watchdog_queue = xQueueCreate(10, sizeof(uint32_t));
+    if (s_watchdog_queue == NULL) {
+        esp_timer_delete(s_watchdog);
+        vSemaphoreDelete(s_mutex);
+        s_mutex = NULL;
+        ESP_LOGE(TAG, "init: watchdog queue creation failed");
+        return ESP_ERR_NO_MEM;
+    }
+    if (xTaskCreate(session_task_func, "session_task", 4096, NULL, 5, &s_session_task) != pdPASS) {
+        vQueueDelete(s_watchdog_queue);
+        esp_timer_delete(s_watchdog);
+        vSemaphoreDelete(s_mutex);
+        s_mutex = NULL;
+        ESP_LOGE(TAG, "init: session task creation failed");
+        return ESP_ERR_NO_MEM;
+    }
     s_active = false;
     s_lease_expirations = 0;
+    s_lease_generation = 0;
     memset(&s_session, 0, sizeof(s_session));
     s_initialized = true;
     ESP_LOGI(TAG, "subsystem=session state=ok phase=ms08");
@@ -514,13 +561,12 @@ esp_err_t michi_session_start(const michi_session_start_params_t *params,
     }
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
-    /* OTA gate (phase 13): while the FSM is UPDATING no new session may
-     * start. The HTTP layer answers 409 ota_in_progress BEFORE reaching
-     * this call; the gate here is defensive (a race between the busy
-     * check and the update teardown). */
-    if (michi_state_get() == MICHI_STATE_UPDATING) {
+    /* OTA gate (phase 13): while an OTA is busy or the FSM is UPDATING no new session
+     * may start. Checked directly at the subsystem level to prevent race conditions. */
+    if (michi_ota_busy() || michi_state_get() == MICHI_STATE_UPDATING) {
         xSemaphoreGive(s_mutex);
-        ESP_LOGW(TAG, "start: rejected state=UPDATING (ota in progress)");
+        ESP_LOGW(TAG, "start: rejected (ota in progress, busy=%d state=%d)",
+                 (int)michi_ota_busy(), (int)michi_state_get());
         return ESP_ERR_INVALID_STATE;
     }
     /* Lease reconciliation first (mirrors the simulator reference): an
@@ -548,7 +594,8 @@ esp_err_t michi_session_start(const michi_session_start_params_t *params,
      * engine has released everything it reserved - roll back to idle,
      * never a phantom session. */
     const esp_err_t err = michi_audio_session_start(0, params->ssrc,
-                                                    params->source_ip);
+                                                    params->source_ip,
+                                                    params->buffer_ms);
     if (err != ESP_OK) {
         memset(&s_session, 0, sizeof(s_session));
         xSemaphoreGive(s_mutex);
@@ -607,6 +654,7 @@ esp_err_t michi_session_start(const michi_session_start_params_t *params,
     s_session.last_heartbeat_seq = 0;
     s_session.lease_deadline_us =
         esp_timer_get_time() + MICHI_SESSION_LEASE_MS * 1000LL;
+    s_lease_generation++;
     if (esp_timer_start_once(s_watchdog,
                              MICHI_SESSION_LEASE_MS * 1000ULL) != ESP_OK) {
         /* A session whose lease cannot be enforced must not exist:
@@ -752,21 +800,28 @@ esp_err_t michi_session_patch(const char *session_token, bool volume_set,
         return ESP_ERR_NOT_FOUND;
     }
 
-    if (volume_set) {
-        michi_volume_set(volume);
-        s_session.info.volume = michi_volume_get(); /* applied value */
-    }
-
     bool state_changed = false;
     if (paused_set && paused != s_session.info.paused) {
         /* Pause/resume is a state change, NOT a teardown: the engine
          * keeps its socket and task alive (valid packets keep being
-         * counted and are discarded while paused). */
-        michi_audio_session_set_paused(paused);
+         * counted and are discarded while paused).
+         * Execute fallible pause/resume FIRST: if it fails, abort immediately
+         * without mutating volume or committing state, and return the error. */
+        const esp_err_t err = michi_audio_session_set_paused(paused);
+        if (err != ESP_OK) {
+            xSemaphoreGive(s_mutex);
+            ESP_LOGE(TAG, "patch: pause/resume failed: %s", esp_err_to_name(err));
+            return err;
+        }
         s_session.info.paused = paused;
         s_session.info.state = paused ? MICHI_SESSION_STATE_PAUSED
                                       : MICHI_SESSION_STATE_PLAYING;
         state_changed = true;
+    }
+
+    if (volume_set) {
+        michi_volume_set(volume);
+        s_session.info.volume = michi_volume_get(); /* applied value */
     }
     xSemaphoreGive(s_mutex);
 
@@ -854,7 +909,8 @@ bool michi_session_active(void)
 }
 
 michi_session_heartbeat_result_t michi_session_heartbeat(
-    const char *session_token, const char *session_id, uint32_t sequence)
+    const char *session_token, const char *session_id, uint32_t sequence,
+    const char *peer_ip)
 {
     if (!s_initialized) {
         return MICHI_SESSION_HEARTBEAT_NO_SESSION;
@@ -888,6 +944,16 @@ michi_session_heartbeat_result_t michi_session_heartbeat(
         ESP_LOGW(TAG, "heartbeat: session_id mismatch rejected=1");
         return MICHI_SESSION_HEARTBEAT_SESSION_MISMATCH;
     }
+    /* Peer IP check: fail closed. Heartbeat must strictly match session source IP.
+     * Empty, malformed, NULL, or differing peer IP is rejected with 403 Forbidden (fail closed);
+     * lease is NOT renewed and sequence is NOT advanced. */
+    if (peer_ip == NULL || peer_ip[0] == '\0' || s_session.info.source_addr[0] == '\0' ||
+        strcmp(peer_ip, s_session.info.source_addr) != 0) {
+        xSemaphoreGive(s_mutex);
+        ESP_LOGW(TAG, "heartbeat: peer IP '%s' != session source '%s' - rejected fail closed (403)",
+                 peer_ip ? peer_ip : "<null>", s_session.info.source_addr);
+        return MICHI_SESSION_HEARTBEAT_SOURCE_MISMATCH;
+    }
     /* Sequence: strictly increasing within the session. A repeated or
      * older heartbeat does NOT renew (contract 2.6: 409 CONFLICT). */
     if (s_session.heartbeat_seq_valid &&
@@ -904,6 +970,7 @@ michi_session_heartbeat_result_t michi_session_heartbeat(
     s_session.lease_deadline_us =
         esp_timer_get_time() + MICHI_SESSION_LEASE_MS * 1000LL;
     s_session.info.lease_remaining_ms = MICHI_SESSION_LEASE_MS;
+    s_lease_generation++;
     const esp_err_t arm_err = esp_timer_start_once(
         s_watchdog, MICHI_SESSION_LEASE_MS * 1000ULL);
     xSemaphoreGive(s_mutex);

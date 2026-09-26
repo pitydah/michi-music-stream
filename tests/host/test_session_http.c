@@ -524,12 +524,119 @@ static void test_heartbeat(void)
                            "token");
 }
 
+static void test_http_config_limits(void)
+{
+    printf("HTTP-DEADLINE-01: verify recv and send wait timeouts\n");
+    httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
+    michi_http_configure_defaults(&cfg);
+    CHECK(cfg.recv_wait_timeout == 1, "recv_wait_timeout == 1s");
+    CHECK(cfg.send_wait_timeout == 5, "send_wait_timeout == 5s");
+    CHECK(cfg.max_uri_handlers == 16, "max_uri_handlers == 16");
+    CHECK(cfg.stack_size == 8192, "stack_size == 8192");
+    CHECK(cfg.lru_purge_enable == true, "lru_purge_enable == true");
+    CHECK(cfg.server_port == 80, "server_port == 80");
+}
+
+static void test_http_slow_01_normal_body_read(void)
+{
+    printf("HTTP-SLOW-01: normal complete body read within deadline\n");
+    test_http_reset();
+    const char *payload = "{\"test\":\"hello\"}";
+    size_t len = strlen(payload);
+    char clen_buf[16];
+    snprintf(clen_buf, sizeof(clen_buf), "%zu", len);
+
+    test_http_set_content_length(clen_buf);
+    test_http_set_payload(payload, len);
+
+    char buf[128];
+    size_t out_len = 0;
+    httpd_req_t dummy_req;
+    esp_err_t err = michi_http_read_body(&dummy_req, buf, sizeof(buf), &out_len);
+    CHECK(err == ESP_OK, "read body succeeds");
+    CHECK(out_len == len, "out_len matches");
+    CHECK(strcmp(buf, payload) == 0, "payload matches exactly");
+}
+
+static void test_http_slow_02_slowloris_total_timeout(void)
+{
+    printf("HTTP-SLOW-02: slowloris trickle exceeding total deadline returns ESP_ERR_TIMEOUT\n");
+    test_http_reset();
+    const char *payload = "{\"test\":\"slowloris_very_long_body_data_here\"}";
+    size_t len = strlen(payload);
+    char clen_buf[16];
+    snprintf(clen_buf, sizeof(clen_buf), "%zu", len);
+
+    test_http_set_content_length(clen_buf);
+    test_http_set_payload(payload, len);
+    /* Trickle 2 bytes per chunk, advancing monotonic clock 500ms (500000 us) per chunk.
+     * After 5 chunks (10 bytes), 2500ms have elapsed > 2000ms deadline. */
+    test_http_set_trickle(2, 500000LL);
+
+    char buf[128];
+    size_t out_len = 0;
+    httpd_req_t dummy_req;
+    esp_err_t err = michi_http_read_body(&dummy_req, buf, sizeof(buf), &out_len);
+    CHECK(err == ESP_ERR_TIMEOUT, "slowloris trickle aborted with ESP_ERR_TIMEOUT");
+}
+
+static void test_http_slow_03_socket_timeout_retries_exceeded(void)
+{
+    printf("HTTP-SLOW-03: repeated socket timeouts exceeding retry limit abort with ESP_ERR_TIMEOUT\n");
+    test_http_reset();
+    const char *payload = "{\"test\":\"data\"}";
+    size_t len = strlen(payload);
+    char clen_buf[16];
+    snprintf(clen_buf, sizeof(clen_buf), "%zu", len);
+
+    test_http_set_content_length(clen_buf);
+    test_http_set_payload(payload, len);
+    /* Set 2 socket timeouts. MICHI_HTTP_RECV_TIMEOUT_RETRIES is 1.
+     * The second timeout exceeds retry limit and must abort with ESP_ERR_TIMEOUT. */
+    test_http_set_timeout_count(2);
+
+    char buf[128];
+    size_t out_len = 0;
+    httpd_req_t dummy_req;
+    esp_err_t err = michi_http_read_body(&dummy_req, buf, sizeof(buf), &out_len);
+    CHECK(err == ESP_ERR_TIMEOUT, "socket timeout retries exceeded returns ESP_ERR_TIMEOUT");
+}
+
+static void test_http_slow_04_trickle_completes_past_deadline(void)
+{
+    printf("HTTP-SLOW-04: body completing past total deadline returns ESP_ERR_TIMEOUT\n");
+    test_http_reset();
+    const char *payload = "12345678901234567890"; /* 20 bytes */
+    size_t len = strlen(payload);
+    char clen_buf[16];
+    snprintf(clen_buf, sizeof(clen_buf), "%zu", len);
+
+    test_http_set_content_length(clen_buf);
+    test_http_set_payload(payload, len);
+    /* 10 bytes per chunk, 1100ms per chunk.
+     * Chunk 1: 10 bytes read, elapsed = 1100ms (< 2000ms deadline).
+     * Chunk 2: 10 bytes read (total 20 bytes = full content_len), elapsed = 2200ms (> 2000ms deadline).
+     * Must be rejected with ESP_ERR_TIMEOUT rather than succeeding. */
+    test_http_set_trickle(10, 1100000LL);
+
+    char buf[128];
+    size_t out_len = 0;
+    httpd_req_t dummy_req;
+    esp_err_t err = michi_http_read_body(&dummy_req, buf, sizeof(buf), &out_len);
+    CHECK(err == ESP_ERR_TIMEOUT, "body completing past deadline rejected with ESP_ERR_TIMEOUT");
+}
+
 int main(void)
 {
     test_create_valid();
     test_create_rejects();
     test_patch();
     test_heartbeat();
+    test_http_config_limits();
+    test_http_slow_01_normal_body_read();
+    test_http_slow_02_slowloris_total_timeout();
+    test_http_slow_03_socket_timeout_retries_exceeded();
+    test_http_slow_04_trickle_completes_past_deadline();
     if (failures != 0) {
         printf("session_http: %d FAILURE(S)\n", failures);
         return 1;

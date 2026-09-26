@@ -43,6 +43,29 @@ typedef struct michi_dac_driver_ops {
 
 typedef enum { MICHI_PRODUCT_STANDARD, MICHI_PRODUCT_HIFI, MICHI_PRODUCT_DIAGNOSTIC } michi_product_tier_t;
 
+typedef enum {
+    MICHI_DAC_PROFILE_SOURCE_NONE = 0,
+    MICHI_DAC_PROFILE_SOURCE_HW_ID,
+    MICHI_DAC_PROFILE_SOURCE_NVS,
+    MICHI_DAC_PROFILE_SOURCE_KCONFIG,
+    MICHI_DAC_PROFILE_SOURCE_AUTODETECT,
+} michi_dac_profile_source_t;
+
+/**
+ * @brief DAC capability structure.
+ *
+ * NOTE on Capability Layer Separation (Phase R2-L):
+ *  1. Silicon Capability: Hardware limits of the DAC silicon (e.g. PCM5122
+ *     supports up to 384 kHz, 32-bit I2S data, 112 dB SNR per TI SLAS763C).
+ *     These are reported in the driver template.
+ *  2. Driver Implementation Capability: Features actively implemented by
+ *     the driver code (e.g. 48 kHz, 16/24-bit slot, PLL autoset, hardware volume).
+ *  3. Validated System Capability: End-to-end verified on physical board
+ *     through I2S DMA and FreeRTOS pipeline (48 kHz, 16-bit stereo).
+ *  4. Protocol Advertised Capability: The wire contract exposed via
+ *     GET /api/v1/server/info (strictly 48000 Hz, 16-bit, stereo, pcm_s16le).
+ *     Client negotiation never receives unvalidated or silicon-only rates.
+ */
 typedef struct {
     char vendor[24]; char model[32]; char board_profile[32];
     uint32_t max_sample_rate; uint8_t max_bit_depth; uint8_t channels; uint16_t snr_db;

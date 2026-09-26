@@ -31,23 +31,24 @@
 └──────────────┘          └──────────────┘   └──────────────┘
 ```
 
-## Pines I2S
+## Pines I2S (Kconfig Authoritative)
 
-| Señal | GPIO |
-|-------|------|
-| BCLK | 6 |
-| LRC | 7 |
-| DIN | 8 |
+| Señal | GPIO | Nota |
+|-------|------|------|
+| BCLK | 3 | I2S bit clock (strapping pin ESP32-S3) |
+| LRCK | 18 | I2S left/right frame clock |
+| DIN | 5 | I2S serial audio data |
+| MCLK | -1 | No conectado / no requerido (PCM5102A PLL genera reloj interno desde BCK) |
 
 ## GPIO
 
 | Pin | Función |
 |-----|---------|
-| 3 | Botón pairing (input pull-up, flanco descendente) |
-| 4 | LED WS2812B |
-| 6 | I2S BCLK |
-| 7 | I2S LRC |
-| 8 | I2S DIN |
+| 17 | Botón pairing (input pull-up activo en bajo, flanco descendente) |
+| 4 | LED estado (SK6812 / WS2812B) |
+| 3 | I2S BCLK |
+| 18 | I2S LRCK |
+| 5 | I2S DIN |
 
 ## LED
 

@@ -79,6 +79,16 @@ extern "C" {
  * hardware volume). The API layer must answer with michi_volume_get().
  */
 
+typedef enum {
+    MICHI_AUDIO_STATE_UNINITIALIZED = 0,
+    MICHI_AUDIO_STATE_INITIALIZED,
+    MICHI_AUDIO_STATE_RUNNING,
+    MICHI_AUDIO_STATE_QUIESCED,
+    MICHI_AUDIO_STATE_STOPPING,
+    MICHI_AUDIO_STATE_STOPPED,
+    MICHI_AUDIO_STATE_FAULTED,
+} michi_audio_output_state_t;
+
 typedef struct {
     uint32_t sample_rate;    /*!< I2S sample rate in Hz (8000..96000) */
     uint8_t  bit_depth;      /*!< 16 or 24 */
@@ -137,6 +147,44 @@ esp_err_t michi_audio_output_start(void);
 esp_err_t michi_audio_output_write(const uint8_t *data, size_t len);
 
 /**
+ * @brief Flush all buffered audio in the ring immediately.
+ *
+ * Empties the SPSC ring without stopping the I2S pipeline or disrupting
+ * the hardware clocks. Used on pause and teardown for immediate silence.
+ *
+ * @return ESP_OK; ESP_ERR_INVALID_STATE when not running.
+ */
+esp_err_t michi_audio_output_flush(void);
+
+/**
+ * @brief Quiesce the audio output pipeline sample-clean.
+ *
+ * Stops consumer acceptance, flushes the SPSC ring buffer, zeroes out any
+ * in-flight chunk buffer, and pushes explicit digital silence through the DMA
+ * channel to clear in-flight hardware FIFOs without tearing down clocks.
+ * While quiesced, any write() call returns ESP_ERR_INVALID_STATE immediately.
+ *
+ * @return ESP_OK; ESP_ERR_INVALID_STATE when not initialized.
+ */
+esp_err_t michi_audio_output_quiesce(void);
+
+/**
+ * @brief Resume audio output after quiescing.
+ *
+ * Re-enables consumer acceptance and allows write() calls again.
+ *
+ * @return ESP_OK; ESP_ERR_INVALID_STATE when not initialized.
+ */
+esp_err_t michi_audio_output_resume(void);
+
+/**
+ * @brief Check if the audio pipeline is currently quiesced.
+ *
+ * @return true if quiesced, false otherwise.
+ */
+bool michi_audio_output_is_quiesced(void);
+
+/**
  * @brief Cooperative stop: flag + notify + i2s_channel_disable + join
  *        with timeout. The channel is DISABLED but NOT deleted (it is
  *        deleted only by deinit()). Idempotent when not running.
@@ -167,6 +215,11 @@ esp_err_t michi_audio_output_deinit(void);
 bool michi_audio_output_is_running(void);
 
 /**
+ * @brief Get the current audio output state machine state.
+ */
+michi_audio_output_state_t michi_audio_output_get_state(void);
+
+/**
  * @brief Get the I2S error counter (phase 14 diagnostics).
  *
  * Counts the failures that today are only logged: i2s_channel_write
@@ -179,6 +232,10 @@ bool michi_audio_output_is_running(void);
  * @return ESP_OK; ESP_ERR_INVALID_ARG on NULL out.
  */
 esp_err_t michi_audio_output_get_error_count(uint32_t *out);
+
+/* Test hooks for host unit tests */
+void test_michi_audio_output_set_ignore_cmd(bool ignore);
+void test_michi_audio_output_set_cmd_timeout_ms(uint32_t ms);
 
 #ifdef __cplusplus
 }

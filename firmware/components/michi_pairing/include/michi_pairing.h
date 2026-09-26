@@ -21,7 +21,7 @@ extern "C" {
  *   NO network-visible API that opens it - the HTTP pair handlers only
  *   operate INSIDE a window already opened by the button.
  * - A window lasts exactly CONFIG_MICHI_PAIRING_WINDOW_SECONDS (default
- *   120) on the MONOTONIC clock (esp_timer). A reboot closes it (window
+ *   5) on the MONOTONIC clock (esp_timer). A reboot closes it (window
  *   state is RAM-only). Re-opening replaces the previous window AND
  *   drops every pending pairing session.
  * - POST /pair/start verifies an Ed25519 signature over the DECODED
@@ -485,6 +485,19 @@ esp_err_t michi_pairing_close_window(void);
  */
 esp_err_t michi_pairing_shutdown(void);
 
+#ifdef MICHI_HOST_TEST
+/* Test hooks for deterministic worker pressure and event coalescing verification */
+void michi_pairing_test_lock(void);
+void michi_pairing_test_unlock(void);
+bool michi_pairing_test_is_window_open_locked(void);
+void michi_pairing_test_notify_expired(void);
+void michi_pairing_test_hold_worker(bool hold);
+int michi_pairing_test_worker_state(void);
+bool michi_pairing_test_has_mutex(void);
+void michi_pairing_test_hold_api(bool hold);
+#endif
+
 #ifdef __cplusplus
 }
 #endif
+

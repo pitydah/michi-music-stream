@@ -409,6 +409,9 @@ static void handle_got_ip(const ip_event_got_ip_t *event)
     s_network_ready = true;
     portEXIT_CRITICAL(&s_mux);
 
+    /* Enforce WIFI_PS_NONE on every connection (including after BLE provisioning). */
+    (void)esp_wifi_set_ps(WIFI_PS_NONE);
+
     ESP_LOGI(TAG, "subsystem=wifi state=connected phase=9");
     ESP_LOGI(TAG, "wifi: ssid=%s ip=%s retry=0", michi_wifi_get_ssid(),
              ipbuf);
@@ -1171,6 +1174,9 @@ esp_err_t michi_wifi_init(void)
             return err;
         }
         s_wifi_started = true;
+        /* Real-time audio policy: disable modem power saving (WIFI_PS_NONE)
+         * to eliminate DTIM beacon sleep latency jitter during playback. */
+        (void)esp_wifi_set_ps(WIFI_PS_NONE);
         wifi_config_t wifi_cfg;
         memset(&wifi_cfg, 0, sizeof(wifi_cfg));
         strlcpy((char *)wifi_cfg.sta.ssid, s_ssid_cache,

@@ -37,6 +37,10 @@
 #include "esp_random.h"
 #include "nvs.h"
 
+#ifndef MICHI_IDENTITY_TESTING
+#include "bootloader_random.h"
+#endif
+
 #include "blake3.h"
 #include "monocypher.h"
 #include "monocypher-ed25519.h"
@@ -204,11 +208,47 @@ static esp_err_t derive_from_seed(const uint8_t seed[MICHI_IDENTITY_SEED_BYTES])
     return ESP_OK;
 }
 
+static bool seed_has_entropy(const uint8_t *seed, size_t len)
+{
+    if (seed == NULL || len < 16) {
+        return false;
+    }
+    bool all_zero = true;
+    bool all_ff = true;
+    bool all_same = true;
+    for (size_t i = 0; i < len; i++) {
+        if (seed[i] != 0) {
+            all_zero = false;
+        }
+        if (seed[i] != 0xFF) {
+            all_ff = false;
+        }
+        if (seed[i] != seed[0]) {
+            all_same = false;
+        }
+    }
+    return !all_zero && !all_ff && !all_same;
+}
+
 static esp_err_t generate_and_persist(void)
 {
     uint8_t seed[MICHI_IDENTITY_SEED_BYTES];
-    /* Hardware RNG - the ONLY entropy source for the seed. */
+#ifndef MICHI_IDENTITY_TESTING
+    /* Ensure high-entropy hardware RNG is enabled (ADC noise source)
+     * when RF/Wi-Fi is not yet active during early boot. */
+    bootloader_random_enable();
+#endif
+    /* Hardware RNG - the entropy source for the seed. */
     esp_fill_random(seed, sizeof(seed));
+#ifndef MICHI_IDENTITY_TESTING
+    bootloader_random_disable();
+#endif
+
+    if (!seed_has_entropy(seed, sizeof(seed))) {
+        ESP_LOGE(TAG, "identity: RNG generated degenerate seed (insufficient entropy)");
+        crypto_wipe(seed, sizeof(seed));
+        return ESP_FAIL;
+    }
 
     esp_err_t err = derive_from_seed(seed);
     if (err != ESP_OK) {

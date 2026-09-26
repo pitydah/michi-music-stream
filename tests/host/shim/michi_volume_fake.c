@@ -26,3 +26,10 @@ uint8_t michi_volume_get(void)
 {
     return s_volume;
 }
+
+void michi_volume_apply(uint8_t *buf, size_t bytes, uint8_t bit_depth)
+{
+    (void)buf;
+    (void)bytes;
+    (void)bit_depth;
+}

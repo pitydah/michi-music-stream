@@ -37,8 +37,6 @@
 
 #include "dac_internal.h"
 
-#define MICHI_DAC_NVS_NAMESPACE "michi_dac"
-#define MICHI_DAC_NVS_KEY_PROFILE "dac_profile"
 #define MICHI_DAC_PROFILE_BUF_LEN 64 /* NVS string buffer, enough for any DAC profile */
 
 #define MICHI_DAC_I2C_PORT I2C_NUM_0
@@ -108,6 +106,36 @@ static esp_err_t load_profile_from_nvs(char *profile, size_t buf_len)
     return err;
 }
 
+esp_err_t michi_dac_get_nvs_profile(char *profile, size_t buf_len)
+{
+    if (profile == NULL || buf_len == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return load_profile_from_nvs(profile, buf_len);
+}
+
+esp_err_t michi_dac_set_nvs_profile(const char *profile)
+{
+    nvs_handle_t handle = 0;
+    esp_err_t err = nvs_open(MICHI_DAC_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (profile == NULL || profile[0] == '\0') {
+        err = nvs_erase_key(handle, MICHI_DAC_NVS_KEY_PROFILE);
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            err = ESP_OK;
+        }
+    } else {
+        err = nvs_set_str(handle, MICHI_DAC_NVS_KEY_PROFILE, profile);
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    return err;
+}
+
 /* I2C bus needed only when something may actually talk over it: a profile
  * binding an I2C DAC (self-detectable implies an I2C probe; PCM5102A is not
  * self-detectable and has no control bus), or autodetection candidates.
@@ -153,6 +181,73 @@ static esp_err_t bind_driver(const michi_dac_driver_t *drv, const char *reason)
     return ESP_OK;
 }
 
+esp_err_t michi_dac_resolve_profile(char *out, size_t out_len,
+                                    michi_dac_profile_source_t *out_source)
+{
+    if (out == NULL || out_len == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    out[0] = '\0';
+    if (out_source != NULL) {
+        *out_source = MICHI_DAC_PROFILE_SOURCE_NONE;
+    }
+
+    /* 1. Hardware / manufacturing identity source (highest authority) */
+    if (s_hw_id_source != NULL) {
+        char hw_profile[MICHI_DAC_PROFILE_BUF_LEN] = {0};
+        esp_err_t err = s_hw_id_source(hw_profile, sizeof(hw_profile));
+        if (err == ESP_OK && hw_profile[0] != '\0') {
+            strncpy(out, hw_profile, out_len - 1);
+            out[out_len - 1] = '\0';
+            if (out_source != NULL) {
+                *out_source = MICHI_DAC_PROFILE_SOURCE_HW_ID;
+            }
+            return ESP_OK;
+        }
+        if (err != ESP_OK && err != ESP_ERR_NOT_FOUND) {
+            ESP_LOGE(TAG, "hw-id source failed: %s", esp_err_to_name(err));
+            return err;
+        }
+    }
+
+    /* 2. NVS explicit override (user/field configuration) */
+    char nvs_profile[MICHI_DAC_PROFILE_BUF_LEN] = {0};
+    esp_err_t err = load_profile_from_nvs(nvs_profile, sizeof(nvs_profile));
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "NVS profile read failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    if (nvs_profile[0] != '\0') {
+        strncpy(out, nvs_profile, out_len - 1);
+        out[out_len - 1] = '\0';
+        if (out_source != NULL) {
+            *out_source = MICHI_DAC_PROFILE_SOURCE_NVS;
+        }
+        return ESP_OK;
+    }
+
+    /* 3. Compile-time SKU fallback */
+#if defined(CONFIG_MICHI_DAC_DEFAULT_PROFILE)
+    static const char s_kconfig_default[] = CONFIG_MICHI_DAC_DEFAULT_PROFILE;
+#else
+    static const char s_kconfig_default[] = "";
+#endif
+    if (s_kconfig_default[0] != '\0') {
+        strncpy(out, s_kconfig_default, out_len - 1);
+        out[out_len - 1] = '\0';
+        if (out_source != NULL) {
+            *out_source = MICHI_DAC_PROFILE_SOURCE_KCONFIG;
+        }
+        return ESP_OK;
+    }
+
+    /* 4. Autodetection (walk registry for self-detectable hardware) */
+    if (out_source != NULL) {
+        *out_source = MICHI_DAC_PROFILE_SOURCE_AUTODETECT;
+    }
+    return ESP_OK;
+}
+
 esp_err_t michi_dac_init(void)
 {
     if (s_inited) {
@@ -160,13 +255,16 @@ esp_err_t michi_dac_init(void)
     }
 
     char profile[MICHI_DAC_PROFILE_BUF_LEN] = {0};
-    esp_err_t err = load_profile_from_nvs(profile, sizeof(profile));
+    michi_dac_profile_source_t source = MICHI_DAC_PROFILE_SOURCE_NONE;
+    esp_err_t err = michi_dac_resolve_profile(profile, sizeof(profile), &source);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "NVS profile read failed: %s", esp_err_to_name(err));
         return err;
     }
+
     if (profile[0] != '\0') {
-        ESP_LOGI(TAG, "NVS dac_profile=%s (force-bind source)", profile);
+        const char *src_str = (source == MICHI_DAC_PROFILE_SOURCE_HW_ID) ? "hw-id" :
+                              (source == MICHI_DAC_PROFILE_SOURCE_NVS) ? "NVS" : "Kconfig";
+        ESP_LOGI(TAG, "resolved dac_profile=%s (source=%s)", profile, src_str);
     }
 
     if (i2c_bus_needed(profile)) {
@@ -196,23 +294,27 @@ esp_err_t michi_dac_init(void)
     }
 
     s_inited = true;
-    ESP_LOGI(TAG, "init ok: registry=%d drivers, nvs_profile=%s",
-             (int)michi_dac_registry_count(), profile[0] != '\0' ? "set" : "empty");
+    ESP_LOGI(TAG, "init ok: registry=%d drivers, effective_profile=%s",
+             (int)michi_dac_registry_count(), profile[0] != '\0' ? profile : "autodetect");
     return ESP_OK;
 }
 
-static esp_err_t detect_by_profile(const char *profile)
+static esp_err_t detect_by_profile(const char *profile, const char *reason)
 {
     const michi_dac_driver_t *drv = michi_dac_registry_find_by_profile(profile);
     if (drv == NULL) {
-        ESP_LOGW(TAG, "NVS profile %s matches no registered driver", profile);
+        ESP_LOGW(TAG, "profile %s matches no registered driver", profile);
         return ESP_ERR_NOT_FOUND;
     }
-    return bind_driver(drv, "profile");
+    return bind_driver(drv, reason);
 }
 
 static esp_err_t autodetect(void)
 {
+    if (s_bus == NULL) {
+        ESP_LOGI(TAG, "autodetect skipped: no I2C bus created (profile-only or no-I2C mode)");
+        return ESP_ERR_NOT_FOUND;
+    }
     for (size_t i = 0; i < michi_dac_registry_count(); i++) {
         const michi_dac_driver_t *drv = michi_dac_registry_get(i);
         if (drv == NULL || !drv->self_detectable) {
@@ -244,52 +346,32 @@ esp_err_t michi_dac_detect(void)
     }
 
     char profile[MICHI_DAC_PROFILE_BUF_LEN] = {0};
-    esp_err_t err = load_profile_from_nvs(profile, sizeof(profile));
+    michi_dac_profile_source_t source = MICHI_DAC_PROFILE_SOURCE_NONE;
+    esp_err_t err = michi_dac_resolve_profile(profile, sizeof(profile), &source);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "NVS profile read failed: %s", esp_err_to_name(err));
         return err;
     }
-    bool had_profile = (profile[0] != '\0');
-    if (had_profile) {
-        err = detect_by_profile(profile);
+
+    if (profile[0] != '\0') {
+        const char *reason_str = (source == MICHI_DAC_PROFILE_SOURCE_HW_ID) ? "hw_id" :
+                                 (source == MICHI_DAC_PROFILE_SOURCE_KCONFIG) ? "kconfig" : "profile";
+        err = detect_by_profile(profile, reason_str);
         if (err == ESP_OK) {
             return ESP_OK;
         }
-        if (err != ESP_ERR_NOT_FOUND) {
-            return err;
-        }
-        ESP_LOGW(TAG, "unknown dac_profile='%s', falling back to autodetect", profile);
-    }
-
-    if (s_hw_id_source != NULL) {
-        char hw_profile[MICHI_DAC_PROFILE_BUF_LEN] = {0};
-        err = s_hw_id_source(hw_profile, sizeof(hw_profile));
-        if (err == ESP_OK && hw_profile[0] != '\0') {
-            ESP_LOGI(TAG, "hw-id source reported profile=%s", hw_profile);
-            const michi_dac_driver_t *drv = michi_dac_registry_find_by_profile(hw_profile);
-            if (drv == NULL) {
-                ESP_LOGW(TAG, "hw-id profile %s matches no registered driver", hw_profile);
-                return ESP_ERR_NOT_FOUND;
-            }
-            return bind_driver(drv, "hw_id");
-        }
-        if (err != ESP_OK && err != ESP_ERR_NOT_FOUND) {
-            ESP_LOGE(TAG, "hw-id source failed: %s", esp_err_to_name(err));
-            return err;
-        }
+        ESP_LOGW(TAG, "resolved profile '%s' (source=%s) matches no registered driver, falling back to autodetect",
+                 profile, reason_str);
     }
 
     err = autodetect();
     if (err != ESP_ERR_NOT_FOUND) {
         return err;
     }
-    /* Two distinct causes for the same outcome, logged differently: no
-     * profile was ever set (autodetection is the only source) vs a profile
-     * was present but its probe fallback found nothing. */
-    if (had_profile) {
-        ESP_LOGW(TAG, "no DAC detected: probe fallback after unknown profile found no device");
+
+    if (profile[0] != '\0') {
+        ESP_LOGE(TAG, "detection failed: profile '%s' unknown AND autodetect found no DAC", profile);
     } else {
-        ESP_LOGW(TAG, "no DAC detected: no dac_profile set and probe found no device");
+        ESP_LOGW(TAG, "detection completed: no DAC detected (DIAGNOSTIC tier)");
     }
     return ESP_ERR_NOT_FOUND;
 }

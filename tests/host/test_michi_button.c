@@ -1,36 +1,37 @@
-/* Host-side tests for the deterministic button gesture contract (P1-07).
+/* Host-side tests for the button gesture contract (P0-01 + P1-07).
  *
  * Compiles the REAL firmware gesture module (michi_button_gesture.c -
  * the exact decision code the debounce task runs, no reimplementation)
  * plus the REAL identity component (michi_identity.c + identity_nvs.c +
  * Monocypher/BLAKE3): the corrupt-identity recovery path is proven end
- * to end - a factory reset wipes a CORRUPT store and a fresh init mints
- * a working identity. The pairing side is a call-counter test double
- * (the REAL pairing erase_all is already covered by test_michi_pairing);
- * the button test proves the WIRING: a factory reset calls
- * michi_pairing_erase_all() + michi_identity_factory_reset() +
- * nvs_flash_erase() + esp_restart().
+ * to end. The pairing side is a call-counter test double.
  *
- * Boundary contract (Kconfig defaults mirrored in shim/sdkconfig.h):
- *   < 5000 ms        -> PAIRING
- *   5000..9999 ms    -> RECOVERY only when released in RECOVERABLE_ERROR
- *   >= 10000 ms      -> FACTORY_RESET (armed: press started >= 10000 ms
- *                       after boot)
- *   press/release in BOOTING, SELF_TEST or UPDATING -> ignored, every band
+ * NEW CONTRACT (P0-01) — hold-on-threshold:
+ *   < PAIRING_HOLD_MS (5000)   → no action yet (NONE)
+ *   at PAIRING_HOLD_MS         → PAIRING fires (threshold crossing)
+ *   > PAIRING_HOLD_MS, same press → still NONE (gesture consumed)
+ *   at FACTORY_WARN_MS (10000) → FACTORY_WARN (visual, not consumed)
+ *   at FACTORY_RESET_MS (15000) → FACTORY_RESET
+ *   In RECOVERABLE_ERROR: PAIRING_HOLD_MS threshold → RECOVERY
+ *   Protected state (BOOTING/SELF_TEST/UPDATING): IGNORED_PROTECTED
+ *   Boot-hold (arm window not met): IGNORED_ARM for factory reset
+ *
+ * Gate: PAIRING_BUTTON_5S_PASS
  */
 
 #include <stdio.h>
 #include <string.h>
 
 #include "michi_button_gesture.h"
+#include "michi_dac.h"
 #include "michi_identity.h"
 #include "identity_storage.h"
 #include "michi_pairing_fake.h"
-#include "michi_state.h" /* shim: test_state_set for the FSM model */
-#include "nvs.h" /* fake NVS shim: test hooks */
-#include "nvs_flash.h" /* shim: erase counter */
-#include "esp_system.h" /* shim: restart counter */
-#include "sdkconfig.h" /* the Kconfig defaults under test */
+#include "michi_state.h"   /* shim: test_state_set */
+#include "nvs.h"           /* fake NVS shim */
+#include "nvs_flash.h"     /* shim: erase counter */
+#include "esp_system.h"    /* shim: restart counter */
+#include "sdkconfig.h"     /* Kconfig defaults under test */
 
 static int failures = 0;
 
@@ -42,18 +43,47 @@ static int failures = 0;
         }                                                                   \
     } while (0)
 
-static const uint32_t RECOVERY_MS = CONFIG_MICHI_BUTTON_RECOVERY_PRESS_MS;
-static const uint32_t FACTORY_MS = CONFIG_MICHI_BUTTON_FACTORY_RESET_PRESS_MS;
-static const uint32_t ARM_MS = CONFIG_MICHI_BUTTON_FACTORY_ARM_MS;
+static const int64_t PAIRING_MS   = CONFIG_MICHI_BUTTON_PAIRING_HOLD_MS;
+static const int64_t WARN_MS      = CONFIG_MICHI_BUTTON_FACTORY_WARN_MS;
+static const int64_t FACTORY_MS   = CONFIG_MICHI_BUTTON_FACTORY_RESET_PRESS_MS;
+static const int64_t ARM_MS       = CONFIG_MICHI_BUTTON_FACTORY_ARM_MS;
 
-static michi_button_action_t classify(uint32_t press_ms,
-                                      michi_state_t press_st,
-                                      michi_state_t release_st,
-                                      int64_t boot_elapsed_ms)
+/* Build an idle ctx (no previous action, not protected). */
+static michi_button_press_ctx_t make_ctx(michi_state_t press_st,
+                                         int64_t press_boot_ms,
+                                         bool action_fired,
+                                         bool factory_warned)
 {
-    return michi_button_gesture_classify(press_ms, press_st, release_st,
-                                         boot_elapsed_ms, RECOVERY_MS,
-                                         FACTORY_MS, ARM_MS);
+    michi_button_press_ctx_t c = {0};
+    c.pressed        = true;
+    c.action_fired   = action_fired;
+    c.factory_warned = factory_warned;
+    c.press_state    = press_st;
+    c.press_boot_ms  = press_boot_ms;
+    c.pressed_at_us  = 0; /* elapsed passed separately */
+    return c;
+}
+
+static michi_button_action_t hold_cls(int64_t elapsed_ms,
+                                      michi_state_t press_st,
+                                      michi_state_t cur_st,
+                                      int64_t boot_ms,
+                                      bool action_fired,
+                                      bool factory_warned)
+{
+    michi_button_press_ctx_t ctx = make_ctx(press_st, boot_ms,
+                                            action_fired, factory_warned);
+    return michi_button_hold_classify(
+        elapsed_ms, press_st, cur_st, boot_ms, &ctx,
+        (uint32_t)PAIRING_MS, (uint32_t)WARN_MS, (uint32_t)FACTORY_MS,
+        (uint32_t)ARM_MS);
+}
+
+/* Convenience: idle state, not consumed. */
+static michi_button_action_t simple_cls(int64_t elapsed_ms,
+                                        michi_state_t st)
+{
+    return hold_cls(elapsed_ms, st, st, (int64_t)ARM_MS + 1000, false, false);
 }
 
 static void test_reset_all(void)
@@ -66,8 +96,7 @@ static void test_reset_all(void)
     michi_identity_test_reset();
 }
 
-/* Seed a structurally wrong identity blob (8 bytes instead of 40): the
- * exact corruption contract of michi_identity (wrong length -> CORRUPT). */
+/* Seed a structurally wrong identity blob (8 bytes instead of 40). */
 static void seed_corrupt_identity_store(void)
 {
     nvs_handle_t h;
@@ -80,140 +109,211 @@ static void seed_corrupt_identity_store(void)
     nvs_close(h);
 }
 
-static void test_gesture_boundaries(void)
+/* --- Test: hold-on-threshold exact boundaries (P0-01 gate) --- */
+static void test_hold_threshold_exact(void)
 {
-    printf("button: exact gesture boundaries (4999/5000/9999/10000 ms)\n");
+    printf("button: P0-01 hold-on-threshold exact boundaries\n");
 
-    /* 4999 ms: short press band -> pairing. */
-    CHECK(classify(4999, MICHI_STATE_IDLE, MICHI_STATE_IDLE, 20000) ==
-              MICHI_BUTTON_ACTION_PAIRING,
-          "4999 ms -> pairing");
-    CHECK(classify(4999, MICHI_STATE_RECOVERABLE_ERROR,
-                   MICHI_STATE_RECOVERABLE_ERROR, 20000) ==
-              MICHI_BUTTON_ACTION_PAIRING,
-          "4999 ms (RECOVERABLE) -> still pairing");
+    /* 4999 ms: no action yet. */
+    CHECK(simple_cls(4999, MICHI_STATE_IDLE) == MICHI_BUTTON_ACTION_NONE,
+          "4999 ms -> NONE (below pairing threshold)");
 
-    /* 5000 ms: long press band begins; recovery ONLY in RECOVERABLE_ERROR. */
-    CHECK(classify(5000, MICHI_STATE_RECOVERABLE_ERROR,
-                   MICHI_STATE_RECOVERABLE_ERROR, 20000) ==
-              MICHI_BUTTON_ACTION_RECOVERY,
-          "5000 ms (RECOVERABLE) -> recovery");
-    CHECK(classify(5000, MICHI_STATE_IDLE, MICHI_STATE_IDLE, 20000) ==
-              MICHI_BUTTON_ACTION_IGNORED_STATE,
-          "5000 ms (IDLE) -> ignored (not recoverable)");
-    CHECK(classify(5000, MICHI_STATE_RECOVERABLE_ERROR, MICHI_STATE_IDLE,
-                   20000) == MICHI_BUTTON_ACTION_IGNORED_STATE,
-          "5000 ms (released in IDLE) -> ignored");
+    /* 5000 ms: pairing fires (threshold crossing). */
+    CHECK(simple_cls(5000, MICHI_STATE_IDLE) == MICHI_BUTTON_ACTION_PAIRING,
+          "5000 ms -> PAIRING (threshold crossing)");
 
-    /* 9999 ms: still the recovery band. */
-    CHECK(classify(9999, MICHI_STATE_RECOVERABLE_ERROR,
-                   MICHI_STATE_RECOVERABLE_ERROR, 20000) ==
-              MICHI_BUTTON_ACTION_RECOVERY,
-          "9999 ms (RECOVERABLE) -> recovery");
-    CHECK(classify(9999, MICHI_STATE_IDLE, MICHI_STATE_IDLE, 20000) ==
-              MICHI_BUTTON_ACTION_IGNORED_STATE,
-          "9999 ms (IDLE) -> ignored");
+    /* 5001 ms: still PAIRING (not yet consumed in simple_cls). */
+    CHECK(simple_cls(5001, MICHI_STATE_IDLE) == MICHI_BUTTON_ACTION_PAIRING,
+          "5001 ms -> PAIRING (still above threshold, not consumed)");
 
-    /* 10000 ms: factory reset band, with priority over recovery. */
-    CHECK(classify(10000, MICHI_STATE_IDLE, MICHI_STATE_IDLE, 20000) ==
-              MICHI_BUTTON_ACTION_FACTORY_RESET,
-          "10000 ms (IDLE) -> factory reset");
-    CHECK(classify(10000, MICHI_STATE_RECOVERABLE_ERROR,
-                   MICHI_STATE_RECOVERABLE_ERROR, 20000) ==
-              MICHI_BUTTON_ACTION_FACTORY_RESET,
-          "10000 ms (RECOVERABLE) -> factory reset (band priority)");
-    CHECK(classify(30000, MICHI_STATE_IDLE, MICHI_STATE_IDLE, 60000) ==
-              MICHI_BUTTON_ACTION_FACTORY_RESET,
-          "30000 ms -> factory reset");
+    /* After pairing fires (action_fired=true): NONE at 5500 ms. */
+    CHECK(hold_cls(5500, MICHI_STATE_IDLE, MICHI_STATE_IDLE,
+                   (int64_t)ARM_MS + 1000, true, false) ==
+              MICHI_BUTTON_ACTION_NONE,
+          "5500 ms after fire (consumed) -> NONE");
+
+    /* Release after 5200 ms (consumed): no second fire. */
+    CHECK(hold_cls(5200, MICHI_STATE_IDLE, MICHI_STATE_IDLE,
+                   (int64_t)ARM_MS + 1000, true, false) ==
+              MICHI_BUTTON_ACTION_NONE,
+          "release 5200 ms after consumed -> NONE");
+
+    /* 20 consecutive presses: each fires exactly once at 5000 ms. */
+    printf("button: 20 consecutive hold-fire cycles\n");
+    for (int i = 0; i < 20; i++) {
+        /* Below threshold: NONE. */
+        CHECK(simple_cls(4999, MICHI_STATE_IDLE) == MICHI_BUTTON_ACTION_NONE,
+              "cycle: 4999 ms -> NONE");
+        /* At threshold: PAIRING. */
+        CHECK(simple_cls(5000, MICHI_STATE_IDLE) == MICHI_BUTTON_ACTION_PAIRING,
+              "cycle: 5000 ms -> PAIRING");
+        /* After consumed: NONE. */
+        CHECK(hold_cls(5500, MICHI_STATE_IDLE, MICHI_STATE_IDLE,
+                       (int64_t)ARM_MS + 1000, true, false) ==
+                  MICHI_BUTTON_ACTION_NONE,
+              "cycle: consumed -> NONE");
+    }
 }
 
+/* --- Test: RECOVERABLE_ERROR context (recovery fires, not pairing) --- */
+static void test_recovery_context(void)
+{
+    printf("button: recovery in RECOVERABLE_ERROR context\n");
+
+    /* Below threshold: NONE. */
+    CHECK(hold_cls(4999, MICHI_STATE_RECOVERABLE_ERROR,
+                   MICHI_STATE_RECOVERABLE_ERROR,
+                   (int64_t)ARM_MS + 1000, false, false) ==
+              MICHI_BUTTON_ACTION_NONE,
+          "RECOVERABLE: 4999 ms -> NONE");
+
+    /* At threshold in RECOVERABLE_ERROR: RECOVERY, not PAIRING. */
+    CHECK(hold_cls(5000, MICHI_STATE_RECOVERABLE_ERROR,
+                   MICHI_STATE_RECOVERABLE_ERROR,
+                   (int64_t)ARM_MS + 1000, false, false) ==
+              MICHI_BUTTON_ACTION_RECOVERY,
+          "RECOVERABLE: 5000 ms -> RECOVERY");
+
+    /* IDLE state with same elapsed: PAIRING, not RECOVERY. */
+    CHECK(simple_cls(5000, MICHI_STATE_IDLE) == MICHI_BUTTON_ACTION_PAIRING,
+          "IDLE: 5000 ms -> PAIRING (not recovery)");
+
+    /* After recovery consumed: NONE. */
+    CHECK(hold_cls(7000, MICHI_STATE_RECOVERABLE_ERROR,
+                   MICHI_STATE_RECOVERABLE_ERROR,
+                   (int64_t)ARM_MS + 1000, true, false) ==
+              MICHI_BUTTON_ACTION_NONE,
+          "RECOVERABLE consumed: 7000 ms -> NONE");
+}
+
+/* --- Test: factory reset warning (10s) and fire (15s) --- */
+static void test_factory_reset_escalonado(void)
+{
+    printf("button: factory reset escalonado (warn 10s, fire 15s)\n");
+
+    /* 9999 ms (warn not yet reached, but pairing already crossed): PAIRING.
+     * The action fires at 5000 ms and keeps returning PAIRING until consumed.
+     * To test the warn threshold in isolation, use a consumed context. */
+    CHECK(hold_cls(9999, MICHI_STATE_IDLE, MICHI_STATE_IDLE,
+                   (int64_t)ARM_MS + 1000, true, false) ==
+              MICHI_BUTTON_ACTION_NONE,
+          "9999 ms (consumed, below warn) -> NONE");
+
+    /* 10000 ms (warning threshold): FACTORY_WARN. */
+    CHECK(hold_cls(10000, MICHI_STATE_IDLE, MICHI_STATE_IDLE,
+                   (int64_t)ARM_MS + 1000, false, false) ==
+              MICHI_BUTTON_ACTION_FACTORY_WARN,
+          "10000 ms -> FACTORY_WARN");
+
+    /* 10001 ms, already warned: NONE (visual already shown). */
+    CHECK(hold_cls(10001, MICHI_STATE_IDLE, MICHI_STATE_IDLE,
+                   (int64_t)ARM_MS + 1000, false, true) ==
+              MICHI_BUTTON_ACTION_NONE,
+          "10001 ms (already warned) -> NONE");
+
+    /* 14999 ms (not yet fire threshold): NONE (already warned). */
+    CHECK(hold_cls(14999, MICHI_STATE_IDLE, MICHI_STATE_IDLE,
+                   (int64_t)ARM_MS + 1000, false, true) ==
+              MICHI_BUTTON_ACTION_NONE,
+          "14999 ms -> NONE (below factory threshold)");
+
+    /* 15000 ms: FACTORY_RESET (armed, not consumed). */
+    CHECK(hold_cls(15000, MICHI_STATE_IDLE, MICHI_STATE_IDLE,
+                   (int64_t)ARM_MS + 1000, false, false) ==
+              MICHI_BUTTON_ACTION_FACTORY_RESET,
+          "15000 ms -> FACTORY_RESET");
+
+    /* 15000 ms but action_fired (pairing consumed): blocked. */
+    CHECK(hold_cls(15000, MICHI_STATE_IDLE, MICHI_STATE_IDLE,
+                   (int64_t)ARM_MS + 1000, true, false) ==
+              MICHI_BUTTON_ACTION_NONE,
+          "15000 ms but gesture consumed -> NONE (no factory-reset escalation)");
+}
+
+/* --- Test: protected states (BOOTING/SELF_TEST/UPDATING) --- */
 static void test_protected_states(void)
 {
     printf("button: protected states (BOOTING/SELF_TEST/UPDATING)\n");
 
-    static const michi_state_t protected_states[] = {
+    static const michi_state_t protected[] = {
         MICHI_STATE_BOOTING, MICHI_STATE_SELF_TEST, MICHI_STATE_UPDATING,
     };
     static const char *const names[] = {"BOOTING", "SELF_TEST", "UPDATING"};
 
     for (int i = 0; i < 3; i++) {
-        const michi_state_t p = protected_states[i];
+        const michi_state_t p = protected[i];
         char msg[128];
 
-        snprintf(msg, sizeof(msg), "%s: press started protected -> no reset",
+        snprintf(msg, sizeof(msg), "%s: press started protected -> IGNORED",
                  names[i]);
-        CHECK(classify(10000, p, MICHI_STATE_IDLE, 60000) ==
-                  MICHI_BUTTON_ACTION_IGNORED_PROTECTED,
-              msg);
+        CHECK(hold_cls(15000, p, MICHI_STATE_IDLE,
+                       (int64_t)ARM_MS + 1000, false, false) ==
+                  MICHI_BUTTON_ACTION_IGNORED_PROTECTED, msg);
 
-        snprintf(msg, sizeof(msg), "%s: release protected -> no reset",
+        snprintf(msg, sizeof(msg), "%s: current state protected -> IGNORED",
                  names[i]);
-        CHECK(classify(10000, MICHI_STATE_IDLE, p, 60000) ==
-                  MICHI_BUTTON_ACTION_IGNORED_PROTECTED,
-              msg);
+        CHECK(hold_cls(15000, MICHI_STATE_IDLE, p,
+                       (int64_t)ARM_MS + 1000, false, false) ==
+                  MICHI_BUTTON_ACTION_IGNORED_PROTECTED, msg);
 
-        snprintf(msg, sizeof(msg), "%s: both flanks protected -> no reset",
+        /* Critical: OTA mid-press. */
+        snprintf(msg, sizeof(msg), "%s: OTA starts during hold -> IGNORED",
                  names[i]);
-        CHECK(classify(10000, p, p, 60000) ==
-                  MICHI_BUTTON_ACTION_IGNORED_PROTECTED,
-              msg);
-
-        snprintf(msg, sizeof(msg),
-                 "%s: recovery blocked when press started protected", names[i]);
-        CHECK(classify(6000, p, MICHI_STATE_RECOVERABLE_ERROR, 60000) ==
-                  MICHI_BUTTON_ACTION_IGNORED_PROTECTED,
-              msg);
-
-        snprintf(msg, sizeof(msg),
-                 "%s: recovery blocked when released protected", names[i]);
-        CHECK(classify(6000, MICHI_STATE_RECOVERABLE_ERROR, p, 60000) ==
-                  MICHI_BUTTON_ACTION_IGNORED_PROTECTED,
-              msg);
-
-        snprintf(msg, sizeof(msg), "%s: pairing blocked too", names[i]);
-        CHECK(classify(100, p, MICHI_STATE_IDLE, 60000) ==
-                  MICHI_BUTTON_ACTION_IGNORED_PROTECTED,
-              msg);
-
-        snprintf(msg, sizeof(msg),
-                 "%s: boot-hold very long press -> no reset", names[i]);
-        CHECK(classify(30000, p, MICHI_STATE_IDLE, 0) ==
-                  MICHI_BUTTON_ACTION_IGNORED_PROTECTED,
-              msg);
+        CHECK(hold_cls(5000, MICHI_STATE_IDLE, p,
+                       (int64_t)ARM_MS + 1000, false, false) ==
+                  MICHI_BUTTON_ACTION_IGNORED_PROTECTED, msg);
     }
 
-    /* OTA is the critical case: a factory reset must NEVER run during an
-     * update, even when the press started before UPDATING. */
-    CHECK(classify(15000, MICHI_STATE_IDLE, MICHI_STATE_UPDATING, 60000) ==
+    /* The critical case: press at IDLE, OTA starts before threshold. */
+    CHECK(hold_cls(15000, MICHI_STATE_IDLE, MICHI_STATE_UPDATING,
+                   (int64_t)ARM_MS + 1000, false, false) ==
               MICHI_BUTTON_ACTION_IGNORED_PROTECTED,
-          "UPDATING: press crossing into OTA -> no reset");
+          "UPDATING mid-press: no factory reset");
 }
 
+/* --- Test: arm window (boot-hold protection) --- */
 static void test_arm_window(void)
 {
-    printf("button: factory-reset arm window (10000 ms)\n");
+    printf("button: factory-reset arm window (%d ms)\n", (int)ARM_MS);
 
-    CHECK(classify(10000, MICHI_STATE_IDLE, MICHI_STATE_IDLE, 9999) ==
+    /* Below arm window: IGNORED_ARM. */
+    CHECK(hold_cls(15000, MICHI_STATE_IDLE, MICHI_STATE_IDLE,
+                   ARM_MS - 1, false, false) ==
               MICHI_BUTTON_ACTION_IGNORED_ARM,
-          "elapsed 9999 ms -> armed");
-    CHECK(classify(10000, MICHI_STATE_IDLE, MICHI_STATE_IDLE, 10000) ==
+          "arm_ms-1 elapsed -> IGNORED_ARM");
+
+    /* At arm window: FACTORY_RESET allowed. */
+    CHECK(hold_cls(15000, MICHI_STATE_IDLE, MICHI_STATE_IDLE,
+                   ARM_MS, false, false) ==
               MICHI_BUTTON_ACTION_FACTORY_RESET,
-          "elapsed 10000 ms -> reset allowed");
-    CHECK(classify(30000, MICHI_STATE_IDLE, MICHI_STATE_IDLE, 0) ==
-              MICHI_BUTTON_ACTION_IGNORED_ARM,
-          "boot-hold (0 ms elapsed) -> armed");
+          "arm_ms elapsed -> FACTORY_RESET allowed");
 
-    /* Recovery is deliberately NOT armed. */
-    CHECK(classify(5000, MICHI_STATE_RECOVERABLE_ERROR,
-                   MICHI_STATE_RECOVERABLE_ERROR, 0) ==
+    /* Boot-hold (0 ms): IGNORED_ARM. */
+    CHECK(hold_cls(15000, MICHI_STATE_IDLE, MICHI_STATE_IDLE,
+                   0, false, false) ==
+              MICHI_BUTTON_ACTION_IGNORED_ARM,
+          "boot-hold (0 ms elapsed) -> IGNORED_ARM");
+
+    /* Recovery is NOT gated by arm window. */
+    CHECK(hold_cls(5000, MICHI_STATE_RECOVERABLE_ERROR,
+                   MICHI_STATE_RECOVERABLE_ERROR, 0, false, false) ==
               MICHI_BUTTON_ACTION_RECOVERY,
-          "recovery NOT armed (0 ms elapsed)");
-    CHECK(classify(9999, MICHI_STATE_RECOVERABLE_ERROR,
-                   MICHI_STATE_RECOVERABLE_ERROR, 0) ==
-              MICHI_BUTTON_ACTION_RECOVERY,
-          "recovery NOT armed at 9999 ms");
+          "recovery NOT armed (0 ms boot elapsed)");
 }
 
+/* --- Test: hold during OTA (bounce cannot advance threshold) --- */
+static void test_hold_during_ota(void)
+{
+    printf("button: hold during OTA -> ignored\n");
+    /* Press started in IDLE, firmware moves to UPDATING after 2 s.
+     * At the 5 s crossing, current state is UPDATING → IGNORED. */
+    CHECK(hold_cls(5000, MICHI_STATE_IDLE, MICHI_STATE_UPDATING,
+                   (int64_t)ARM_MS + 1000, false, false) ==
+              MICHI_BUTTON_ACTION_IGNORED_PROTECTED,
+          "OTA during hold: 5000 ms with current=UPDATING -> IGNORED");
+}
+
+/* --- Test: factory reset wiring (identity) --- */
 static void test_factory_reset_run_wiring(void)
 {
     printf("button: factory reset wiring (identity READY)\n");
@@ -239,13 +339,13 @@ static void test_factory_reset_run_wiring(void)
                              MICHI_IDENTITY_NVS_KEY, NULL, 0, &len),
           "persisted seed gone after reset");
 
-    /* The reboot path: a fresh init mints a NEW identity. */
+    /* Fresh init mints a NEW identity. */
     CHECK(michi_identity_init() == ESP_OK, "fresh init after reset");
     char new_id[MICHI_IDENTITY_MICHI_ID_LEN];
     CHECK(michi_identity_michi_id(new_id, sizeof(new_id)) == ESP_OK,
           "michi_id after reset");
     CHECK(strlen(new_id) == 43, "michi_id is 43 chars");
-    CHECK(strcmp(old_id, new_id) != 0, "fresh identity differs from the old one");
+    CHECK(strcmp(old_id, new_id) != 0, "fresh identity differs from old");
 }
 
 static void test_factory_reset_fresh_device(void)
@@ -253,8 +353,6 @@ static void test_factory_reset_fresh_device(void)
     printf("button: factory reset on a fresh device (no identity persisted)\n");
 
     test_reset_all();
-    /* No identity init: the store is empty. The benign NOT_FOUND path of
-     * michi_identity_factory_reset must not abort the reset. */
     CHECK(michi_button_factory_reset_run() == ESP_OK, "factory reset runs");
     CHECK(test_pairing_erase_all_calls() == 1, "pairing erase called once");
     CHECK(test_nvs_flash_erase_count() == 1, "full NVS erase called once");
@@ -263,40 +361,43 @@ static void test_factory_reset_fresh_device(void)
 
 static void test_corrupt_identity_factory_reset(void)
 {
-    printf("button: corrupt identity -> factory reset physically available\n");
+    printf("button: corrupt identity -> factory reset available\n");
 
     test_reset_all();
 
     seed_corrupt_identity_store();
-    CHECK(michi_identity_init() != ESP_OK, "init fails on the corrupt store");
+    CHECK(michi_identity_init() != ESP_OK, "init fails on corrupt store");
     CHECK(michi_identity_get_state() == MICHI_IDENTITY_CORRUPT,
           "identity CORRUPT");
 
-    /* Identity corruption does NOT move the FSM into a protected state:
-     * the device keeps running (IDLE) and the gesture is available. */
+    /* Corrupt identity does NOT move FSM to protected state:
+     * factory reset must still fire at 15 s. */
     test_state_set(MICHI_STATE_IDLE);
-    CHECK(classify(10000, MICHI_STATE_IDLE, MICHI_STATE_IDLE, 20000) ==
+    CHECK(hold_cls(15000, MICHI_STATE_IDLE, MICHI_STATE_IDLE,
+                   (int64_t)ARM_MS + 1000, false, false) ==
               MICHI_BUTTON_ACTION_FACTORY_RESET,
-          "corrupt identity: 10000 ms -> factory reset");
-    CHECK(classify(7000, MICHI_STATE_IDLE, MICHI_STATE_IDLE, 20000) ==
-              MICHI_BUTTON_ACTION_IGNORED_STATE,
-          "corrupt identity: 7000 ms -> ignored (not a recoverable FSM state)");
+          "corrupt identity: 15000 ms -> FACTORY_RESET");
 
-    /* Execute the physical recovery: identity wipe + pairing wipe + full
-     * NVS erase + restart. */
+    /* Gesture consumed blocks escalation. */
+    CHECK(hold_cls(15000, MICHI_STATE_IDLE, MICHI_STATE_IDLE,
+                   (int64_t)ARM_MS + 1000, true, false) ==
+              MICHI_BUTTON_ACTION_NONE,
+          "corrupt identity: 15000 ms consumed -> NONE");
+
+    /* Execute the physical recovery. */
     CHECK(michi_button_factory_reset_run() == ESP_OK, "factory reset runs");
     CHECK(michi_identity_get_state() == MICHI_IDENTITY_UNINITIALIZED,
           "corrupt identity wiped");
     CHECK(test_pairing_erase_all_calls() == 1, "pairing erase called once");
     CHECK(test_nvs_flash_erase_count() == 1, "full NVS erase called once");
     CHECK(test_esp_restart_count() == 1, "restart called once");
+
     size_t len = 0;
     CHECK(!test_nvs_get_blob(MICHI_IDENTITY_NVS_NAMESPACE,
                              MICHI_IDENTITY_NVS_KEY, NULL, 0, &len),
           "corrupt blob gone after reset");
 
-    /* The physical recovery completes: a fresh init mints a working
-     * identity and persists a well-formed blob. */
+    /* Fresh init recovers identity. */
     CHECK(michi_identity_init() == ESP_OK, "fresh init succeeds after reset");
     CHECK(michi_identity_get_state() == MICHI_IDENTITY_READY,
           "identity READY again");
@@ -311,14 +412,37 @@ static void test_corrupt_identity_factory_reset(void)
           "well-formed seed persisted after recovery");
 }
 
+static void test_factory_reset_preserves_dac_profile(void)
+{
+    printf("button: factory reset preserves non-probeable dac profile (PCM5102A SKU)\n");
+
+    test_reset_all();
+    CHECK(michi_dac_set_nvs_profile("pcm5102a") == ESP_OK, "write dac profile before reset");
+
+    char profile_before[32] = {0};
+    CHECK(michi_dac_get_nvs_profile(profile_before, sizeof(profile_before)) == ESP_OK, "read dac profile before reset");
+    CHECK(strcmp(profile_before, "pcm5102a") == 0, "profile is pcm5102a");
+
+    CHECK(michi_button_factory_reset_run() == ESP_OK, "factory reset runs");
+    CHECK(test_nvs_flash_erase_count() == 1, "full NVS erase called once");
+
+    char profile_after[32] = {0};
+    CHECK(michi_dac_get_nvs_profile(profile_after, sizeof(profile_after)) == ESP_OK, "read dac profile after reset");
+    CHECK(strcmp(profile_after, "pcm5102a") == 0, "dac profile preserved across factory reset");
+}
+
 int main(void)
 {
-    test_gesture_boundaries();
+    test_hold_threshold_exact();
+    test_recovery_context();
+    test_factory_reset_escalonado();
     test_protected_states();
     test_arm_window();
+    test_hold_during_ota();
     test_factory_reset_run_wiring();
     test_factory_reset_fresh_device();
     test_corrupt_identity_factory_reset();
+    test_factory_reset_preserves_dac_profile();
 
     if (failures == 0) {
         printf("button: ALL TESTS PASSED\n");

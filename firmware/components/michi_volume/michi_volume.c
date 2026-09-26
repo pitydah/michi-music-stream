@@ -31,6 +31,15 @@ esp_err_t michi_volume_init(void)
     const michi_dac_caps_t *caps = michi_dac_get_caps();
     s_hw_active = caps->hardware_volume && caps->initialized;
     s_volume = MICHI_VOLUME_MAX;
+    if (s_hw_active) {
+        esp_err_t err = michi_dac_set_volume(s_volume);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "michi_dac_set_volume(%u) failed in init: %s - "
+                          "falling back to digital gain",
+                     s_volume, esp_err_to_name(err));
+            s_hw_active = false;
+        }
+    }
     ESP_LOGI(TAG, "volume path=%s (dac hw volume=%s initialized=%s)",
              s_hw_active ? "hardware" : "digital",
              caps->hardware_volume ? "yes" : "no",

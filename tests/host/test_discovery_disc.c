@@ -41,12 +41,15 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <stdatomic.h>
 
 #include "cJSON.h"
 
 #include "esp_netif_sntp.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "lwip/inet.h"
 #include "lwip/sockets.h"
 #include "mdns.h"
@@ -314,6 +317,11 @@ static void teardown(void)
 static bool sent_at_least_one(void)
 {
     return test_socket_sent_count() >= 1;
+}
+
+static bool sent_at_least_two(void)
+{
+    return test_socket_sent_count() >= 2;
 }
 
 static bool wait_for(bool (*cond)(void), int timeout_ms)
@@ -640,7 +648,7 @@ static void disc10_fresh_nonce_accepted(void)
 
     /* One periodic tick (30 s +-3 s) -> a NEW announce, a NEW nonce. */
     test_esp_timer_advance(40000000);
-    DISC(10, test_socket_sent_count() >= 2,
+    DISC(10, wait_for(sent_at_least_two, 2000),
          "periodic tick emits the next announce");
     DISC(10, disc_fetch(&s_second), "second datagram parses");
     DISC(10, strcmp(s_second.nonce, s_first.nonce) != 0,
@@ -834,6 +842,529 @@ static void disc15_port_equals_real_http_port(void)
     teardown();
 }
 
+/* ── TIMER-02 & Discovery Decoupled Timer Tests ───────────── */
+
+static void test_timer_02_discovery_nonblocking(void)
+{
+    printf("TIMER-02: discovery timer callback performs no blocking work\n");
+    reset_all();
+    boot_time_and_discovery();
+    DISC(16, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+    DISC(16, michi_time_start() == ESP_OK, "time start succeeds");
+    test_esp_timer_set_time(1000000);
+    test_sntp_fire_sync(INJECTED_UNIX);
+    DISC(16, wait_for(sent_at_least_one, 2000), "initial announce emitted");
+
+    const int initial_count = test_socket_sent_count();
+
+    /* Measure callback execution time */
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+
+    /* Advancing timer by 40s fires announce_timer_cb */
+    test_esp_timer_advance(40000000ULL);
+
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    const long elapsed_us = (t1.tv_sec - t0.tv_sec) * 1000000L + (t1.tv_nsec - t0.tv_nsec) / 1000L;
+    DISC(16, elapsed_us < 5000, "TIMER-02: discovery timer callback returned immediately (< 5ms)");
+
+    /* Wait for discovery worker task to drain event and emit next announce */
+    DISC(16, wait_for(sent_at_least_two, 2000), "worker task processed queued announce tick");
+    DISC(16, test_socket_sent_count() > initial_count, "new announce emitted by worker task");
+
+    teardown();
+}
+
+static void test_event_coalesce_disc_01(void)
+{
+    printf("EVENT-COALESCE-DISC-01: discovery timer tick coalescing under worker pressure\n");
+    reset_all();
+    boot_time_and_discovery();
+    DISC(17, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+    DISC(17, michi_time_start() == ESP_OK, "time start succeeds");
+    test_esp_timer_set_time(1000000);
+    test_sntp_fire_sync(INJECTED_UNIX);
+    DISC(17, wait_for(sent_at_least_one, 2000), "initial announce emitted");
+
+    /* 1. Deliberately block worker by acquiring announce mutex */
+    michi_discovery_test_lock();
+    const int count_before = test_socket_sent_count();
+
+    /* 2. Fire timer events repeatedly while worker is blocked */
+    for (int i = 0; i < 20; i++) {
+        michi_discovery_test_notify_tick();
+    }
+
+    /* 3. Assert worker is blocked: no announce emitted while mutex is held */
+    DISC(17, test_socket_sent_count() == count_before,
+         "EVENT-COALESCE-DISC-01: worker blocked, no announce sent during contention");
+
+    /* 4. Release worker */
+    michi_discovery_test_unlock();
+
+    /* 5. Worker unblocks and processes coalesced events safely */
+    DISC(17, wait_for(sent_at_least_two, 2000),
+         "EVENT-COALESCE-DISC-01: worker task processes coalesced events safely");
+
+    /* 6. Invariant: while discovery active, event processing cannot leave:
+     *    timer inactive AND no pending trigger AND worker idle forever */
+    DISC(17, michi_discovery_test_is_active(), "EVENT-COALESCE-DISC-01: discovery remains active");
+    DISC(17, michi_discovery_test_is_timer_active(),
+         "EVENT-COALESCE-DISC-01: announce timer rearmed and active after processing");
+
+    /* Further verify liveness: advance time past announce interval and verify another packet is emitted */
+    const int count_after_coalesce = test_socket_sent_count();
+    test_esp_timer_advance(40000000ULL);
+    for (int i = 0; i < 100 && test_socket_sent_count() <= count_after_coalesce; i++) {
+        usleep(5000);
+    }
+    DISC(17, test_socket_sent_count() > count_after_coalesce,
+         "EVENT-COALESCE-DISC-01: worker not idle forever, fires subsequent timer tick");
+
+    teardown();
+}
+
+static void test_event_coalesce_disc_02_time_sync(void)
+{
+    printf("EVENT-COALESCE-DISC-02: discovery time sync callback coalescing under worker pressure\n");
+    reset_all();
+    boot_time_and_discovery();
+    DISC(18, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+    DISC(18, michi_time_start() == ESP_OK, "time start succeeds");
+    test_esp_timer_set_time(1000000);
+
+    /* 1. Deliberately block worker by acquiring announce mutex */
+    michi_discovery_test_lock();
+    const int count_before = test_socket_sent_count();
+
+    /* 2. Fire multiple sync callbacks rapidly while worker blocked */
+    for (int i = 0; i < 5; i++) {
+        test_sntp_fire_sync(INJECTED_UNIX + (int64_t)i);
+    }
+
+    /* 3. Assert worker is blocked */
+    DISC(18, test_socket_sent_count() == count_before,
+         "EVENT-COALESCE-DISC-02: worker blocked, no announce sent during time sync pressure");
+
+    /* 4. Release worker */
+    michi_discovery_test_unlock();
+
+    /* 5. Announce emitted on time sync coalescing */
+    DISC(18, wait_for(sent_at_least_one, 2000), "EVENT-COALESCE-DISC-02: announce emitted on time sync coalescing");
+
+    teardown();
+}
+
+static void test_shut_disc_01_cooperative_shutdown(void)
+{
+    printf("SHUT-DISC-01: cooperative discovery shutdown joins worker before deleting resources\n");
+    reset_all();
+    boot_time_and_discovery();
+    DISC(19, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+    DISC(19, michi_discovery_shutdown() == ESP_OK, "SHUT-DISC-01: shutdown succeeds cleanly");
+    teardown();
+}
+
+static void test_shut_disc_02_shutdown_while_tick_pending(void)
+{
+    printf("SHUT-DISC-02: cooperative shutdown with pending announce tick\n");
+    reset_all();
+    boot_time_and_discovery();
+    DISC(20, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+    DISC(20, michi_time_start() == ESP_OK, "time start succeeds");
+    test_esp_timer_set_time(1000000);
+    test_sntp_fire_sync(INJECTED_UNIX);
+
+    /* Advance timer to queue announce tick / set pending bit */
+    test_esp_timer_advance(40000000ULL);
+
+    /* Immediately shutdown before task completes */
+    DISC(20, michi_discovery_shutdown() == ESP_OK, "SHUT-DISC-02: shutdown succeeds cleanly with pending tick");
+    teardown();
+}
+
+static void test_shut_disc_03_shutdown_while_sync_pending(void)
+{
+    printf("SHUT-DISC-03: cooperative shutdown with pending time sync\n");
+    reset_all();
+    boot_time_and_discovery();
+    DISC(21, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+    DISC(21, michi_time_start() == ESP_OK, "time start succeeds");
+    test_esp_timer_set_time(1000000);
+
+    /* Fire sync to queue time sync message / set pending bit */
+    test_sntp_fire_sync(INJECTED_UNIX);
+
+    /* Immediately shutdown */
+    DISC(21, michi_discovery_shutdown() == ESP_OK, "SHUT-DISC-03: shutdown succeeds cleanly with pending sync");
+    teardown();
+}
+
+/* ── DISC-LIFE Lifecycle State Machine Tests (DISC-LIFE-01..07) ── */
+
+static void test_disc_life_01_normal_stop(void)
+{
+    printf("DISC-LIFE-01: normal stop lifecycle transitions\n");
+    reset_all();
+    test_task_reset_invalid_notify_count();
+    test_task_reset_external_delete_count();
+    boot_time_and_discovery();
+    DISC(22, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+    DISC(22, michi_discovery_test_worker_state() == 1 /* MICHI_WORKER_RUNNING */, "worker is running");
+
+    DISC(22, michi_discovery_shutdown() == ESP_OK, "shutdown succeeds");
+    DISC(22, michi_discovery_test_worker_state() == 0 /* MICHI_WORKER_STOPPED */, "worker stopped cleanly");
+    DISC(22, test_task_invalid_notify_count() == 0, "no invalid task notify");
+    DISC(22, test_task_external_delete_count() == 0, "no external vTaskDelete");
+    teardown();
+}
+
+static void *shutdown_discovery_thread(void *arg)
+{
+    (void)arg;
+    return (void *)(intptr_t)michi_discovery_shutdown();
+}
+
+static void test_disc_life_02_worker_inside_mutex_when_stop_begins(void)
+{
+    printf("DISC-LIFE-02: worker/mutex contention when stop begins resolves cleanly\n");
+    reset_all();
+    test_task_reset_invalid_notify_count();
+    test_task_reset_external_delete_count();
+    boot_time_and_discovery();
+    DISC(23, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+
+    /* 1. Acquire announce mutex (simulates active announce work in progress) */
+    michi_discovery_test_lock();
+
+    /* 2. Initiate shutdown in a separate thread while mutex is held */
+    pthread_t th;
+    pthread_create(&th, NULL, shutdown_discovery_thread, NULL);
+
+    /* 3. Sleep briefly: shutdown sends stop request and waits for worker/mutex */
+    usleep(50000); /* 50ms */
+
+    /* 4. Release announce mutex */
+    michi_discovery_test_unlock();
+
+    /* 5. Shutdown thread must complete cleanly with ESP_OK */
+    void *ret = NULL;
+    pthread_join(th, &ret);
+    DISC(23, (esp_err_t)(intptr_t)ret == ESP_OK, "shutdown succeeds after mutex released");
+
+    DISC(23, michi_discovery_test_worker_state() == 0 /* MICHI_WORKER_STOPPED */, "worker stopped");
+    DISC(23, test_task_invalid_notify_count() == 0, "no invalid task notify");
+    DISC(23, test_task_external_delete_count() == 0, "no external vTaskDelete");
+    teardown();
+}
+
+static void test_disc_life_03_first_shutdown_timeout_resources_preserved(void)
+{
+    printf("DISC-LIFE-03: first shutdown timeout preserves socket/mutex/timer/resources\n");
+    reset_all();
+    test_task_reset_invalid_notify_count();
+    test_task_reset_external_delete_count();
+    boot_time_and_discovery();
+    DISC(24, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+
+    /* Hold worker so shutdown times out */
+    michi_discovery_test_hold_worker(true);
+
+    esp_err_t err = michi_discovery_shutdown();
+    DISC(24, err == ESP_ERR_TIMEOUT, "shutdown returns ESP_ERR_TIMEOUT on timeout");
+
+    /* INVARIANT: While worker is alive, destructive cleanup must NOT run */
+    DISC(24, michi_discovery_test_has_mutex(), "DISC-LIFE-03: mutex preserved on timeout");
+    DISC(24, michi_discovery_test_has_timer(), "DISC-LIFE-03: timer preserved on timeout");
+    DISC(24, michi_discovery_test_socket_fd() >= 0, "DISC-LIFE-03: socket preserved on timeout");
+    DISC(24, michi_discovery_test_is_active(), "DISC-LIFE-03: active state preserved on timeout");
+    DISC(24, test_task_external_delete_count() == 0, "worker task not externally killed");
+
+    /* Cleanup for next test */
+    michi_discovery_test_hold_worker(false);
+    usleep(50000);
+    michi_discovery_shutdown();
+    teardown();
+}
+
+static void test_disc_life_04_worker_exit_after_timeout_retry_succeeds(void)
+{
+    printf("DISC-LIFE-04: worker exits after timeout; retry succeeds\n");
+    reset_all();
+    test_task_reset_invalid_notify_count();
+    test_task_reset_external_delete_count();
+    boot_time_and_discovery();
+    DISC(25, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+
+    /* Hold worker */
+    michi_discovery_test_hold_worker(true);
+    DISC(25, michi_discovery_shutdown() == ESP_ERR_TIMEOUT, "first shutdown times out");
+
+    /* Worker exits after timeout */
+    michi_discovery_test_hold_worker(false);
+    usleep(50000); /* 50ms */
+
+    /* Second shutdown attempt: retry */
+    DISC(25, michi_discovery_shutdown() == ESP_OK, "DISC-LIFE-04: retry shutdown succeeds");
+    DISC(25, !michi_discovery_test_has_mutex(), "mutex destroyed after clean retry");
+    DISC(25, !michi_discovery_test_has_timer(), "timer destroyed after clean retry");
+    DISC(25, michi_discovery_test_socket_fd() == -1, "socket closed after clean retry");
+    DISC(25, michi_discovery_test_worker_state() == 0, "worker state stopped");
+    DISC(25, test_task_invalid_notify_count() == 0, "zero notifications to dead worker");
+    DISC(25, test_task_external_delete_count() == 0, "worker never externally deleted");
+    teardown();
+}
+
+static void test_disc_life_05_time_sync_after_shutdown(void)
+{
+    printf("DISC-LIFE-05: late time sync after discovery shutdown does not crash or notify dead task\n");
+    reset_all();
+    test_task_reset_invalid_notify_count();
+    test_task_reset_external_delete_count();
+    boot_time_and_discovery();
+    DISC(26, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+    DISC(26, michi_time_start() == ESP_OK, "time start succeeds");
+
+    /* Shut discovery down */
+    DISC(26, michi_discovery_shutdown() == ESP_OK, "shutdown discovery succeeds");
+
+    /* Late SNTP sync fires while discovery is shut down */
+    test_sntp_fire_sync(INJECTED_UNIX);
+
+    DISC(26, test_task_invalid_notify_count() == 0, "no notification sent to dead discovery task");
+    DISC(26, test_task_external_delete_count() == 0, "no external vTaskDelete");
+    teardown();
+}
+
+static void test_disc_life_06_timer_callback_racing_shutdown(void)
+{
+    printf("DISC-LIFE-06: timer callback racing shutdown cannot access destroyed state\n");
+    reset_all();
+    test_task_reset_invalid_notify_count();
+    test_task_reset_external_delete_count();
+    boot_time_and_discovery();
+    DISC(27, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+
+    /* Advance timer to trigger callback */
+    test_esp_timer_advance(40000000ULL);
+
+    /* Immediately shutdown */
+    DISC(27, michi_discovery_shutdown() == ESP_OK, "shutdown succeeds cleanly during active timer tick");
+
+    /* Attempt to notify tick after shutdown */
+    michi_discovery_test_notify_tick();
+    test_esp_timer_advance(40000000ULL);
+
+    DISC(27, test_task_invalid_notify_count() == 0, "DISC-LIFE-06: no invalid notify to dead task");
+    teardown();
+}
+
+static void test_disc_life_07_repeated_shutdown_idempotent(void)
+{
+    printf("DISC-LIFE-07: repeated shutdown is idempotent\n");
+    reset_all();
+    test_task_reset_invalid_notify_count();
+    test_task_reset_external_delete_count();
+    boot_time_and_discovery();
+    DISC(28, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+    DISC(28, michi_discovery_shutdown() == ESP_OK, "first shutdown succeeds");
+    DISC(28, michi_discovery_shutdown() == ESP_OK, "second shutdown succeeds (idempotent)");
+    DISC(28, michi_discovery_shutdown() == ESP_OK, "third shutdown succeeds (idempotent)");
+    DISC(28, test_task_invalid_notify_count() == 0, "no invalid task notify across repeated shutdowns");
+    DISC(28, test_task_external_delete_count() == 0, "no external vTaskDelete across repeated shutdowns");
+    teardown();
+}
+
+/* ------------------------------------------------------------------ */
+/* DISC-CONCUR-01..05: Concurrency & SMP Hardening Invariants          */
+/* ------------------------------------------------------------------ */
+
+static void test_disc_concur_01_safe_notify_lease(void)
+{
+    printf("DISC-CONCUR-01: safe notification lease without critical section violation\n");
+    reset_all();
+    test_freertos_api_reset_in_critical_count();
+    test_task_reset_invalid_notify_count();
+    test_task_reset_external_delete_count();
+    boot_time_and_discovery();
+    DISC(29, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+    DISC(29, michi_time_start() == ESP_OK, "time start succeeds");
+
+    for (int i = 0; i < 20; i++) {
+        michi_discovery_test_notify_tick();
+        test_sntp_fire_sync(INJECTED_UNIX + i);
+    }
+    usleep(20000);
+
+    DISC(29, test_freertos_api_in_critical_count() == 0,
+         "DISC-CONCUR-01: zero FreeRTOS API calls inside critical sections");
+    DISC(29, test_task_invalid_notify_count() == 0,
+         "DISC-CONCUR-01: zero invalid task notifications");
+    teardown();
+}
+
+typedef struct {
+    _Atomic bool stop;
+    _Atomic uint32_t calls;
+    _Atomic uint32_t rejections;
+} disc_stress_arg_t;
+
+static void *disc_api_stress_worker(void *arg)
+{
+    disc_stress_arg_t *s = (disc_stress_arg_t *)arg;
+    while (!atomic_load(&s->stop)) {
+        atomic_fetch_add(&s->calls, 1);
+        esp_err_t r = michi_discovery_start("192.168.1.102");
+        if (r == ESP_ERR_INVALID_STATE) {
+            atomic_fetch_add(&s->rejections, 1);
+        }
+        r = michi_discovery_stop();
+        if (r == ESP_ERR_INVALID_STATE) {
+            atomic_fetch_add(&s->rejections, 1);
+        }
+        usleep(100);
+    }
+    return NULL;
+}
+
+static void test_disc_concur_02_public_api_admission_rejection(void)
+{
+    printf("DISC-CONCUR-02: public API admission rejection during teardown\n");
+    reset_all();
+    test_freertos_api_reset_in_critical_count();
+    boot_time_and_discovery();
+    DISC(30, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+
+    disc_stress_arg_t s;
+    atomic_init(&s.stop, false);
+    atomic_init(&s.calls, 0);
+    atomic_init(&s.rejections, 0);
+    pthread_t th1, th2;
+    pthread_create(&th1, NULL, disc_api_stress_worker, &s);
+    pthread_create(&th2, NULL, disc_api_stress_worker, &s);
+
+    usleep(5000);
+    /* Concurrently shutdown while API calls are actively running */
+    DISC(30, michi_discovery_shutdown() == ESP_OK, "shutdown succeeds while API calls in flight");
+
+    atomic_store(&s.stop, true);
+    pthread_join(th1, NULL);
+    pthread_join(th2, NULL);
+
+    /* Post-shutdown API calls must be firmly rejected without crashing */
+    DISC(30, michi_discovery_start("192.168.1.102") == ESP_ERR_INVALID_STATE,
+         "start rejected after shutdown");
+    DISC(30, michi_discovery_stop() == ESP_OK,
+         "stop returns ESP_OK (idempotent/benign) after shutdown");
+    DISC(30, test_freertos_api_in_critical_count() == 0,
+         "DISC-CONCUR-02: zero FreeRTOS API calls inside critical sections");
+    teardown();
+}
+
+static void test_life_smp_disc_02_03_api_drain_timeout_and_retry(void)
+{
+    printf("LIFE-SMP-DISC-02 & 03: Discovery API drain timeout preserves resources and retry succeeds\n");
+    reset_all();
+    boot_time_and_discovery();
+    DISC(34, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+
+    /* Hold API lease to simulate in-flight API call stuck */
+    michi_discovery_test_hold_api(true);
+
+    esp_err_t err = michi_discovery_shutdown();
+    DISC(34, err == ESP_ERR_TIMEOUT, "LIFE-SMP-02: discovery shutdown returns timeout when API in flight");
+    DISC(34, michi_discovery_test_has_mutex(), "LIFE-SMP-02: discovery mutex preserved on API drain timeout");
+    DISC(34, michi_discovery_test_has_timer(), "LIFE-SMP-02: discovery timer preserved on API drain timeout");
+    int dwst = michi_discovery_test_worker_state();
+    DISC(34, dwst == 2 || dwst == 3,
+         "LIFE-SMP-02: discovery worker remains STOP_REQUESTED or EXITED on drain timeout");
+
+    /* LIFE-SMP-08: No new API admitted while STOP_REQUESTED or EXITED */
+    DISC(34, michi_discovery_start("192.168.1.102") == ESP_ERR_INVALID_STATE,
+         "LIFE-SMP-08: discovery start rejected after STOP_REQUESTED");
+
+    /* Release API lease */
+    michi_discovery_test_hold_api(false);
+
+    /* LIFE-SMP-03: Retry shutdown succeeds cleanly */
+    DISC(34, michi_discovery_shutdown() == ESP_OK,
+         "LIFE-SMP-03: retry discovery shutdown succeeds after API drain completes");
+    DISC(34, !michi_discovery_test_has_mutex(), "LIFE-SMP-03: mutex destroyed after successful retry");
+    DISC(34, !michi_discovery_test_has_timer(), "LIFE-SMP-03: timer destroyed after successful retry");
+    DISC(34, michi_discovery_test_worker_state() == 0 /* MICHI_WORKER_STOPPED */,
+         "LIFE-SMP-03: discovery worker state is STOPPED");
+    teardown();
+}
+
+
+static void test_disc_concur_03_no_dead_task_notify_on_sync_race(void)
+{
+    printf("DISC-CONCUR-03: zero stale task notifications when time sync races shutdown\n");
+    test_task_reset_invalid_notify_count();
+
+    for (int iter = 0; iter < 10; iter++) {
+        reset_all();
+        boot_time_and_discovery();
+        DISC(31, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+        DISC(31, michi_time_start() == ESP_OK, "time start succeeds");
+
+        /* Fire sync concurrently / immediately around shutdown */
+        test_sntp_fire_sync(INJECTED_UNIX + iter);
+        DISC(31, michi_discovery_shutdown() == ESP_OK, "shutdown succeeds");
+        /* Late sync after shutdown */
+        test_sntp_fire_sync(INJECTED_UNIX + 100 + iter);
+        teardown();
+    }
+    DISC(31, test_task_invalid_notify_count() == 0,
+         "DISC-CONCUR-03: zero notifications to dead task handles");
+}
+
+static void *disc_shutdown_racer(void *arg)
+{
+    (void)arg;
+    (void)michi_discovery_shutdown();
+    return NULL;
+}
+
+static void test_disc_concur_04_shutdown_retry_concurrent(void)
+{
+    printf("DISC-CONCUR-04: shutdown retry safety under concurrent callers\n");
+
+    for (int iter = 0; iter < 5; iter++) {
+        reset_all();
+        boot_time_and_discovery();
+        DISC(32, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+
+        pthread_t th1, th2, th3;
+        pthread_create(&th1, NULL, disc_shutdown_racer, NULL);
+        pthread_create(&th2, NULL, disc_shutdown_racer, NULL);
+        pthread_create(&th3, NULL, disc_shutdown_racer, NULL);
+
+        pthread_join(th1, NULL);
+        pthread_join(th2, NULL);
+        pthread_join(th3, NULL);
+
+        DISC(32, !michi_discovery_test_has_mutex(), "mutex cleanly destroyed");
+        DISC(32, !michi_discovery_test_has_timer(), "timer cleanly destroyed");
+        DISC(32, michi_discovery_test_worker_state() == 0, "worker stopped cleanly");
+        teardown();
+    }
+}
+
+static void test_disc_concur_05_task_self_deletion_invariant(void)
+{
+    printf("DISC-CONCUR-05: worker task must delete itself (vTaskDelete(NULL))\n");
+    reset_all();
+    test_task_reset_external_delete_count();
+    boot_time_and_discovery();
+    DISC(33, michi_discovery_start("192.168.1.102") == ESP_OK, "start succeeds");
+    DISC(33, michi_discovery_shutdown() == ESP_OK, "shutdown succeeds");
+
+    DISC(33, test_task_external_delete_count() == 0,
+         "DISC-CONCUR-05: zero external vTaskDelete calls on discovery task");
+    teardown();
+}
+
 /* ------------------------------------------------------------------ */
 
 int main(void)
@@ -853,9 +1384,36 @@ int main(void)
     disc13_service_standard_correct();
     disc14_service_hifi_correct();
     disc15_port_equals_real_http_port();
+    test_timer_02_discovery_nonblocking();
+    test_event_coalesce_disc_01();
+    test_event_coalesce_disc_02_time_sync();
+    test_shut_disc_01_cooperative_shutdown();
+    test_shut_disc_02_shutdown_while_tick_pending();
+    test_shut_disc_03_shutdown_while_sync_pending();
+    test_disc_life_01_normal_stop();
+    test_disc_life_02_worker_inside_mutex_when_stop_begins();
+    test_disc_life_03_first_shutdown_timeout_resources_preserved();
+    test_disc_life_04_worker_exit_after_timeout_retry_succeeds();
+    test_disc_life_05_time_sync_after_shutdown();
+    test_disc_life_06_timer_callback_racing_shutdown();
+    test_disc_life_07_repeated_shutdown_idempotent();
+
+    test_disc_concur_01_safe_notify_lease();
+    test_disc_concur_02_public_api_admission_rejection();
+    test_disc_concur_03_no_dead_task_notify_on_sync_race();
+    test_disc_concur_04_shutdown_retry_concurrent();
+    test_disc_concur_05_task_self_deletion_invariant();
+    test_life_smp_disc_02_03_api_drain_timeout_and_retry();
+
+    DISC(99, test_freertos_api_in_critical_count() == 0,
+         "FINAL INVARIANT: test_freertos_api_in_critical_count == 0");
+    DISC(99, test_task_invalid_notify_count() == 0,
+         "FINAL INVARIANT: test_task_invalid_notify_count == 0");
+    DISC(99, test_task_external_delete_count() == 0,
+         "FINAL INVARIANT: test_task_external_delete_count == 0");
 
     if (failures == 0) {
-        printf("test_discovery_disc: all DISC-01..DISC-15 passed\n");
+        printf("test_discovery_disc: all DISC-01..DISC-15 + TIMER-02 + EVENT-COALESCE-DISC-01..02 + SHUT-DISC-01..03 + DISC-LIFE-01..07 + DISC-CONCUR-01..05 passed\n");
         return 0;
     }
     printf("test_discovery_disc: %d check(s) FAILED\n", failures);

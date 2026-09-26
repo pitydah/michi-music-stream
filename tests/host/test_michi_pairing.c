@@ -20,7 +20,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <stdatomic.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "michi_pairing.h"
 #include "validators.h"
 #include "nvs.h" /* fake NVS shim: test hooks only */
@@ -210,26 +216,31 @@ static void test_window_open_and_start(void)
 
 static void test_window_expiry(void)
 {
-    printf("pairing: window expiry (120 s monotonic)\n");
-    pairing_test_reset(0x1003);
-    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
-    CHECK(michi_pairing_open_window() == ESP_OK, "open_window succeeds");
-    char sid[MICHI_PAIRING_SESSION_ID_LEN];
-    char exp[MICHI_PAIRING_EXPIRES_AT_LEN];
-    uint32_t attempts = 0;
-    CHECK(michi_pairing_start(valid_peer(), NULL, sid, sizeof(sid), exp,
-                              sizeof(exp), &attempts) ==
-              MICHI_PAIRING_START_OK,
-          "start succeeds");
-    CHECK(michi_pairing_is_window_open(), "window open before expiry");
+     printf("pairing: window expiry (%u s monotonic)\n",
+            (unsigned)CONFIG_MICHI_PAIRING_WINDOW_SECONDS);
+     pairing_test_reset(0x1003);
+     CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+     CHECK(michi_pairing_open_window() == ESP_OK, "open_window succeeds");
+     char sid[MICHI_PAIRING_SESSION_ID_LEN];
+     char exp[MICHI_PAIRING_EXPIRES_AT_LEN];
+     uint32_t attempts = 0;
+     CHECK(michi_pairing_start(valid_peer(), NULL, sid, sizeof(sid), exp,
+                               sizeof(exp), &attempts) ==
+               MICHI_PAIRING_START_OK,
+           "start succeeds");
+     CHECK(michi_pairing_is_window_open(), "window open before expiry");
 
-    /* 120 s on the monotonic clock: the one-shot timer fires and closes
-     * the window with the FSM event. */
-    test_esp_timer_advance(120 * 1000000LL);
-    CHECK(!michi_pairing_is_window_open(), "window closed after 120 s");
-    CHECK(test_state_saw_event(MICHI_EVENT_PAIRING_WINDOW_CLOSED),
-          "PAIRING_WINDOW_CLOSED posted on expiry");
-    CHECK(spy_clear_calls >= 1, "PIN display cleared on expiry");
+     /* Advance past the configured window: the one-shot timer fires and
+      * closes the window with the FSM event. */
+     test_esp_timer_advance((uint64_t)CONFIG_MICHI_PAIRING_WINDOW_SECONDS *
+                            1000000ULL);
+     for (int i = 0; i < 100 && !test_state_saw_event(MICHI_EVENT_PAIRING_WINDOW_CLOSED); i++) {
+         usleep(1000);
+     }
+     CHECK(!michi_pairing_is_window_open(), "window closed after expiry");
+     CHECK(test_state_saw_event(MICHI_EVENT_PAIRING_WINDOW_CLOSED),
+           "PAIRING_WINDOW_CLOSED posted on expiry");
+     CHECK(spy_clear_calls >= 1, "PIN display cleared on expiry");
 
     /* The expired session is still answerable with status "expired". */
     char status[12];
@@ -1084,6 +1095,542 @@ static void test_sha256_known_answer(void)
     CHECK(memcmp(out, expect, sizeof(expect)) == 0, "sha256('abc') correct");
 }
 
+/* ── TIMER-01 & Decoupled esp_timer tests ──────────────────── */
+
+static void test_timer_01_pairing_nonblocking(void)
+{
+    printf("TIMER-01: pairing timer callback performs no blocking work\n");
+    pairing_test_reset(0xABCD0001);
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+    CHECK(michi_pairing_is_window_open(), "window active");
+
+    /* Record wall time before advance */
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+
+    /* Advancing timer triggers window_timer_cb directly in caller context */
+    test_esp_timer_advance((uint64_t)CONFIG_MICHI_PAIRING_WINDOW_SECONDS * 1000000ULL);
+
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    const long elapsed_us = (t1.tv_sec - t0.tv_sec) * 1000000L + (t1.tv_nsec - t0.tv_nsec) / 1000L;
+    /* Callback must return immediately (non-blocking xQueueSend, < 5 ms on host) */
+    CHECK(elapsed_us < 5000, "TIMER-01: timer callback returned immediately (< 5ms)");
+
+    /* Wait for pairing worker task to process the queued expiry */
+    for (int i = 0; i < 100 && !test_state_saw_event(MICHI_EVENT_PAIRING_WINDOW_CLOSED); i++) {
+        usleep(1000);
+    }
+    CHECK(!michi_pairing_is_window_open(), "window closed by worker task");
+    CHECK(test_state_saw_event(MICHI_EVENT_PAIRING_WINDOW_CLOSED),
+          "PAIRING_WINDOW_CLOSED posted by worker task");
+
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+}
+
+static void test_pairing_timer_generation_stale(void)
+{
+    printf("pairing_timer: stale generation event discarded\n");
+    pairing_test_reset(0xABCD0002);
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_open_window() == ESP_OK, "window 1 opens");
+
+    /* Advance time near expiration */
+    test_esp_timer_advance((uint64_t)(CONFIG_MICHI_PAIRING_WINDOW_SECONDS - 1) * 1000000ULL);
+
+    /* Re-open window before expiration -> advances generation and resets timer */
+    CHECK(michi_pairing_open_window() == ESP_OK, "window 2 opens (new generation)");
+    CHECK(michi_pairing_is_window_open(), "window 2 is active");
+
+    /* An advance that would have expired window 1 now does not close window 2 early */
+    test_esp_timer_advance(2000000ULL);
+    usleep(10000);
+    CHECK(michi_pairing_is_window_open(), "window 2 remains open (stale event discarded)");
+
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+}
+
+static void test_event_coalesce_pair_01(void)
+{
+    printf("EVENT-COALESCE-PAIR-01: pairing timer event coalescing under worker pressure\n");
+    pairing_test_reset(0xABCD0003);
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+    CHECK(michi_pairing_is_window_open(), "window open initially");
+
+    /* 1. Deliberately block worker by taking the pairing mutex */
+    michi_pairing_test_lock();
+
+    /* 2. Advance monotonic clock past expiry and fire timer events repeatedly */
+    test_esp_timer_advance(70000000ULL);
+    for (int i = 0; i < 20; i++) {
+        michi_pairing_test_notify_expired();
+    }
+
+    /* 3. Invariant check: worker is blocked on mutex, so window cannot be closed yet */
+    CHECK(michi_pairing_test_is_window_open_locked(),
+          "EVENT-COALESCE-PAIR-01: window remains open while worker blocked");
+    CHECK(!test_state_saw_event(MICHI_EVENT_PAIRING_WINDOW_CLOSED),
+          "EVENT-COALESCE-PAIR-01: PAIRING_WINDOW_CLOSED not posted while worker blocked");
+
+    /* 4. Release worker */
+    michi_pairing_test_unlock();
+
+    /* 5. Wait for worker to unblock and process coalesced event */
+    for (int i = 0; i < 100 && !test_state_saw_event(MICHI_EVENT_PAIRING_WINDOW_CLOSED); i++) {
+        usleep(1000);
+    }
+
+    /* 6. Verify event was processed at least once, no permanent loss, system in correct state */
+    CHECK(!michi_pairing_is_window_open(), "EVENT-COALESCE-PAIR-01: window closed cleanly by worker");
+    CHECK(test_state_saw_event(MICHI_EVENT_PAIRING_WINDOW_CLOSED),
+          "EVENT-COALESCE-PAIR-01: PAIRING_WINDOW_CLOSED posted after coalesced events");
+
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+}
+
+static void test_shut_pair_01_cooperative_shutdown(void)
+{
+    printf("SHUT-PAIR-01: cooperative shutdown joins worker before deleting resources\n");
+    pairing_test_reset(0xABCD0005);
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+    CHECK(michi_pairing_is_window_open(), "window active");
+
+    /* Normal shutdown joins worker and deletes resources cleanly */
+    CHECK(michi_pairing_shutdown() == ESP_OK, "SHUT-PAIR-01: shutdown succeeds");
+    CHECK(!michi_pairing_is_window_open(), "SHUT-PAIR-01: window is closed after shutdown");
+}
+
+static void test_shut_pair_02_shutdown_while_event_pending(void)
+{
+    printf("SHUT-PAIR-02: cooperative shutdown with pending expiration event\n");
+    pairing_test_reset(0xABCD0004);
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+
+    /* Advance timer past expiry to queue event / set pending bit */
+    test_esp_timer_advance((uint64_t)CONFIG_MICHI_PAIRING_WINDOW_SECONDS * 1000000ULL);
+
+    /* Immediately shutdown before/during task processing */
+    CHECK(michi_pairing_shutdown() == ESP_OK, "SHUT-PAIR-02: shutdown while event pending does not crash or hang");
+    CHECK(!michi_pairing_is_window_open(), "SHUT-PAIR-02: window closed cleanly");
+}
+
+/* ── PAIR-LIFE Lifecycle State Machine Tests ──────────────── */
+
+static void test_pair_life_01_normal_stop(void)
+{
+    printf("PAIR-LIFE-01: normal stop lifecycle transitions\n");
+    pairing_test_reset(0xABCD1001);
+    test_task_reset_invalid_notify_count();
+    test_task_reset_external_delete_count();
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_test_worker_state() == 1 /* MICHI_WORKER_RUNNING */, "worker is running");
+
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+    CHECK(michi_pairing_test_worker_state() == 0 /* MICHI_WORKER_STOPPED */, "worker stopped cleanly");
+    CHECK(test_task_invalid_notify_count() == 0, "no invalid task notify");
+    CHECK(test_task_external_delete_count() == 0, "no external vTaskDelete");
+}
+
+static void *release_pairing_worker_thread(void *arg)
+{
+    (void)arg;
+    usleep(50000); /* 50ms */
+    michi_pairing_test_hold_worker(false);
+    return NULL;
+}
+
+static void test_pair_life_02_delayed_exit(void)
+{
+    printf("PAIR-LIFE-02: delayed exit joins cleanly within timeout\n");
+    pairing_test_reset(0xABCD1002);
+    test_task_reset_invalid_notify_count();
+    test_task_reset_external_delete_count();
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+
+    /* Hold worker */
+    michi_pairing_test_hold_worker(true);
+
+    /* Spawn thread to release worker after 50ms */
+    pthread_t th;
+    pthread_create(&th, NULL, release_pairing_worker_thread, NULL);
+
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown joins delayed worker within 1s timeout");
+    pthread_join(th, NULL);
+
+    CHECK(michi_pairing_test_worker_state() == 0 /* MICHI_WORKER_STOPPED */, "worker stopped");
+    CHECK(test_task_invalid_notify_count() == 0, "no invalid task notify");
+    CHECK(test_task_external_delete_count() == 0, "no external vTaskDelete");
+}
+
+static void test_pair_life_03_exit_just_after_timeout(void)
+{
+    printf("PAIR-LIFE-03: worker exit after timeout allows clean retry without double notify\n");
+    pairing_test_reset(0xABCD1003);
+    test_task_reset_invalid_notify_count();
+    test_task_reset_external_delete_count();
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+
+    /* Hold worker permanently so first shutdown times out */
+    michi_pairing_test_hold_worker(true);
+
+    /* First shutdown attempt: should time out after ~1000ms */
+    esp_err_t err = michi_pairing_shutdown();
+    CHECK(err == ESP_ERR_TIMEOUT, "shutdown returns ESP_ERR_TIMEOUT on timeout");
+    CHECK(test_task_external_delete_count() == 0, "worker task not killed externally on timeout");
+
+    /* Now worker finishes delayed cleanup and exits */
+    michi_pairing_test_hold_worker(false);
+    usleep(50000); /* 50ms: give worker time to execute its self-exit and mark EXITED */
+
+    /* Second shutdown attempt: retry */
+    CHECK(michi_pairing_shutdown() == ESP_OK, "retry shutdown succeeds cleanly");
+    CHECK(michi_pairing_test_worker_state() == 0 /* MICHI_WORKER_STOPPED */, "worker stopped after retry");
+    CHECK(test_task_invalid_notify_count() == 0, "no notification sent to dead worker task");
+    CHECK(test_task_external_delete_count() == 0, "worker never externally deleted");
+}
+
+static void test_pair_life_04_repeated_shutdown(void)
+{
+    printf("PAIR-LIFE-04: repeated shutdown is safe and idempotent\n");
+    pairing_test_reset(0xABCD1004);
+    test_task_reset_invalid_notify_count();
+    test_task_reset_external_delete_count();
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_shutdown() == ESP_OK, "first shutdown succeeds");
+    CHECK(michi_pairing_shutdown() == ESP_OK, "second shutdown succeeds (idempotent)");
+    CHECK(michi_pairing_shutdown() == ESP_OK, "third shutdown succeeds (idempotent)");
+    CHECK(test_task_invalid_notify_count() == 0, "no invalid task notify across repeated shutdowns");
+    CHECK(test_task_external_delete_count() == 0, "no external vTaskDelete across repeated shutdowns");
+}
+
+/* ── PAIR-INV-01..06 Pairing Shutdown Invariant Tests ──────── */
+
+static void test_pair_inv_01_no_callback_after_teardown(void)
+{
+    printf("PAIR-INV-01: no callback may act after teardown begins\n");
+    pairing_test_reset(0xABCD2001);
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+
+    /* Shut pairing down */
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+    CHECK(!michi_pairing_is_window_open(), "window closed");
+
+    /* Advance timer past original window expiry */
+    const size_t events_before = test_state_post_count(MICHI_EVENT_PAIRING_WINDOW_CLOSED);
+    test_esp_timer_advance((uint64_t)CONFIG_MICHI_PAIRING_WINDOW_SECONDS * 1000000ULL);
+
+    /* Callback must not act: no events posted, no invalid task notification */
+    CHECK(test_state_post_count(MICHI_EVENT_PAIRING_WINDOW_CLOSED) == events_before,
+          "PAIR-INV-01: no event posted after teardown begins");
+    CHECK(test_task_invalid_notify_count() == 0,
+          "PAIR-INV-01: no invalid task notify after teardown");
+}
+
+static void test_pair_inv_02_no_worker_access_after_mutex_delete(void)
+{
+    printf("PAIR-INV-02: no worker access after mutex deletion\n");
+    pairing_test_reset(0xABCD2002);
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_test_has_mutex(), "mutex exists after init");
+
+    /* Hold worker so shutdown times out */
+    michi_pairing_test_hold_worker(true);
+    esp_err_t err = michi_pairing_shutdown();
+    CHECK(err == ESP_ERR_TIMEOUT, "shutdown times out while worker held");
+
+    /* INVARIANT: While worker is still alive, mutex MUST NOT be deleted! */
+    CHECK(michi_pairing_test_has_mutex(), "PAIR-INV-02: mutex preserved while worker running");
+
+    /* Release worker, let it exit cleanly */
+    michi_pairing_test_hold_worker(false);
+    usleep(50000);
+
+    /* Retry shutdown */
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown retry succeeds");
+    /* Mutex deleted ONLY after worker has exited */
+    CHECK(!michi_pairing_test_has_mutex(), "PAIR-INV-02: mutex deleted only after worker confirmed dead");
+    CHECK(michi_pairing_test_worker_state() == 0 /* MICHI_WORKER_STOPPED */, "worker stopped");
+}
+
+static void test_pair_inv_03_no_stale_task_notification(void)
+{
+    printf("PAIR-INV-03: no stale TaskHandle_t notification\n");
+    pairing_test_reset(0xABCD2003);
+    test_task_reset_invalid_notify_count();
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+
+    /* Worker is dead. Fire test notification or advance timer */
+    michi_pairing_test_notify_expired();
+    test_esp_timer_advance((uint64_t)CONFIG_MICHI_PAIRING_WINDOW_SECONDS * 1000000ULL);
+
+    CHECK(test_task_invalid_notify_count() == 0,
+          "PAIR-INV-03: zero notifications to dead or retired task handle");
+}
+
+static void test_pair_inv_04_timeout_leaves_retryable(void)
+{
+    printf("PAIR-INV-04: timeout leaves subsystem retryable\n");
+    pairing_test_reset(0xABCD2004);
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+
+    /* Hold worker */
+    michi_pairing_test_hold_worker(true);
+    CHECK(michi_pairing_shutdown() == ESP_ERR_TIMEOUT, "first shutdown times out");
+
+    /* Subsystem must remain retryable, not half-destroyed */
+    CHECK(michi_pairing_test_worker_state() == 2 /* MICHI_WORKER_STOP_REQUESTED */,
+          "worker state is STOP_REQUESTED");
+    CHECK(michi_pairing_test_has_mutex(), "mutex still intact for safe retry");
+
+    /* Release worker */
+    michi_pairing_test_hold_worker(false);
+    usleep(50000);
+
+    /* Retry shutdown must succeed completely */
+    CHECK(michi_pairing_shutdown() == ESP_OK, "PAIR-INV-04: retry shutdown succeeds");
+    CHECK(!michi_pairing_test_has_mutex(), "resources cleaned up cleanly after retry");
+    CHECK(!michi_pairing_is_window_open(), "window closed");
+}
+
+static void test_pair_inv_05_no_double_post_closed(void)
+{
+    printf("PAIR-INV-05: PAIRING_WINDOW_CLOSED must not be double-posted\n");
+    pairing_test_reset(0xABCD2005);
+    test_state_reset();
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+
+    /* 1. Normal window expiry posts exactly ONE event */
+    test_esp_timer_advance((uint64_t)CONFIG_MICHI_PAIRING_WINDOW_SECONDS * 1000000ULL);
+    usleep(20000); /* allow worker to process event */
+
+    CHECK(test_state_post_count(MICHI_EVENT_PAIRING_WINDOW_CLOSED) == 1,
+          "exactly 1 closed event posted on expiration");
+
+    /* 2. Manual close request after expiration */
+    CHECK(michi_pairing_close_window() == ESP_OK, "close window succeeds");
+    CHECK(test_state_post_count(MICHI_EVENT_PAIRING_WINDOW_CLOSED) == 1,
+          "close window on already closed window does not re-post");
+
+    /* 3. Shutdown after expiration */
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+    CHECK(test_state_post_count(MICHI_EVENT_PAIRING_WINDOW_CLOSED) == 1,
+          "PAIR-INV-05: shutdown does not double-post PAIRING_WINDOW_CLOSED");
+}
+
+static void test_pair_inv_06_pin_display_cb_lifecycle(void)
+{
+    printf("PAIR-INV-06: PIN display callback must not run after relevant display/resource teardown\n");
+    pairing_test_reset(0xABCD2006);
+    spy_reset();
+    michi_pairing_set_pin_display_cb(pin_spy, NULL);
+
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+    CHECK(spy_clear_calls == 1, "open_window clears stale PIN");
+
+    /* Shutdown pairing */
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+    CHECK(spy_clear_calls >= 2, "shutdown clears PIN on display before teardown");
+
+    /* After shutdown, reset spy counters */
+    const int clears_at_shutdown = spy_clear_calls;
+    const int pins_at_shutdown = spy_pin_calls;
+
+    /* Late close_window or another shutdown must NOT invoke the callback because callback was cleared */
+    (void)michi_pairing_close_window();
+    (void)michi_pairing_shutdown();
+
+    CHECK(spy_clear_calls == clears_at_shutdown,
+          "PAIR-INV-06: no PIN callback invocation after shutdown");
+    CHECK(spy_pin_calls == pins_at_shutdown,
+          "PAIR-INV-06: no PIN callback invocation after shutdown");
+}
+
+static void test_pair_concur_01_safe_notify_lease(void)
+{
+    printf("PAIR-CONCUR-01: safe notification lease without critical section violation\n");
+    pairing_test_reset(0xABCD3001);
+    test_freertos_api_reset_in_critical_count();
+    test_task_reset_invalid_notify_count();
+
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+
+    for (int i = 0; i < 50; i++) {
+        michi_pairing_test_notify_expired();
+    }
+    usleep(20000);
+
+    CHECK(test_freertos_api_in_critical_count() == 0,
+          "PAIR-CONCUR-01: zero FreeRTOS API calls inside critical sections");
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+}
+
+typedef struct {
+    _Atomic bool stop;
+    _Atomic uint32_t calls;
+    _Atomic uint32_t rejections;
+} pair_stress_arg_t;
+
+static void *pair_api_stress_worker(void *arg)
+{
+    pair_stress_arg_t *s = (pair_stress_arg_t *)arg;
+    char session_id[MICHI_PAIRING_SESSION_ID_LEN];
+    char expires_at[MICHI_PAIRING_EXPIRES_AT_LEN];
+    uint32_t attempts = 0;
+    while (!atomic_load(&s->stop)) {
+        atomic_fetch_add(&s->calls, 1);
+        michi_pairing_start_result_t r = michi_pairing_start(
+            valid_peer(), "192.168.1.50",
+            session_id, sizeof(session_id),
+            expires_at, sizeof(expires_at), &attempts);
+        if (r == MICHI_PAIRING_START_WINDOW_CLOSED) {
+            atomic_fetch_add(&s->rejections, 1);
+        }
+        (void)michi_pairing_is_window_open();
+        usleep(100);
+    }
+    return NULL;
+}
+
+static void test_pair_concur_02_public_api_admission_rejection(void)
+{
+    printf("PAIR-CONCUR-02: public API admission rejection during teardown\n");
+    pairing_test_reset(0xABCD3002);
+    test_freertos_api_reset_in_critical_count();
+
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+
+    pair_stress_arg_t s;
+    atomic_init(&s.stop, false);
+    atomic_init(&s.calls, 0);
+    atomic_init(&s.rejections, 0);
+    pthread_t th1, th2;
+    pthread_create(&th1, NULL, pair_api_stress_worker, &s);
+    pthread_create(&th2, NULL, pair_api_stress_worker, &s);
+
+    usleep(5000);
+    /* Concurrently shutdown while API calls are actively running */
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds while API calls in flight");
+
+    atomic_store(&s.stop, true);
+    pthread_join(th1, NULL);
+    pthread_join(th2, NULL);
+
+    /* Post-shutdown API calls must be firmly rejected without crashing */
+    char session_id[MICHI_PAIRING_SESSION_ID_LEN];
+    char expires_at[MICHI_PAIRING_EXPIRES_AT_LEN];
+    uint32_t attempts = 0;
+    michi_pairing_start_result_t r = michi_pairing_start(
+        valid_peer(), "192.168.1.50",
+        session_id, sizeof(session_id),
+        expires_at, sizeof(expires_at), &attempts);
+    CHECK(r == MICHI_PAIRING_START_WINDOW_CLOSED, "start rejected after shutdown");
+    CHECK(michi_pairing_open_window() == ESP_ERR_INVALID_STATE, "open_window rejected after shutdown");
+    CHECK(michi_pairing_close_window() == ESP_ERR_INVALID_STATE, "close_window rejected after shutdown");
+    CHECK(!michi_pairing_is_window_open(), "is_window_open returns false after shutdown");
+    CHECK(test_freertos_api_in_critical_count() == 0, "no FreeRTOS APIs in critical section");
+}
+
+static void test_pair_concur_03_no_dead_task_notify(void)
+{
+    printf("PAIR-CONCUR-03: no notify to dead task handle\n");
+    pairing_test_reset(0xABCD3003);
+    test_task_reset_invalid_notify_count();
+
+    for (int iter = 0; iter < 10; iter++) {
+        CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+        CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+
+        /* Fire notification concurrently with shutdown */
+        michi_pairing_test_notify_expired();
+        CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+        /* Firing expired after shutdown must safely drop without notifying dead task */
+        michi_pairing_test_notify_expired();
+    }
+    CHECK(test_task_invalid_notify_count() == 0,
+          "PAIR-CONCUR-03: zero notifications to dead task handles");
+}
+
+static void *pair_shutdown_racer(void *arg)
+{
+    (void)arg;
+    (void)michi_pairing_shutdown();
+    return NULL;
+}
+
+static void test_pair_concur_04_shutdown_retry_concurrent(void)
+{
+    printf("PAIR-CONCUR-04: shutdown retry safety under concurrency\n");
+    pairing_test_reset(0xABCD3004);
+
+    for (int iter = 0; iter < 5; iter++) {
+        CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+        CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+
+        pthread_t th1, th2, th3;
+        pthread_create(&th1, NULL, pair_shutdown_racer, NULL);
+        pthread_create(&th2, NULL, pair_shutdown_racer, NULL);
+        pthread_create(&th3, NULL, pair_shutdown_racer, NULL);
+
+        pthread_join(th1, NULL);
+        pthread_join(th2, NULL);
+        pthread_join(th3, NULL);
+
+        CHECK(!michi_pairing_test_has_mutex(), "mutex cleanly destroyed");
+        CHECK(michi_pairing_test_worker_state() == 0, "worker stopped cleanly");
+    }
+}
+
+static void test_life_smp_02_03_api_drain_timeout_and_retry(void)
+{
+    printf("LIFE-SMP-02 & 03: API drain timeout preserves resources and retry succeeds\n");
+    pairing_test_reset(0xABCD4001);
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+    CHECK(michi_pairing_open_window() == ESP_OK, "window opens");
+
+    /* Hold API lease to simulate in-flight API call stuck */
+    michi_pairing_test_hold_api(true);
+
+    esp_err_t err = michi_pairing_shutdown();
+    CHECK(err == ESP_ERR_TIMEOUT, "LIFE-SMP-02: shutdown returns timeout when API in flight");
+    CHECK(michi_pairing_test_has_mutex(), "LIFE-SMP-02: mutex preserved on API drain timeout");
+    int wst = michi_pairing_test_worker_state();
+    CHECK(wst == 2 || wst == 3,
+          "LIFE-SMP-02: worker remains STOP_REQUESTED or EXITED on drain timeout");
+
+    /* LIFE-SMP-08: No new API admitted while STOP_REQUESTED or EXITED */
+    char session_id[MICHI_PAIRING_SESSION_ID_LEN];
+    char expires_at[MICHI_PAIRING_EXPIRES_AT_LEN];
+    uint32_t attempts = 0;
+    michi_pairing_start_result_t r = michi_pairing_start(
+        valid_peer(), "192.168.1.50",
+        session_id, sizeof(session_id),
+        expires_at, sizeof(expires_at), &attempts);
+    CHECK(r == MICHI_PAIRING_START_WINDOW_CLOSED,
+          "LIFE-SMP-08: no new API admitted after STOP_REQUESTED");
+    CHECK(michi_pairing_open_window() == ESP_ERR_INVALID_STATE,
+          "LIFE-SMP-08: open_window rejected after STOP_REQUESTED");
+
+    /* Release API lease */
+    michi_pairing_test_hold_api(false);
+
+    /* LIFE-SMP-03: Retry shutdown succeeds cleanly */
+    CHECK(michi_pairing_shutdown() == ESP_OK,
+          "LIFE-SMP-03: retry shutdown succeeds after API drain completes");
+    CHECK(!michi_pairing_test_has_mutex(), "LIFE-SMP-03: mutex destroyed after successful retry");
+    CHECK(michi_pairing_test_worker_state() == 0 /* MICHI_WORKER_STOPPED */,
+          "LIFE-SMP-03: worker state is STOPPED");
+}
+
 int main(void)
 {
     test_sha256_known_answer();
@@ -1103,9 +1650,37 @@ int main(void)
     test_p104_same_id_different_key_not_replaced();
     test_p104_nvs_write_failure();
     test_p104_registry_full();
+    test_timer_01_pairing_nonblocking();
+    test_pairing_timer_generation_stale();
+    test_event_coalesce_pair_01();
+    test_shut_pair_01_cooperative_shutdown();
+    test_shut_pair_02_shutdown_while_event_pending();
+    test_pair_life_01_normal_stop();
+    test_pair_life_02_delayed_exit();
+    test_pair_life_03_exit_just_after_timeout();
+    test_pair_life_04_repeated_shutdown();
+    test_pair_inv_01_no_callback_after_teardown();
+    test_pair_inv_02_no_worker_access_after_mutex_delete();
+    test_pair_inv_03_no_stale_task_notification();
+    test_pair_inv_04_timeout_leaves_retryable();
+    test_pair_inv_05_no_double_post_closed();
+    test_pair_inv_06_pin_display_cb_lifecycle();
+
+    test_pair_concur_01_safe_notify_lease();
+    test_pair_concur_02_public_api_admission_rejection();
+    test_pair_concur_03_no_dead_task_notify();
+    test_pair_concur_04_shutdown_retry_concurrent();
+    test_life_smp_02_03_api_drain_timeout_and_retry();
+
+    CHECK(test_freertos_api_in_critical_count() == 0,
+          "FINAL INVARIANT: test_freertos_api_in_critical_count == 0");
+    CHECK(test_task_invalid_notify_count() == 0,
+          "FINAL INVARIANT: test_task_invalid_notify_count == 0");
+    CHECK(test_task_external_delete_count() == 0,
+          "FINAL INVARIANT: test_task_external_delete_count == 0");
 
     if (failures == 0) {
-        printf("test_michi_pairing: all tests passed\n");
+        printf("test_michi_pairing: all tests passed (including PAIR-LIFE-01..04, PAIR-INV-01..06, PAIR-CONCUR-01..04)\n");
         return 0;
     }
     printf("test_michi_pairing: %d check(s) FAILED\n", failures);

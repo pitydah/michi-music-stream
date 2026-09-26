@@ -10,6 +10,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 
 #include "esp_err.h"
 #include "esp_log.h"
@@ -90,14 +91,111 @@ typedef struct {
     uint32_t count;
 } michi_pairing_ip_slot_t;
 
+#define PAIRING_NOTIFY_EXPIRED (1u << 0)
+#define PAIRING_NOTIFY_STOP    (1u << 1)
+
+#define MICHI_LIFECYCLE_API_DRAIN_TIMEOUT_MS 500
+#define MICHI_LIFECYCLE_SHUTDOWN_TIMEOUT_MS  1000
+
+typedef enum {
+    MICHI_WORKER_STOPPED = 0,
+    MICHI_WORKER_RUNNING,
+    MICHI_WORKER_STOP_REQUESTED,
+    MICHI_WORKER_EXITED,
+} michi_worker_lifecycle_t;
+
+/* ====================================================================
+ * LIFECYCLE & LOCK ORDER CONTRACT
+ *
+ * 1. s_lifecycle_mux (portMUX_TYPE spinlock) protects ONLY lifecycle metadata:
+ *    - s_worker_state (michi_worker_lifecycle_t)
+ *    - s_pairing_task (TaskHandle_t)
+ *    - s_notify_inflight (uint32_t lease counter)
+ *    - s_api_inflight (uint32_t lease counter)
+ *    - s_initialized (bool)
+ *    - s_shutdown_in_progress (bool)
+ *
+ * 2. Invariant: NEVER call blocking FreeRTOS APIs, vTaskDelay, or logging
+ *    while s_lifecycle_mux is held.
+ *
+ * 3. Lock Ordering:
+ *    Level 1: s_lifecycle_mux (held briefly, metadata access only)
+ *    Level 2: Component Mutex (s_mutex)
+ *    Level 3: External callbacks / I/O
+ *    RULE: Never acquire Level 2 while holding Level 1.
+ *    RULE: Never wait on Level 1 while holding Level 2.
+ *
+ * 4. API Lease:
+ *    Public APIs must acquire an API lease via pairing_api_enter() before
+ *    accessing component resources, and release via pairing_api_exit() on exit.
+ *    Shutdown drains all leases before freeing mutexes and timers.
+ * ==================================================================== */
+
 static SemaphoreHandle_t s_mutex;
 static esp_timer_handle_t s_timer;
-static volatile bool s_initialized;
-/* Teardown flag (shutdown): window_timer_cb checks it BEFORE taking the
- * mutex - a callback already dispatched when shutdown runs must return
- * without touching the mutex (shutdown deletes it). Set before
- * esp_timer_stop, cleared by a later init. */
-static volatile bool s_teardown;
+static TaskHandle_t s_pairing_task;
+static SemaphoreHandle_t s_pairing_done_sem;
+static portMUX_TYPE s_lifecycle_mux = portMUX_INITIALIZER_UNLOCKED;
+static michi_worker_lifecycle_t s_worker_state = MICHI_WORKER_STOPPED;
+static uint32_t s_notify_inflight = 0;
+static uint32_t s_api_inflight = 0;
+static bool s_initialized = false;
+static bool s_shutdown_in_progress = false;
+#ifdef MICHI_HOST_TEST
+static volatile bool s_test_hold_worker = false;
+#endif
+
+static michi_worker_lifecycle_t worker_state_get(void)
+{
+    michi_worker_lifecycle_t st;
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    st = s_worker_state;
+    portEXIT_CRITICAL(&s_lifecycle_mux);
+    return st;
+}
+
+static bool pairing_api_enter(void)
+{
+    bool admitted = false;
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    if (s_initialized && s_worker_state == MICHI_WORKER_RUNNING) {
+        s_api_inflight++;
+        admitted = true;
+    }
+    portEXIT_CRITICAL(&s_lifecycle_mux);
+    return admitted;
+}
+
+static void pairing_api_exit(void)
+{
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    if (s_api_inflight > 0) {
+        s_api_inflight--;
+    }
+    portEXIT_CRITICAL(&s_lifecycle_mux);
+}
+
+static void pairing_notify(uint32_t bits)
+{
+    TaskHandle_t target = NULL;
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    if (s_worker_state == MICHI_WORKER_RUNNING && s_pairing_task != NULL) {
+        target = s_pairing_task;
+        s_notify_inflight++;
+    }
+    portEXIT_CRITICAL(&s_lifecycle_mux);
+
+    if (target != NULL) {
+        xTaskNotify(target, bits, eSetBits);
+        portENTER_CRITICAL(&s_lifecycle_mux);
+        if (s_notify_inflight > 0) {
+            s_notify_inflight--;
+        }
+        portEXIT_CRITICAL(&s_lifecycle_mux);
+    }
+}
+
+static uint32_t s_window_generation;
 static bool s_window_open;
 /* Window opened at (esp_timer_get_time, us): monotonic reference and the
  * deadline check that keeps the getters honest during the tiny window
@@ -361,7 +459,12 @@ static void pin_display_notify(const char *pin)
      * holding it). */
     michi_pairing_pin_display_cb_t cb = NULL;
     void *cb_ctx = NULL;
-    if (!s_initialized) {
+    bool is_init = false;
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    is_init = s_initialized;
+    portEXIT_CRITICAL(&s_lifecycle_mux);
+
+    if (!is_init) {
         cb = s_pin_display_cb;
         cb_ctx = s_pin_display_ctx;
     } else {
@@ -391,6 +494,7 @@ static void window_close_locked(const char *reason, bool notify)
     }
     const uint32_t starts = s_starts_per_window;
     esp_timer_stop(s_timer);
+    s_window_generation++;
     s_window_open = false;
     ESP_LOGI(TAG, "pairing: window=closed reason=%s starts=%u", reason,
              (unsigned)starts);
@@ -402,32 +506,82 @@ static void window_close_locked(const char *reason, bool notify)
 static void window_timer_cb(void *arg)
 {
     (void)arg;
-    /* Teardown race (F3): if shutdown is in progress, return WITHOUT
-     * touching the mutex - shutdown stops the timer and deletes the mutex
-     * after this flag is set, and taking a deleted mutex is undefined.
-     * esp_timer_stop on a one-shot timer that already fired is a no-op,
-     * so this check is the ONLY thing between a dispatched callback and
-     * the teardown. */
-    if (s_teardown) {
-        return;
+    pairing_notify(PAIRING_NOTIFY_EXPIRED);
+}
+
+static void pairing_task_func(void *arg)
+{
+    (void)arg;
+    while (1) {
+        uint32_t notified_bits = 0;
+        BaseType_t r = xTaskNotifyWait(0, UINT32_MAX, &notified_bits, pdMS_TO_TICKS(50));
+
+        bool stop = false;
+        portENTER_CRITICAL(&s_lifecycle_mux);
+        if (s_worker_state >= MICHI_WORKER_STOP_REQUESTED ||
+            (r == pdTRUE && (notified_bits & PAIRING_NOTIFY_STOP))) {
+            s_worker_state = MICHI_WORKER_STOP_REQUESTED;
+            stop = true;
+        }
+        portEXIT_CRITICAL(&s_lifecycle_mux);
+        if (stop) {
+            break;
+        }
+
+        if (r == pdTRUE && (notified_bits & PAIRING_NOTIFY_EXPIRED)) {
+            if (worker_state_get() >= MICHI_WORKER_STOP_REQUESTED) {
+                continue;
+            }
+            xSemaphoreTake(s_mutex, portMAX_DELAY);
+            /* Stale-callback guard: verify deadline under mutex */
+            if (worker_state_get() >= MICHI_WORKER_STOP_REQUESTED || !s_window_open) {
+                xSemaphoreGive(s_mutex);
+                continue;
+            }
+            const int64_t deadline =
+                s_window_opened_us +
+                (int64_t)CONFIG_MICHI_PAIRING_WINDOW_SECONDS * 1000000;
+            if (esp_timer_get_time() < deadline) {
+                xSemaphoreGive(s_mutex);
+                continue;
+            }
+            window_close_locked("expired", true);
+            xSemaphoreGive(s_mutex);
+            pin_display_notify(NULL);
+        }
     }
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    /* Stale-callback guard (F4): re-validate the deadline under the mutex.
-     * The window may have been re-opened after this timer fired: if the
-     * deadline has not passed for the CURRENT window, this callback is
-     * stale - it must NOT close the fresh window. */
-    const int64_t deadline =
-        s_window_opened_us +
-        (int64_t)CONFIG_MICHI_PAIRING_WINDOW_SECONDS * 1000000;
-    if (esp_timer_get_time() < deadline) {
-        xSemaphoreGive(s_mutex);
-        return;
+
+#ifdef MICHI_HOST_TEST
+    while (s_test_hold_worker) {
+        vTaskDelay(10);
     }
-    window_close_locked("expired", true);
-    xSemaphoreGive(s_mutex);
-    /* Expiry clears the PIN screen too (the timer task is a regular
-     * task context; the display callback never blocks). */
-    pin_display_notify(NULL);
+#endif
+
+    /* Drain any notification in flight before marking EXITED and clearing s_pairing_task */
+    while (1) {
+        bool inflight = false;
+        portENTER_CRITICAL(&s_lifecycle_mux);
+        inflight = (s_notify_inflight > 0);
+        portEXIT_CRITICAL(&s_lifecycle_mux);
+        if (!inflight) {
+            break;
+        }
+        vTaskDelay(1);
+    }
+
+    /* Worker exit ownership protocol:
+     * Once DONE semaphore is given, worker will perform NO access to
+     * component-owned mutex/timer/etc. The worker marks EXITED and clears
+     * the live task handle before giving the semaphore. */
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    s_worker_state = MICHI_WORKER_EXITED;
+    s_pairing_task = NULL;
+    portEXIT_CRITICAL(&s_lifecycle_mux);
+
+    if (s_pairing_done_sem != NULL) {
+        xSemaphoreGive(s_pairing_done_sem);
+    }
+    vTaskDelete(NULL);
 }
 
 /* --- rate limiting ---------------------------------------------------- */
@@ -476,10 +630,13 @@ static bool start_rate_limited_locked(const char *ip)
 
 esp_err_t michi_pairing_init(void)
 {
+    portENTER_CRITICAL(&s_lifecycle_mux);
     if (s_initialized) {
+        portEXIT_CRITICAL(&s_lifecycle_mux);
         return ESP_OK;
     }
-    s_teardown = false;
+    s_shutdown_in_progress = false;
+    portEXIT_CRITICAL(&s_lifecycle_mux);
 
     s_mutex = xSemaphoreCreateMutex();
     if (s_mutex == NULL) {
@@ -502,6 +659,38 @@ esp_err_t michi_pairing_init(void)
         return err;
     }
 
+    s_pairing_done_sem = xSemaphoreCreateBinary();
+    if (s_pairing_done_sem == NULL) {
+        ESP_LOGE(TAG, "pairing: init done_sem_failed");
+        esp_timer_delete(s_timer);
+        s_timer = NULL;
+        vSemaphoreDelete(s_mutex);
+        s_mutex = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    s_worker_state = MICHI_WORKER_RUNNING;
+    s_notify_inflight = 0;
+    s_api_inflight = 0;
+    portEXIT_CRITICAL(&s_lifecycle_mux);
+
+    if (xTaskCreate(pairing_task_func, "michi_pairing", 4096, NULL, 5,
+                    &s_pairing_task) != pdPASS) {
+        ESP_LOGE(TAG, "pairing: init task_failed");
+        portENTER_CRITICAL(&s_lifecycle_mux);
+        s_worker_state = MICHI_WORKER_STOPPED;
+        s_pairing_task = NULL;
+        portEXIT_CRITICAL(&s_lifecycle_mux);
+        vSemaphoreDelete(s_pairing_done_sem);
+        s_pairing_done_sem = NULL;
+        esp_timer_delete(s_timer);
+        s_timer = NULL;
+        vSemaphoreDelete(s_mutex);
+        s_mutex = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
     load_blob();
     /* Belt and braces: the version field must ALWAYS be written, on
      * every load path, so the next persist survives the NVS round-trip
@@ -510,14 +699,19 @@ esp_err_t michi_pairing_init(void)
     s_blob.version = MICHI_PAIRING_BLOB_VERSION;
     sessions_clear_locked();
     s_window_open = false;
+    s_window_generation = 0;
+
+    portENTER_CRITICAL(&s_lifecycle_mux);
     s_initialized = true;
+    portEXIT_CRITICAL(&s_lifecycle_mux);
+
     ESP_LOGI(TAG, "subsystem=pairing state=ok phase=10");
     return ESP_OK;
 }
 
 esp_err_t michi_pairing_open_window(void)
 {
-    if (!s_initialized) {
+    if (!pairing_api_enter()) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -529,6 +723,7 @@ esp_err_t michi_pairing_open_window(void)
     }
     /* Contract: "abrir de nuevo reemplaza la ventana previa y elimina
      * sesiones de pairing pendientes". */
+    s_window_generation++;
     sessions_clear_locked();
 
     s_window_open = true;
@@ -541,6 +736,7 @@ esp_err_t michi_pairing_open_window(void)
         ESP_LOGE(TAG, "pairing: window_timer_start_failed err=%s",
                  esp_err_to_name(err));
         xSemaphoreGive(s_mutex);
+        pairing_api_exit();
         return err;
     }
 
@@ -549,29 +745,28 @@ esp_err_t michi_pairing_open_window(void)
     xSemaphoreGive(s_mutex);
     /* The screen must clear any stale PIN from a previous window. */
     pin_display_notify(NULL);
+    pairing_api_exit();
     return ESP_OK;
 }
 
 bool michi_pairing_is_window_open(void)
 {
-    if (!s_initialized) {
+    if (!pairing_api_enter()) {
         return false;
     }
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     const bool open = window_active_locked();
     xSemaphoreGive(s_mutex);
+    pairing_api_exit();
     return open;
 }
 
-michi_pairing_start_result_t michi_pairing_start(
+static michi_pairing_start_result_t pairing_start_internal(
     const michi_pairing_peer_t *peer, const char *ip,
     char *out_session_id, size_t session_id_len,
     char *out_expires_at, size_t expires_len,
     uint32_t *out_attempts_remaining)
 {
-    if (!s_initialized) {
-        return MICHI_PAIRING_START_INTERNAL;
-    }
     if (peer == NULL || out_session_id == NULL || out_expires_at == NULL ||
         out_attempts_remaining == NULL ||
         session_id_len < MICHI_PAIRING_SESSION_ID_LEN ||
@@ -692,6 +887,22 @@ michi_pairing_start_result_t michi_pairing_start(
     return MICHI_PAIRING_START_OK;
 }
 
+michi_pairing_start_result_t michi_pairing_start(
+    const michi_pairing_peer_t *peer, const char *ip,
+    char *out_session_id, size_t session_id_len,
+    char *out_expires_at, size_t expires_len,
+    uint32_t *out_attempts_remaining)
+{
+    if (!pairing_api_enter()) {
+        return MICHI_PAIRING_START_WINDOW_CLOSED;
+    }
+    michi_pairing_start_result_t res = pairing_start_internal(
+        peer, ip, out_session_id, session_id_len,
+        out_expires_at, expires_len, out_attempts_remaining);
+    pairing_api_exit();
+    return res;
+}
+
 /* Status name of a session, deadline-aware (a pending session past its
  * deadline reports "expired" without mutating the stored status). */
 static const char *session_status_name_locked(
@@ -710,14 +921,11 @@ static const char *session_status_name_locked(
     return "pending";
 }
 
-michi_pairing_status_result_t michi_pairing_status(
+static michi_pairing_status_result_t pairing_status_internal(
     const char *session_id, char *out_status, size_t status_len,
     char *out_expires_at, size_t expires_len,
     uint32_t *out_attempts_remaining)
 {
-    if (!s_initialized) {
-        return MICHI_PAIRING_STATUS_NOT_FOUND;
-    }
     if (session_id == NULL || out_status == NULL || out_expires_at == NULL ||
         out_attempts_remaining == NULL || status_len == 0 ||
         expires_len < MICHI_PAIRING_EXPIRES_AT_LEN) {
@@ -745,14 +953,26 @@ michi_pairing_status_result_t michi_pairing_status(
     return MICHI_PAIRING_STATUS_OK;
 }
 
-michi_pairing_confirm_result_t michi_pairing_confirm(
+michi_pairing_status_result_t michi_pairing_status(
+    const char *session_id, char *out_status, size_t status_len,
+    char *out_expires_at, size_t expires_len,
+    uint32_t *out_attempts_remaining)
+{
+    if (!pairing_api_enter()) {
+        return MICHI_PAIRING_STATUS_NOT_FOUND;
+    }
+    michi_pairing_status_result_t res = pairing_status_internal(
+        session_id, out_status, status_len,
+        out_expires_at, expires_len, out_attempts_remaining);
+    pairing_api_exit();
+    return res;
+}
+
+static michi_pairing_confirm_result_t pairing_confirm_internal(
     const char *session_id, const char *pin, const char *michi_id,
     const char *public_key, char *out_token, size_t token_len,
     char *out_device_id, size_t device_id_len)
 {
-    if (!s_initialized) {
-        return MICHI_PAIRING_CONFIRM_INTERNAL;
-    }
     if (session_id == NULL || pin == NULL || michi_id == NULL ||
         public_key == NULL || out_token == NULL || out_device_id == NULL ||
         token_len < MICHI_PAIRING_TOKEN_B64_LEN ||
@@ -934,14 +1154,26 @@ michi_pairing_confirm_result_t michi_pairing_confirm(
     return MICHI_PAIRING_CONFIRM_OK;
 }
 
-esp_err_t michi_pairing_validate_token(const char *token,
-                                       char *out_device_id,
-                                       size_t id_len,
-                                       uint32_t *out_permissions)
+michi_pairing_confirm_result_t michi_pairing_confirm(
+    const char *session_id, const char *pin, const char *michi_id,
+    const char *public_key, char *out_token, size_t token_len,
+    char *out_device_id, size_t device_id_len)
 {
-    if (!s_initialized) {
-        return ESP_ERR_INVALID_STATE;
+    if (!pairing_api_enter()) {
+        return MICHI_PAIRING_CONFIRM_NOT_FOUND;
     }
+    michi_pairing_confirm_result_t res = pairing_confirm_internal(
+        session_id, pin, michi_id, public_key,
+        out_token, token_len, out_device_id, device_id_len);
+    pairing_api_exit();
+    return res;
+}
+
+static esp_err_t pairing_validate_token_internal(const char *token,
+                                                char *out_device_id,
+                                                size_t id_len,
+                                                uint32_t *out_permissions)
+{
     if (token == NULL || out_device_id == NULL ||
         out_permissions == NULL ||
         id_len < MICHI_PAIRING_DEVICE_ID_LEN) {
@@ -993,6 +1225,19 @@ esp_err_t michi_pairing_validate_token(const char *token,
     return ESP_OK;
 }
 
+esp_err_t michi_pairing_validate_token(const char *token,
+                                       char *out_device_id,
+                                       size_t id_len,
+                                       uint32_t *out_permissions)
+{
+    if (!pairing_api_enter()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t res = pairing_validate_token_internal(token, out_device_id, id_len, out_permissions);
+    pairing_api_exit();
+    return res;
+}
+
 bool michi_pairing_has_permission(const char *token, uint32_t perm)
 {
     uint32_t perms = 0;
@@ -1007,11 +1252,8 @@ bool michi_pairing_has_permission(const char *token, uint32_t perm)
     return (perms & perm) != 0;
 }
 
-esp_err_t michi_pairing_revoke(const char *device_id)
+static esp_err_t pairing_revoke_internal(const char *device_id)
 {
-    if (!s_initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
     if (!michi_pairing_uuid_valid(device_id)) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -1051,11 +1293,18 @@ esp_err_t michi_pairing_revoke(const char *device_id)
     return ESP_OK;
 }
 
-esp_err_t michi_pairing_list(char *out, size_t out_len)
+esp_err_t michi_pairing_revoke(const char *device_id)
 {
-    if (!s_initialized) {
+    if (!pairing_api_enter()) {
         return ESP_ERR_INVALID_STATE;
     }
+    esp_err_t res = pairing_revoke_internal(device_id);
+    pairing_api_exit();
+    return res;
+}
+
+static esp_err_t pairing_list_internal(char *out, size_t out_len)
+{
     if (out == NULL || out_len == 0) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -1083,12 +1332,18 @@ esp_err_t michi_pairing_list(char *out, size_t out_len)
     return ESP_OK;
 }
 
-esp_err_t michi_pairing_erase_all(void)
+esp_err_t michi_pairing_list(char *out, size_t out_len)
 {
-    if (!s_initialized) {
+    if (!pairing_api_enter()) {
         return ESP_ERR_INVALID_STATE;
     }
+    esp_err_t res = pairing_list_internal(out, out_len);
+    pairing_api_exit();
+    return res;
+}
 
+static esp_err_t pairing_erase_all_internal(void)
+{
     nvs_handle_t h;
     esp_err_t err = nvs_open(MICHI_PAIRING_NVS_NAMESPACE, NVS_READWRITE, &h);
     if (err != ESP_OK) {
@@ -1115,69 +1370,223 @@ esp_err_t michi_pairing_erase_all(void)
     return ESP_OK;
 }
 
+esp_err_t michi_pairing_erase_all(void)
+{
+    if (!pairing_api_enter()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t res = pairing_erase_all_internal();
+    pairing_api_exit();
+    return res;
+}
+
 void michi_pairing_set_pin_display_cb(michi_pairing_pin_display_cb_t cb,
                                       void *ctx)
 {
-    if (!s_initialized) {
-        s_pin_display_cb = cb;
-        s_pin_display_ctx = ctx;
+    if (!pairing_api_enter()) {
+        bool is_init = false;
+        portENTER_CRITICAL(&s_lifecycle_mux);
+        is_init = s_initialized;
+        portEXIT_CRITICAL(&s_lifecycle_mux);
+        if (!is_init) {
+            s_pin_display_cb = cb;
+            s_pin_display_ctx = ctx;
+        }
         return;
     }
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     s_pin_display_cb = cb;
     s_pin_display_ctx = ctx;
     xSemaphoreGive(s_mutex);
+    pairing_api_exit();
 }
 
 esp_err_t michi_pairing_close_window(void)
 {
-    if (!s_initialized) {
+    if (!pairing_api_enter()) {
         return ESP_ERR_INVALID_STATE;
     }
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     window_close_locked("requested", true);
     xSemaphoreGive(s_mutex);
     pin_display_notify(NULL);
+    pairing_api_exit();
     return ESP_OK;
 }
 
 esp_err_t michi_pairing_shutdown(void)
 {
+    TaskHandle_t target = NULL;
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    int wait_ms = 0;
+    while (s_shutdown_in_progress) {
+        portEXIT_CRITICAL(&s_lifecycle_mux);
+        if (wait_ms >= MICHI_LIFECYCLE_SHUTDOWN_TIMEOUT_MS) {
+            return ESP_ERR_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+        wait_ms += 10;
+        portENTER_CRITICAL(&s_lifecycle_mux);
+    }
     if (!s_initialized) {
+        portEXIT_CRITICAL(&s_lifecycle_mux);
         return ESP_OK;
     }
-    /* Deleting a timer from inside its own callback is not supported:
-     * shutdown must be called from regular task context.
-     *
-     * Teardown order (documented contract, F3):
-     *   1. s_teardown = true FIRST: a window_timer_cb already dispatched
-     *      checks it BEFORE touching the mutex and returns - the callback
-     *      can never block on (or take) a mutex that is about to be
-     *      deleted.
-     *   2. esp_timer_stop: no new callback can fire from here on (stop on
-     *      an already-fired one-shot is a no-op; the dispatched callback
-     *      is neutralized by step 1).
-     *   3. Take the mutex, delete the timer, release the mutex.
-     *   4. ONLY THEN delete the mutex (vSemaphoreDelete) and clear
-     *      s_initialized.
-     * The callback never holds the mutex during teardown, so step 4 can
-     * never race a pending take. */
-    s_teardown = true;
-    esp_timer_stop(s_timer);
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    /* Silent close: the FSM bus may already be down; the close is still
-     * logged (state=off below plus the window=closed line). */
-    window_close_locked("shutdown", false);
-    esp_timer_delete(s_timer);
-    s_timer = NULL;
-    xSemaphoreGive(s_mutex);
-    vSemaphoreDelete(s_mutex);
-    s_mutex = NULL;
+    s_shutdown_in_progress = true;
+    if (s_worker_state == MICHI_WORKER_RUNNING || s_worker_state == MICHI_WORKER_STOP_REQUESTED) {
+        s_worker_state = MICHI_WORKER_STOP_REQUESTED;
+        if (s_pairing_task != NULL) {
+            target = s_pairing_task;
+            s_notify_inflight++;
+        }
+    }
+    portEXIT_CRITICAL(&s_lifecycle_mux);
+
+    if (target != NULL) {
+        xTaskNotify(target, PAIRING_NOTIFY_STOP, eSetBits);
+        portENTER_CRITICAL(&s_lifecycle_mux);
+        if (s_notify_inflight > 0) {
+            s_notify_inflight--;
+        }
+        portEXIT_CRITICAL(&s_lifecycle_mux);
+    }
+
+    /* 2. Stop timer so no further callbacks can fire */
+    s_window_generation++;
+    if (s_timer != NULL) {
+        esp_timer_stop(s_timer);
+    }
+
+    /* 3. Wait until all in-flight API calls complete (bounded drain) */
+    int drain_wait_ms = 0;
+    while (1) {
+        bool api_busy = false;
+        portENTER_CRITICAL(&s_lifecycle_mux);
+        api_busy = (s_api_inflight > 0);
+        portEXIT_CRITICAL(&s_lifecycle_mux);
+        if (!api_busy) {
+            break;
+        }
+        if (drain_wait_ms >= MICHI_LIFECYCLE_API_DRAIN_TIMEOUT_MS) {
+            ESP_LOGE(TAG, "pairing: shutdown API drain timed out (api_inflight > 0)");
+            portENTER_CRITICAL(&s_lifecycle_mux);
+            s_shutdown_in_progress = false;
+            portEXIT_CRITICAL(&s_lifecycle_mux);
+            return ESP_ERR_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+        drain_wait_ms += 10;
+    }
+
+    /* 4. Wait for worker exit if not already EXITED */
+    if (worker_state_get() != MICHI_WORKER_EXITED) {
+        if (s_pairing_done_sem != NULL) {
+            if (xSemaphoreTake(s_pairing_done_sem, pdMS_TO_TICKS(1000)) != pdTRUE) {
+                ESP_LOGE(TAG, "pairing: worker task join timed out");
+                /* On timeout: preserve valid retriable state. DO NOT destroy resources! */
+                portENTER_CRITICAL(&s_lifecycle_mux);
+                s_shutdown_in_progress = false;
+                portEXIT_CRITICAL(&s_lifecycle_mux);
+                return ESP_ERR_TIMEOUT;
+            }
+        }
+    } else {
+        /* Worker already exited; drain any pending signal in semaphore */
+        if (s_pairing_done_sem != NULL) {
+            xSemaphoreTake(s_pairing_done_sem, 0);
+        }
+    }
+
+    /* 5. With worker confirmed EXITED, transition to STOPPED */
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    s_worker_state = MICHI_WORKER_STOPPED;
+    s_pairing_task = NULL;
+    portEXIT_CRITICAL(&s_lifecycle_mux);
+
+    /* 6. With worker completely dead and no callbacks in flight, clean up resources */
+    pin_display_notify(NULL);
+
+    if (s_mutex != NULL) {
+        xSemaphoreTake(s_mutex, portMAX_DELAY);
+        s_pin_display_cb = NULL;
+        s_pin_display_ctx = NULL;
+        window_close_locked("shutdown", false);
+        if (s_timer != NULL) {
+            esp_timer_delete(s_timer);
+            s_timer = NULL;
+        }
+        xSemaphoreGive(s_mutex);
+        vSemaphoreDelete(s_mutex);
+        s_mutex = NULL;
+    } else {
+        s_pin_display_cb = NULL;
+        s_pin_display_ctx = NULL;
+    }
+    if (s_pairing_done_sem != NULL) {
+        vSemaphoreDelete(s_pairing_done_sem);
+        s_pairing_done_sem = NULL;
+    }
+
+    portENTER_CRITICAL(&s_lifecycle_mux);
     s_initialized = false;
+    s_shutdown_in_progress = false;
+    portEXIT_CRITICAL(&s_lifecycle_mux);
 
     ESP_LOGI(TAG, "subsystem=pairing state=off phase=10");
-    /* A reboot closes the window: the screen must not keep the PIN. The
-     * display may already be down - the callback degrades gracefully. */
-    pin_display_notify(NULL);
     return ESP_OK;
 }
+
+#ifdef MICHI_HOST_TEST
+/* --- test hooks ------------------------------------------------------- */
+
+__attribute__((weak)) void michi_pairing_test_lock(void)
+{
+    if (s_mutex != NULL) {
+        xSemaphoreTake(s_mutex, portMAX_DELAY);
+    }
+}
+
+__attribute__((weak)) void michi_pairing_test_unlock(void)
+{
+    if (s_mutex != NULL) {
+        xSemaphoreGive(s_mutex);
+    }
+}
+
+__attribute__((weak)) bool michi_pairing_test_is_window_open_locked(void)
+{
+    return s_window_open;
+}
+
+__attribute__((weak)) bool michi_pairing_test_has_mutex(void)
+{
+    return s_mutex != NULL;
+}
+
+__attribute__((weak)) void michi_pairing_test_notify_expired(void)
+{
+    pairing_notify(PAIRING_NOTIFY_EXPIRED);
+}
+
+__attribute__((weak)) void michi_pairing_test_hold_worker(bool hold)
+{
+    s_test_hold_worker = hold;
+}
+
+__attribute__((weak)) int michi_pairing_test_worker_state(void)
+{
+    return (int)worker_state_get();
+}
+
+__attribute__((weak)) void michi_pairing_test_hold_api(bool hold)
+{
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    if (hold) {
+        s_api_inflight++;
+    } else if (s_api_inflight > 0) {
+        s_api_inflight--;
+    }
+    portEXIT_CRITICAL(&s_lifecycle_mux);
+}
+#endif
+

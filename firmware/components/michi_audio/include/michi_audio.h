@@ -194,6 +194,51 @@ const michi_audio_output_ops_t *michi_audio_get_output_ops(void);
  */
 esp_err_t michi_audio_init(void);
 
+#define MICHI_AUDIO_BUFFER_MS_MIN 50
+#define MICHI_AUDIO_BUFFER_MS_MAX 500
+
+/**
+ * @brief Validate that buffer_ms is within canonical limits (50..500 ms).
+ *
+ * @param buffer_ms Buffer depth in milliseconds.
+ * @return ESP_OK if valid, ESP_ERR_INVALID_ARG otherwise.
+ */
+esp_err_t michi_audio_validate_buffer_ms(uint16_t buffer_ms);
+
+/**
+ * @brief Calculate the prefill target in packets for a given buffer_ms.
+ *        Pure function implementing ceil(buffer_ms / packet_ms) clamped to
+ *        capacity.
+ *
+ * @param buffer_ms Negotiated buffer depth in ms (50..500).
+ * @return Number of 10 ms packets required to satisfy buffer_ms.
+ */
+uint32_t michi_audio_calculate_prefill_target(uint16_t buffer_ms);
+
+/**
+ * @brief Calculate prefill target with explicit packet capacity limit.
+ */
+uint32_t michi_audio_calculate_prefill_target_ext(uint16_t buffer_ms, uint32_t max_packets);
+
+/**
+ * @brief Calculate the recovery deadline in ms for a given buffer_ms.
+ *        Ensures deadline >= buffer_ms so natural packet delivery can satisfy
+ *        the target before premature timeout.
+ *
+ * @param buffer_ms Negotiated buffer depth in ms (50..500).
+ * @return Timeout deadline in milliseconds.
+ */
+uint32_t michi_audio_recovery_deadline_ms(uint16_t buffer_ms);
+
+/**
+ * @brief Verify that engine jitter buffer capacity satisfies the advertised contract.
+ *
+ * @param jitter_max_ms Build jitter buffer capacity in ms.
+ * @param advertised_max_ms Advertised contract max buffer in ms.
+ * @return ESP_OK if capacity >= advertised_max_ms, ESP_ERR_INVALID_STATE otherwise.
+ */
+esp_err_t michi_audio_check_capacity_invariant(uint32_t jitter_max_ms, uint16_t advertised_max_ms);
+
 /**
  * @brief Start the canonical RTP/UDP session. ALL-OR-NOTHING.
  *
@@ -218,15 +263,16 @@ esp_err_t michi_audio_init(void);
  * @param ssrc      Negotiated SSRC (1..4294967295; 0 is invalid).
  * @param source_ip Dotted IPv4 of the HTTP request peer (the only
  *                  accepted RTP source).
+ * @param buffer_ms Negotiated jitter buffer target in milliseconds (50..500 ms).
  * @return ESP_OK; ESP_ERR_INVALID_STATE before init, while a session
  *         task exists, or when the audio pipeline is not running;
- *         ESP_ERR_INVALID_ARG for an unusable SSRC/source_ip or when
- *         port is outside 49152..65535 (and not 0);
+ *         ESP_ERR_INVALID_ARG for an unusable SSRC/source_ip, buffer_ms outside
+ *         50..500, or when port is outside 49152..65535 (and not 0);
  *         ESP_ERR_NO_MEM when the session buffers or the task cannot
  *         be allocated; ESP_FAIL on socket/bind failure.
  */
-esp_err_t michi_audio_session_start(uint16_t port, uint32_t ssrc,
-                                    const char *source_ip);
+esp_err_t michi_audio_session_start(uint32_t port, uint32_t ssrc,
+                                    const char *source_ip, uint16_t buffer_ms);
 
 /**
  * @brief Cooperative session stop: run flag + join with timeout. The
@@ -256,7 +302,7 @@ bool michi_audio_session_active(void);
  *
  * @param paused true to pause, false to resume.
  */
-void michi_audio_session_set_paused(bool paused);
+esp_err_t michi_audio_session_set_paused(bool paused);
 
 /**
  * @brief Get the UDP port the session is bound to.
@@ -311,8 +357,9 @@ esp_err_t michi_audio_session_get_peer(char *out, size_t out_len);
  */
 typedef struct {
     uint32_t received;
-    uint32_t lost;
-    uint32_t late;
+    uint32_t lost;                      /* confirmed lost (playout deadline passed without arrival) */
+    uint32_t provisionally_missing;     /* in-flight sequence gaps (unconfirmed loss) */
+    uint32_t late;                      /* arrived after playhead elapsed */
     uint32_t duplicate;
     uint32_t reordered;
     uint32_t underruns;
@@ -322,7 +369,9 @@ typedef struct {
     uint32_t drops_ssrc_filtered;
     uint32_t drops_source_ip;
     uint32_t drops_payload_geometry;
-    uint32_t jitter_us;
+    uint32_t jitter_us;                 /* RFC 3550 interarrival jitter in microseconds */
+    uint32_t rtp_interarrival_jitter_us; /* RFC 3550 transit-difference interarrival jitter */
+    int32_t  clock_offset_us;           /* cumulative sender vs receiver arrival drift */
     uint32_t buffer_ms;
     uint32_t packets_in_buffer;
     uint32_t last_seq;

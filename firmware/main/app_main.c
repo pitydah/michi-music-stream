@@ -9,6 +9,7 @@
 
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_task_wdt.h"
 #include "nvs_flash.h"
 
@@ -18,15 +19,18 @@
 #include "michi_dac.h"
 #include "michi_display.h"
 #include "michi_http.h"
+#include "michi_identity.h"
 #include "michi_led.h"
 #include "michi_log.h"
 #include "michi_ota.h"
+#include "michi_ota_logic.h"
 #include "michi_pairing.h"
 #include "michi_product_profile.h"
 #include "michi_sd.h"
 #include "michi_session.h"
 #include "michi_state.h"
 #include "michi_version.h"
+#include "michi_volume.h"
 #include "michi_wifi.h"
 
 static const char *TAG = "michi_app";
@@ -139,10 +143,22 @@ static void init_dac(void)
 
 void app_main(void)
 {
+#define MICHI_BOOT_TRUTHFULNESS_ASSERT(condition) do { if (!(condition)) { ESP_LOGE(TAG, "Boot truthfulness violation"); esp_restart(); } } while(0)
+
 #ifdef CONFIG_MICHI_DAC_MOCK
     ESP_LOGW(TAG, "MICHI_DAC_MOCK is ENABLED - this build fakes a DAC and "
              "must NOT be used in production");
 #endif
+    ESP_LOGI(TAG, "============================================================");
+    ESP_LOGI(TAG, "Michi Music Stream %s (git: %s)", MICHI_FW_PROVENANCE_STR, MICHI_FW_GIT_SHA);
+    ESP_LOGI(TAG, "  version:  %s", MICHI_FW_PROVENANCE_STR);
+    ESP_LOGI(TAG, "  git:      %s", MICHI_FW_GIT_SHA);
+    ESP_LOGI(TAG, "  idf:      %s", esp_get_idf_version());
+    ESP_LOGI(TAG, "  board:    %s", MICHI_FW_BOARD_NAME);
+    ESP_LOGI(TAG, "  target:   %s", CONFIG_IDF_TARGET);
+    ESP_LOGI(TAG, "  protocol: %s", MICHI_FW_PROTOCOL);
+    ESP_LOGI(TAG, "  built:    %s", MICHI_FW_BUILD_DATE);
+    ESP_LOGI(TAG, "============================================================");
     ESP_LOGI(TAG, "michi-music-stream firmware v%s target=%s",
              MICHI_FW_VERSION_STR, CONFIG_IDF_TARGET);
 
@@ -165,10 +181,12 @@ void app_main(void)
      * post events. */
     err = michi_state_init();
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "state bus unavailable - all events will be dropped");
-        ESP_LOGI(TAG, "subsystem=state state=failed phase=5");
+        ESP_LOGE(TAG, "FATAL: FSM init failed (%s) - cannot boot safely",
+                 esp_err_to_name(err));
+        esp_restart();
+        return;
     }
-    const bool state_ok = (err == ESP_OK);
+    const bool state_ok = true;
 
     /* Display subsystem (phase 6): dynamic state screens rendered by the
      * display task. BOOTING/SELF_TEST stay covered by the BSP boot screen
@@ -224,6 +242,16 @@ void app_main(void)
             esp_task_wdt_reset();
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
+    }
+
+    /* Device identity (MS-04): Ed25519 identity key + BLAKE3 michi_id.
+     * Mints seed on first boot or loads existing key from NVS. */
+    err = michi_identity_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "michi_identity_init failed: %s", esp_err_to_name(err));
+        ESP_LOGI(TAG, "subsystem=identity state=failed phase=ms04");
+    } else {
+        ESP_LOGI(TAG, "subsystem=identity state=ok phase=ms04");
     }
 
     /* Log journal (phase 16): SPIFFS mount + boot_seq + journal task,
@@ -332,6 +360,13 @@ void app_main(void)
         }
     }
 
+    /* Volume subsystem (phase 11b): binds hardware DAC volume if present
+     * and sets default safe full-scale volume (or falls back to digital). */
+    err = michi_volume_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "michi_volume_init failed: %s", esp_err_to_name(err));
+    }
+
     /* Session layer (phase 12): the single active session lifecycle
      * (start/stop/patch) over the RTP engine. Must run after
      * michi_audio_init() - it calls into the engine; the HTTP handlers
@@ -389,48 +424,42 @@ void app_main(void)
              profile->lighting_status_rgb ? "true" : "false",
              profile->lighting_cat_contour ? "true" : "false");
 
-    /* OTA rollback self-test (phase 13): after the board self-test + the
-     * profile build. Criterion (documented in michi_ota.h): the BOARD
-     * self-test overall (chip/flash/psram/display/backlight); a
-     * DIAGNOSTIC profile (no DAC detected) is a legitimate hardware
-     * option and does NOT block the mark. On the first boot after an OTA
-     * the image is PENDING_VERIFY: pass marks it valid (cancel rollback),
-     * fail logs + restarts so the bootloader rolls back. Any other image
-     * state is a no-op. */
-    michi_ota_boot_selftest_done(st.overall);
-
     /* HTTP API (phase 4): read-only migrated endpoints (/info, /firmware).
      * A failure is logged and boot continues - no halt. */
-    err = michi_http_init();
-    if (err != ESP_OK) {
+    esp_err_t http_err = michi_http_init();
+    if (http_err != ESP_OK) {
         ESP_LOGE(TAG, "michi_http_init failed: %s (API /info and /firmware unavailable)",
-                 esp_err_to_name(err));
+                 esp_err_to_name(http_err));
         ESP_LOGI(TAG, "subsystem=http state=failed phase=4");
     } else {
         ESP_LOGI(TAG, "subsystem=http state=ok phase=4");
     }
 
-    /* Boot screen BEFORE the boot events: it covers BOOTING/SELF_TEST and
-     * must never be painted over by the dynamic display screens (phase 6),
-     * which take over as soon as the FSM reaches a stable state. */
+    /* Early redraw of the product boot screen: the render task (still in
+     * state BOOTING, the panel is available after board_init) paints
+     * "michi iniciando" via michi_ui_draw_screen_boot while the rest of
+     * the boot continues; the boot events below then drive BOOTING ->
+     * SELF_TEST -> IDLE through the same task. The BSP legacy boot screen
+     * (michi_board_display_boot_screen) is intentionally NOT called in
+     * the normal flow anymore - its technical content (Board:/Flash:/...
+     * /Result:) lives in the logs and on the diagnostics screen; the
+     * function stays in the BSP for future diagnostics. */
     if (st.display_ok) {
-        err = michi_board_display_boot_screen(info, &st, profile->product_name);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "boot screen render failed: %s (continuing degraded)",
-                     esp_err_to_name(err));
-        }
+        michi_display_request_redraw();
     } else {
         ESP_LOGW(TAG, "display unavailable, boot screen skipped (degraded mode)");
     }
 
     /* Boot events, posted after all boot-critical inits (NVS, board, self
-     * test, DAC, profile, HTTP, boot screen): BOOT_COMPLETE drives
+     * test, DAC, profile, HTTP, early boot-screen redraw): BOOT_COMPLETE
+     * drives
      * BOOTING->SELF_TEST and SELF_TEST_DONE drives SELF_TEST->IDLE with ANY
      * data. The self-test already ran before these events are posted - the
      * SELF_TEST state is modeled retrospectively, so observers must not
      * expect to observe the test window; the overall result is surfaced by
      * the log below. RECOVERABLE_ERROR has no boot path: it is reserved for
      * runtime producers arriving from phase 9. */
+    bool boot_events_ok = false;
     if (state_ok) {
         err = michi_state_post(MICHI_EVENT_BOOT_COMPLETE, 0);
         if (err != ESP_OK) {
@@ -442,8 +471,52 @@ void app_main(void)
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "MICHI_EVENT_SELF_TEST_DONE post failed: %s",
                      esp_err_to_name(err));
+        } else {
+            boot_events_ok = true;
         }
     }
+
+    /* Health Gate for Trial Boot (OTA rollback cancellation, phase 13):
+     * The running image is marked valid (canceling rollback) ONLY when ALL critical
+     * boot health checks pass:
+     *  1. Board self-test overall (st.overall: chip/flash/psram/display/backlight)
+     *  2. Cryptographic identity is READY (michi_identity_get_state() == MICHI_IDENTITY_READY)
+     *  3. HTTP server initialized (http_err == ESP_OK)
+     *  4. State bus initialized and accepted boot events (state_ok && boot_events_ok)
+     *  5. Audio availability: if SKU expects audio (configured profile), audio_available
+     *     MUST be true. If audio was expected and failed to initialize, trial boot evaluates
+     *     to FATAL, refusing rollback cancellation and triggering bootloader rollback.
+     *     A pure DIAGNOSTIC SKU (no DAC profile configured) remains acceptable (DEGRADED). */
+    char dac_prof[64] = {0};
+    michi_dac_profile_source_t dac_src = MICHI_DAC_PROFILE_SOURCE_NONE;
+    (void)michi_dac_resolve_profile(dac_prof, sizeof(dac_prof), &dac_src);
+#if defined(CONFIG_MICHI_SKU_EXPECTS_AUDIO)
+    const bool sku_expects_audio = true;
+#else
+    const bool sku_expects_audio = false;
+#endif
+    const bool expected_audio = michi_ota_decide_expected_audio(sku_expects_audio, dac_prof, dac_src);
+
+    const bool critical_ok = st.overall &&
+                             (michi_identity_get_state() == MICHI_IDENTITY_READY) &&
+                             (http_err == ESP_OK) &&
+                             state_ok &&
+                             boot_events_ok;
+    const ota_selftest_res_t trial_res = evaluate_trial_boot_gate(
+        critical_ok, expected_audio, profile->audio_available);
+    michi_selftest_result_t st_res;
+    if (trial_res == OTA_SELFTEST_FATAL) {
+        if (critical_ok && expected_audio && !profile->audio_available) {
+            ESP_LOGE(TAG, "trial boot gate: audio expected (profile='%s', source=%d) but audio_available=false -> FATAL (triggers rollback)",
+                     dac_prof, (int)dac_src);
+        }
+        st_res = MICHI_SELFTEST_FATAL;
+    } else if (trial_res == OTA_SELFTEST_DEGRADED) {
+        st_res = MICHI_SELFTEST_DEGRADED;
+    } else {
+        st_res = MICHI_SELFTEST_PASS;
+    }
+    michi_ota_boot_selftest_done(st_res);
 
     /* Local (SD) update check (phase 17, review F2): NOT called directly
      * anymore. The FSM observer registered by michi_ota_init triggers
@@ -460,9 +533,19 @@ void app_main(void)
 
     log_pending_subsystems();
 
-    ESP_LOGI(TAG, "boot=ok mode=%s audio_available=%s",
-             michi_product_profile_tier_name(),
-             profile->audio_available ? "true" : "false");
+    if (st_res == MICHI_SELFTEST_PASS) {
+        ESP_LOGI(TAG, "boot=ok mode=%s audio_available=true",
+                 michi_product_profile_tier_name());
+    } else if (st_res == MICHI_SELFTEST_DEGRADED) {
+        ESP_LOGI(TAG, "boot=degraded mode=%s audio_available=false",
+                 michi_product_profile_tier_name());
+    } else {
+        ESP_LOGE(TAG, "FATAL: self_test failed - boot halted");
+        /* En teoria ya reseteó, pero si no fue un boot OTA,
+           llegó aquí, así que lo detenemos. */
+        esp_restart();
+        return;
+    }
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(10000));

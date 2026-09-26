@@ -7,6 +7,7 @@
 
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
+#include "esp_attr.h"
 #include "esp_chip_info.h"
 #include "esp_flash.h"
 #include "esp_heap_caps.h"
@@ -18,6 +19,9 @@
 #include "esp_log.h"
 #include "esp_psram.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
 #include "michi_board.h"
 #include "michi_version.h"
 #include "font5x7.h"
@@ -27,10 +31,10 @@
 #define MICHI_LCD_CMD_BITS 8
 #define MICHI_LCD_PARAM_BITS 8
 #define MICHI_LCD_TRANS_QUEUE_DEPTH 10
-/* Band height of the banded framebuffer (MS-11): 240 x 40 x 2 = 19.2 KB,
+/* Band height of the banded framebuffer (MS-11): 320 x 40 x 2 = 25.6 KB,
  * which internal DMA RAM can always provide at boot. The full panel is
- * drawn as display_height / MICHI_LCD_BAND sequential band flushes.
- * display_height (320) must stay an exact multiple of this value. */
+ * drawn as display_height / MICHI_LCD_BAND (240 / 40 = 6) sequential band flushes.
+ * display_height (240) must stay an exact multiple of this value. */
 #define MICHI_LCD_BAND 40
 #define MICHI_TEXT_SPACING 6
 
@@ -41,8 +45,8 @@ static const michi_board_info_t s_board_info = {
     .revision = "1.0",
     .flash_bytes_expected = 16U * 1024U * 1024U,
     .psram_bytes_expected = 8U * 1024U * 1024U,
-    .display_width = 240,
-    .display_height = 320,
+    .display_width = 320,
+    .display_height = 240,
     .display_controller = "ST7789T3",
     .lcd_sclk = 39,
     .lcd_mosi = 38,
@@ -64,6 +68,24 @@ static size_t s_fb_bytes = 0;
 static bool s_backlight_on = false;
 static bool s_spi_bus_inited = false;
 static bool s_inited = false;
+static SemaphoreHandle_t s_trans_done_sem = NULL;
+static volatile bool s_dma_in_flight = false;
+static volatile bool s_dma_quarantined = false;
+
+static bool IRAM_ATTR on_color_trans_done(esp_lcd_panel_io_handle_t panel_io,
+                                          esp_lcd_panel_io_event_data_t *edata,
+                                          void *user_ctx)
+{
+    (void)panel_io;
+    (void)edata;
+    s_dma_in_flight = false;
+    BaseType_t high_task_wakeup = pdFALSE;
+    SemaphoreHandle_t sem = (SemaphoreHandle_t)user_ctx;
+    if (sem != NULL) {
+        xSemaphoreGiveFromISR(sem, &high_task_wakeup);
+    }
+    return high_task_wakeup == pdTRUE;
+}
 
 static void draw_pixel(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, int x, int y, uint16_t color)
 {
@@ -147,6 +169,16 @@ static esp_err_t init_display(void)
     }
     s_spi_bus_inited = true;
 
+    if (s_trans_done_sem == NULL) {
+        s_trans_done_sem = xSemaphoreCreateBinary();
+        if (s_trans_done_sem == NULL) {
+            ESP_LOGE(TAG, "trans_done semaphore creation failed");
+            spi_bus_free(MICHI_LCD_HOST);
+            s_spi_bus_inited = false;
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
     esp_lcd_panel_io_spi_config_t io_config = {
         .dc_gpio_num = bi->lcd_dc,
         .cs_gpio_num = bi->lcd_cs,
@@ -155,6 +187,8 @@ static esp_err_t init_display(void)
         .lcd_param_bits = MICHI_LCD_PARAM_BITS,
         .spi_mode = 0,
         .trans_queue_depth = MICHI_LCD_TRANS_QUEUE_DEPTH,
+        .on_color_trans_done = on_color_trans_done,
+        .user_ctx = s_trans_done_sem,
     };
     err = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)MICHI_LCD_HOST,
                                    &io_config, &s_panel_io);
@@ -162,6 +196,8 @@ static esp_err_t init_display(void)
         ESP_LOGE(TAG, "esp_lcd_new_panel_io_spi failed: %s", esp_err_to_name(err));
         spi_bus_free(MICHI_LCD_HOST);
         s_spi_bus_inited = false;
+        vSemaphoreDelete(s_trans_done_sem);
+        s_trans_done_sem = NULL;
         return err;
     }
 
@@ -177,6 +213,8 @@ static esp_err_t init_display(void)
         s_panel_io = NULL;
         spi_bus_free(MICHI_LCD_HOST);
         s_spi_bus_inited = false;
+        vSemaphoreDelete(s_trans_done_sem);
+        s_trans_done_sem = NULL;
         return err;
     }
 
@@ -189,6 +227,8 @@ static esp_err_t init_display(void)
         s_panel_io = NULL;
         spi_bus_free(MICHI_LCD_HOST);
         s_spi_bus_inited = false;
+        vSemaphoreDelete(s_trans_done_sem);
+        s_trans_done_sem = NULL;
         return err;
     }
     err = esp_lcd_panel_init(s_panel);
@@ -200,6 +240,8 @@ static esp_err_t init_display(void)
         s_panel_io = NULL;
         spi_bus_free(MICHI_LCD_HOST);
         s_spi_bus_inited = false;
+        vSemaphoreDelete(s_trans_done_sem);
+        s_trans_done_sem = NULL;
         return err;
     }
     // Polarity per official Waveshare demo (Arduino_GFX IPS=true -> INVON). Final check
@@ -213,6 +255,35 @@ static esp_err_t init_display(void)
         s_panel_io = NULL;
         spi_bus_free(MICHI_LCD_HOST);
         s_spi_bus_inited = false;
+        vSemaphoreDelete(s_trans_done_sem);
+        s_trans_done_sem = NULL;
+        return err;
+    }
+    // Landscape orientation: swap X/Y coordinates on the ST7789 panel controller
+    err = esp_lcd_panel_swap_xy(s_panel, true);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_lcd_panel_swap_xy failed: %s", esp_err_to_name(err));
+        esp_lcd_panel_del(s_panel);
+        s_panel = NULL;
+        esp_lcd_panel_io_del(s_panel_io);
+        s_panel_io = NULL;
+        spi_bus_free(MICHI_LCD_HOST);
+        s_spi_bus_inited = false;
+        vSemaphoreDelete(s_trans_done_sem);
+        s_trans_done_sem = NULL;
+        return err;
+    }
+    err = esp_lcd_panel_mirror(s_panel, false, true);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_lcd_panel_mirror failed: %s", esp_err_to_name(err));
+        esp_lcd_panel_del(s_panel);
+        s_panel = NULL;
+        esp_lcd_panel_io_del(s_panel_io);
+        s_panel_io = NULL;
+        spi_bus_free(MICHI_LCD_HOST);
+        s_spi_bus_inited = false;
+        vSemaphoreDelete(s_trans_done_sem);
+        s_trans_done_sem = NULL;
         return err;
     }
     err = esp_lcd_panel_disp_on_off(s_panel, true);
@@ -224,6 +295,8 @@ static esp_err_t init_display(void)
         s_panel_io = NULL;
         spi_bus_free(MICHI_LCD_HOST);
         s_spi_bus_inited = false;
+        vSemaphoreDelete(s_trans_done_sem);
+        s_trans_done_sem = NULL;
         return err;
     }
     return ESP_OK;
@@ -247,10 +320,10 @@ esp_err_t michi_board_init(void)
      * esp_ptr_dma_capable() only covers the INTERNAL DMA region; PSRAM
      * pointers are reported not-DMA-capable and the SPI driver then
      * bounces every color flush through an internal-RAM buffer sized for
-     * the full 240x320 frame (150 KB contiguous), which internal DMA RAM
+     * the full 320x240 frame (153.6 KB contiguous), which internal DMA RAM
      * cannot provide at boot (measured: heap_caps_malloc fails ~1.4 s
      * in) - ESP_ERR_NO_MEM, black screen. Fix: a SMALL banded
-     * framebuffer (240 x MICHI_LCD_BAND, 19.2 KB) in DMA RAM; the panel
+     * framebuffer (320 x MICHI_LCD_BAND, 25.6 KB) in DMA RAM; the panel
      * is drawn as display_height / MICHI_LCD_BAND sequential band
      * flushes (see michi_board_display_render). No bounce buffer is ever
      * needed because each flush fits well below the internal pool. */
@@ -291,6 +364,24 @@ esp_err_t michi_board_init(void)
 
 esp_err_t michi_board_shutdown(void)
 {
+    if (s_dma_in_flight) {
+        /* Wait up to 1000 ms for in-flight DMA completion before tearing down */
+        if (s_trans_done_sem != NULL) {
+            if (xSemaphoreTake(s_trans_done_sem, pdMS_TO_TICKS(1000)) != pdTRUE) {
+                ESP_LOGE(TAG, "display shutdown: in-flight DMA wait timed out; preserving resources to prevent UAF");
+                s_dma_quarantined = true;
+                s_dma_in_flight = true;
+                return ESP_ERR_TIMEOUT;
+            }
+        }
+        s_dma_in_flight = false;
+    }
+
+    if (s_trans_done_sem != NULL) {
+        /* Drain any pending completion token before teardown */
+        xSemaphoreTake(s_trans_done_sem, 0);
+    }
+
     if (s_panel != NULL) {
         esp_err_t err = esp_lcd_panel_disp_on_off(s_panel, false);
         if (err != ESP_OK) {
@@ -309,6 +400,10 @@ esp_err_t michi_board_shutdown(void)
         }
         s_panel_io = NULL;
     }
+    if (s_trans_done_sem != NULL) {
+        vSemaphoreDelete(s_trans_done_sem);
+        s_trans_done_sem = NULL;
+    }
     if (s_spi_bus_inited) {
         spi_bus_free(MICHI_LCD_HOST);
         s_spi_bus_inited = false;
@@ -323,8 +418,10 @@ esp_err_t michi_board_shutdown(void)
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "backlight off failed: %s", esp_err_to_name(err));
         }
+        s_backlight_on = false;
     }
-    s_backlight_on = false;
+    s_dma_quarantined = false;
+    s_dma_in_flight = false;
     s_inited = false;
     ESP_LOGI(TAG, "board shutdown complete");
     return ESP_OK;
@@ -382,12 +479,38 @@ michi_board_selftest_t michi_board_self_test(void)
  * MICHI_LCD_BAND). esp_lcd_panel_draw_bitmap() sets the panel window
  * (CASET/RASET) internally before streaming pixels - x_end/y_end are
  * exclusive in the ST7789 driver, so the full 240-column band is
- * covered. */
+ * covered.
+ * Synchronously waits on s_trans_done_sem for DMA completion before returning,
+ * ensuring s_fb is not reused or cleared while the SPI DMA engine is reading it. */
 static esp_err_t flush_band(uint16_t y_origin)
 {
+    if (s_dma_quarantined) {
+        ESP_LOGE(TAG, "display: flush rejected - display quarantined after DMA timeout");
+        return ESP_ERR_INVALID_STATE;
+    }
     const michi_board_info_t *bi = &s_board_info;
-    return esp_lcd_panel_draw_bitmap(s_panel, 0, y_origin, bi->display_width,
-                                     y_origin + MICHI_LCD_BAND, s_fb);
+    if (s_trans_done_sem != NULL) {
+        /* Drain any stale completion before issuing transaction */
+        xSemaphoreTake(s_trans_done_sem, 0);
+    }
+    s_dma_in_flight = true;
+    esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, 0, y_origin, bi->display_width,
+                                             y_origin + MICHI_LCD_BAND, s_fb);
+    if (err != ESP_OK) {
+        s_dma_in_flight = false;
+        return err;
+    }
+    if (s_trans_done_sem != NULL) {
+        /* Synchronously wait for DMA transfer completion so s_fb is not modified in-flight */
+        if (xSemaphoreTake(s_trans_done_sem, pdMS_TO_TICKS(500)) != pdTRUE) {
+            ESP_LOGE(TAG, "display: DMA transfer timeout waiting for band y=%u - quarantining buffer",
+                     (unsigned)y_origin);
+            s_dma_quarantined = true;
+            return ESP_ERR_TIMEOUT;
+        }
+    }
+    s_dma_in_flight = false;
+    return ESP_OK;
 }
 
 static void boot_screen_row(const michi_board_info_t *bi, uint16_t y_origin, int y,
@@ -463,15 +586,15 @@ esp_err_t michi_board_display_boot_screen(const michi_board_info_t *info,
                                           const michi_board_selftest_t *st,
                                           const char *product_name)
 {
-    if (s_panel == NULL || s_fb == NULL) {
-        ESP_LOGW(TAG, "display unavailable, boot screen not rendered");
+    if (s_panel == NULL || s_fb == NULL || s_dma_quarantined) {
+        ESP_LOGW(TAG, "display unavailable or quarantined, boot screen not rendered");
         return ESP_ERR_INVALID_STATE;
     }
 
     /* Title from the dynamic product profile (name) + the firmware version;
      * the BSP never hardcodes the product name. */
     char title[48];
-    snprintf(title, sizeof(title), "%s v%s", product_name, MICHI_FW_VERSION_STR);
+    snprintf(title, sizeof(title), "%s v%s", product_name, MICHI_FW_PROVENANCE_STR);
 
     for (uint16_t y_origin = 0; y_origin < info->display_height;
          y_origin += MICHI_LCD_BAND) {
@@ -489,8 +612,8 @@ esp_err_t michi_board_display_boot_screen(const michi_board_info_t *info,
 
 esp_err_t michi_board_display_clear(void)
 {
-    if (s_panel == NULL || s_fb == NULL) {
-        ESP_LOGW(TAG, "display unavailable, clear skipped");
+    if (s_panel == NULL || s_fb == NULL || s_dma_quarantined) {
+        ESP_LOGW(TAG, "display unavailable or quarantined, clear skipped");
         return ESP_ERR_INVALID_STATE;
     }
     const michi_board_info_t *bi = &s_board_info;
@@ -509,8 +632,8 @@ esp_err_t michi_board_display_clear(void)
 
 esp_err_t michi_board_display_render(michi_board_render_fn fn)
 {
-    if (s_panel == NULL || s_fb == NULL) {
-        ESP_LOGW(TAG, "display unavailable, render skipped");
+    if (s_panel == NULL || s_fb == NULL || s_dma_quarantined) {
+        ESP_LOGW(TAG, "display unavailable or quarantined, render skipped");
         return ESP_ERR_INVALID_STATE;
     }
     if (fn == NULL) {
@@ -529,4 +652,32 @@ esp_err_t michi_board_display_render(michi_board_render_fn fn)
         }
     }
     return ESP_OK;
+}
+
+esp_err_t michi_board_display_recover(void)
+{
+    if (!s_dma_quarantined) {
+        return ESP_OK;
+    }
+    if (s_dma_in_flight) {
+        /* Wait up to 1000 ms for late completion */
+        if (s_trans_done_sem != NULL) {
+            if (xSemaphoreTake(s_trans_done_sem, pdMS_TO_TICKS(1000)) != pdTRUE) {
+                ESP_LOGE(TAG, "display recover: late completion never arrived within deadline");
+                return ESP_ERR_TIMEOUT;
+            }
+        }
+    }
+    if (s_trans_done_sem != NULL) {
+        xSemaphoreTake(s_trans_done_sem, 0);
+    }
+    s_dma_quarantined = false;
+    s_dma_in_flight = false;
+    ESP_LOGI(TAG, "display recover: late completion confirmed, DMA quarantine lifted");
+    return ESP_OK;
+}
+
+bool michi_board_display_is_quarantined(void)
+{
+    return s_dma_quarantined;
 }

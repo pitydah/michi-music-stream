@@ -87,10 +87,7 @@
 
 #define TAG "michi_http"
 
-#define MICHI_HTTP_PORT 80
 #define MICHI_HTTP_BODY_MAX 2048    /* body limit for canonical bodies */
-#define MICHI_HTTP_RECV_TIMEOUT_RETRIES 1  /* single timeout retry */
-#define MICHI_HTTP_BODY_TOTAL_TIMEOUT_MS 2000 /* anti-slowloris: total body deadline */
 
 #define MICHI_HTTP_AUTH_HEADER_MAX 96   /* "Bearer " + 43 base64url + NUL */
 
@@ -145,12 +142,14 @@ static void request_id_generate(char *out, size_t out_len)
     const uint32_t b = esp_random();
     const uint32_t c = esp_random();
     const uint32_t d = esp_random();
+    const uint32_t e = esp_random();
     /* UUID v4: time_low - time_mid - 4xxx - (10xx variant) - node. */
-    snprintf(out, out_len, "%08" PRIx32 "-%04x-4%03x-%04x-%08" PRIx32,
+    snprintf(out, out_len, "%08" PRIx32 "-%04x-4%03x-%04x-%04x%08" PRIx32,
              a,
              (unsigned int)(b & 0xFFFFu),          /* time_mid */
              (unsigned int)((b >> 16) & 0xFFFu),   /* version 4 + time_hi */
              (unsigned int)((c & 0x3FFFu) | 0x8000u), /* variant 10 + clock_seq */
+             (unsigned int)(e & 0xFFFFu),          /* node upper 16 bits */
              d);
 }
 
@@ -194,68 +193,8 @@ esp_err_t michi_http_send_error(httpd_req_t *req, int status,
     return err;
 }
 
-esp_err_t michi_http_read_body(httpd_req_t *req, char *buf, size_t buf_len,
-                               size_t *out_len)
-{
-    if (req == NULL || buf == NULL || out_len == NULL || buf_len == 0) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    char clen_str[16] = {0};
-    if (httpd_req_get_hdr_value_str(req, "Content-Length", clen_str,
-                                    sizeof(clen_str)) != ESP_OK) {
-        return ESP_ERR_NOT_FOUND;
-    }
-    /* Strict parse: no trailing junk, no negatives. A malformed header is
-     * a client error - the caller MUST answer 400. */
-    char *endp = NULL;
-    long content_len = strtol(clen_str, &endp, 10);
-    if (endp == clen_str || *endp != '\0') {
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (content_len < 0 || (size_t)content_len >= buf_len) {
-        /* The caller's buffer size IS the limit: a body that does not fit
-         * (or a missing NUL byte) is rejected, never truncated. */
-        return ESP_ERR_INVALID_SIZE;
-    }
-    size_t received = 0;
-    int timeouts = 0;
-    /* Anti-slowloris contract: the whole body must arrive within
-     * MICHI_HTTP_BODY_TOTAL_TIMEOUT_MS of wall time (checked before every
-     * recv) AND a socket timeout is retried at most once - a client that
-     * trickles bytes cannot hold the httpd task indefinitely. */
-    const int64_t deadline_us = esp_timer_get_time() +
-                                MICHI_HTTP_BODY_TOTAL_TIMEOUT_MS * 1000LL;
-    while (received < (size_t)content_len) {
-        if (esp_timer_get_time() >= deadline_us) {
-            return ESP_ERR_TIMEOUT;
-        }
-        int ret = httpd_req_recv(req, buf + received,
-                                 (size_t)content_len - received);
-        if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
-            /* Bounded retries: a stalled client cannot block the httpd
-             * task forever. */
-            if (++timeouts > MICHI_HTTP_RECV_TIMEOUT_RETRIES) {
-                return ESP_ERR_TIMEOUT;
-            }
-            continue;
-        }
-        /* httpd_req_recv reports socket failures as positive sentinels
-         * (HTTPD_SOCK_ERR_INVALID = 0x1002, HTTPD_SOCK_ERR_FAIL = 0x1003);
-         * anything >= HTTPD_SOCK_ERR_TIMEOUT is an error, never a byte
-         * count. Accepting them as bytes would corrupt the stack buffer
-         * terminator below. */
-        if (ret <= 0 || ret >= HTTPD_SOCK_ERR_TIMEOUT) {
-            return ESP_ERR_INVALID_STATE;
-        }
-        received += (size_t)ret;
-    }
-    buf[received] = '\0';
-    *out_len = received;
-    return ESP_OK;
-}
-
-/* JSON access helpers (michi_http_json_get_string/int/bool) live in
- * json_helpers.c (F15: extracted for host-side testing - the component
+/* michi_http_read_body and JSON access helpers (michi_http_json_get_string/int/bool)
+ * live in json_helpers.c (F15: extracted for host-side testing - the component
  * and tests/host compile the SAME source). */
 
 /* Source IP of the request (pair/start rate-limit key). IPv4 only (the
@@ -400,11 +339,17 @@ static esp_err_t info_get_handler(httpd_req_t *req)
     const michi_product_profile_t *p = michi_product_profile_get();
     cJSON *root = cJSON_CreateObject();
     if (root == NULL) {
-        return ESP_ERR_NO_MEM;
+        return michi_http_send_error(req, 500, "out of memory", NULL);
     }
     esp_err_t err = build_info_json(root, p);
     if (err == ESP_OK) {
         err = michi_http_send_json(req, 200, root);
+    } else {
+        cJSON_Delete(root);
+        if (err == ESP_ERR_INVALID_STATE) {
+            return michi_http_send_error(req, 500, "identity not initialized", NULL);
+        }
+        return michi_http_send_error(req, 500, "failed to build server info", NULL);
     }
     cJSON_Delete(root);
     return err;
@@ -791,6 +736,13 @@ static esp_err_t session_start_handler(httpd_req_t *req)
                                      "a session already exists", NULL);
     }
 
+    /* OTA gate: while an update is in progress, session creation is blocked. */
+    if (michi_ota_busy() || michi_state_get() == MICHI_STATE_UPDATING) {
+        return michi_http_send_error(req, 409,
+                                     "an update is in progress",
+                                     "ota_in_progress");
+    }
+
     /* The RTP source IP is the TCP peer of THIS request - never JSON. */
     char source_ip[16] = {0};
     client_ip_str(req, source_ip, sizeof(source_ip));
@@ -819,6 +771,12 @@ static esp_err_t session_start_handler(httpd_req_t *req)
     if (start_err != ESP_OK) {
         ESP_LOGW(TAG, "session start failed: %s",
                  esp_err_to_name(start_err));
+        if (start_err == ESP_ERR_INVALID_STATE &&
+            (michi_ota_busy() || michi_state_get() == MICHI_STATE_UPDATING)) {
+            return michi_http_send_error(req, 409,
+                                         "an update is in progress",
+                                         "ota_in_progress");
+        }
         /* All-or-nothing start: bind/buffer/pipeline failures already
          * rolled back - no session exists, the client retries. */
         return michi_http_send_error(req, 500,
@@ -1053,8 +1011,11 @@ static esp_err_t v1lite_heartbeat_handler(httpd_req_t *req)
                                      field);
     }
 
+    char peer_ip[16] = {0};
+    client_ip_str(req, peer_ip, sizeof(peer_ip));
+
     const michi_session_heartbeat_result_t result =
-        michi_session_heartbeat(token, body.session_id, body.sequence);
+        michi_session_heartbeat(token, body.session_id, body.sequence, peer_ip);
     switch (result) {
     case MICHI_SESSION_HEARTBEAT_TOKEN_MISMATCH:
         return michi_http_send_error(req, 401,
@@ -1066,6 +1027,10 @@ static esp_err_t v1lite_heartbeat_handler(httpd_req_t *req)
     case MICHI_SESSION_HEARTBEAT_SEQUENCE_REPLAY:
         return michi_http_send_error(req, 409,
                                      "heartbeat sequence already seen",
+                                     NULL);
+    case MICHI_SESSION_HEARTBEAT_SOURCE_MISMATCH:
+        return michi_http_send_error(req, 403,
+                                     "heartbeat source IP does not match session",
                                      NULL);
     case MICHI_SESSION_HEARTBEAT_OK:
         break;
@@ -1295,6 +1260,7 @@ static esp_err_t diagnostics_get_handler(httpd_req_t *req)
                  cJSON_AddNumberToObject(audio, "ssrc", (double)ssrc) == NULL) ||
                 cJSON_AddNumberToObject(audio, "received", m.received) == NULL ||
                 cJSON_AddNumberToObject(audio, "lost", m.lost) == NULL ||
+                cJSON_AddNumberToObject(audio, "provisionally_missing", m.provisionally_missing) == NULL ||
                 cJSON_AddNumberToObject(audio, "late", m.late) == NULL ||
                 cJSON_AddNumberToObject(audio, "duplicate", m.duplicate) == NULL ||
                 cJSON_AddNumberToObject(audio, "reordered", m.reordered) == NULL ||
@@ -1306,6 +1272,8 @@ static esp_err_t diagnostics_get_handler(httpd_req_t *req)
                 cJSON_AddNumberToObject(audio, "drops_source_ip", m.drops_source_ip) == NULL ||
                 cJSON_AddNumberToObject(audio, "drops_payload_geometry", m.drops_payload_geometry) == NULL ||
                 cJSON_AddNumberToObject(audio, "jitter_us", m.jitter_us) == NULL ||
+                cJSON_AddNumberToObject(audio, "rtp_interarrival_jitter_us", m.rtp_interarrival_jitter_us) == NULL ||
+                cJSON_AddNumberToObject(audio, "clock_offset_us", (double)m.clock_offset_us) == NULL ||
                 cJSON_AddNumberToObject(audio, "buffer_ms", m.buffer_ms) == NULL ||
                 cJSON_AddNumberToObject(audio, "packets_in_buffer", m.packets_in_buffer) == NULL ||
                 cJSON_AddNumberToObject(audio, "last_seq", m.last_seq) == NULL ||
@@ -1511,19 +1479,7 @@ esp_err_t michi_http_init(void)
         return ESP_OK; /* idempotent */
     }
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.server_port = MICHI_HTTP_PORT;
-    cfg.lru_purge_enable = true;
-    /* H2 (MS-11 on-device): the default max_uri_handlers is 8, but the
-     * canonical surface registers 13 routes + the 404 err handler = 14.
-     * With the default, httpd_register_uri_handler fails with
-     * ESP_ERR_HTTPD_HANDLERS_FULL and the whole API stays down on real
-     * hardware (CI never runs the server). There is no Kconfig for this
-     * in IDF 5.3 - it is a runtime httpd_config_t field. */
-    cfg.max_uri_handlers = 16;
-    /* F10: explicit stack size - the default 4096 is tight for the
-     * 2048-byte body buffers plus the nested cJSON frames built by the
-     * diagnostics handler. */
-    cfg.stack_size = 8192;
+    michi_http_configure_defaults(&cfg);
 
     httpd_handle_t server = NULL;
     esp_err_t err = httpd_start(&server, &cfg);
