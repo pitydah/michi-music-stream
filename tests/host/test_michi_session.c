@@ -360,6 +360,98 @@ static void test_patch(void)
               ESP_ERR_INVALID_STATE, "patch without session (HTTP: 404)");
 }
 
+static void test_pause_resume_signal_truth(void)
+{
+    printf("michi_session: pause/resume signal truth & patch atomicity (F5)\n");
+    michi_session_start_params_t p = make_params();
+    p.volume = 50;
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK, "start ok");
+    michi_session_info_t info;
+    CHECK(michi_session_get_info(&info) == ESP_OK, "get_info ok");
+    CHECK(!info.paused && info.state == MICHI_SESSION_STATE_PLAYING, "initial state playing");
+
+    /* SESSION-PAUSE-02: Pause failure injected */
+    test_state_reset();
+    test_michi_audio_set_pause_err(ESP_FAIL);
+    CHECK(michi_session_patch(g_token, false, 0, true, true) == ESP_FAIL,
+          "SESSION-PAUSE-02: pause failure returned");
+    CHECK(michi_session_get_info(&info) == ESP_OK, "get_info ok");
+    CHECK(!info.paused && info.state == MICHI_SESSION_STATE_PLAYING,
+          "state remains PLAYING on pause failure");
+    CHECK(!test_michi_audio_state()->paused, "engine not marked paused");
+    CHECK(test_state_post_count(MICHI_EVENT_SESSION_PAUSED) == 0,
+          "no SESSION_PAUSED event posted on pause failure");
+
+    /* SESSION-PAUSE-01: Normal pause succeeds */
+    test_state_reset();
+    CHECK(michi_session_patch(g_token, false, 0, true, true) == ESP_OK,
+          "SESSION-PAUSE-01: pause succeeds");
+    CHECK(michi_session_get_info(&info) == ESP_OK, "get_info ok");
+    CHECK(info.paused && info.state == MICHI_SESSION_STATE_PAUSED,
+          "state is PAUSED");
+    CHECK(test_michi_audio_state()->paused, "engine marked paused");
+    CHECK(test_state_post_count(MICHI_EVENT_SESSION_PAUSED) == 1,
+          "SESSION_PAUSED event posted");
+
+    /* SESSION-RESUME-02: Resume failure injected */
+    test_state_reset();
+    test_michi_audio_set_pause_err(ESP_FAIL);
+    CHECK(michi_session_patch(g_token, false, 0, true, false) == ESP_FAIL,
+          "SESSION-RESUME-02: resume failure returned");
+    CHECK(michi_session_get_info(&info) == ESP_OK, "get_info ok");
+    CHECK(info.paused && info.state == MICHI_SESSION_STATE_PAUSED,
+          "state remains PAUSED on resume failure");
+    CHECK(test_state_post_count(MICHI_EVENT_SESSION_RESUMED) == 0,
+          "no SESSION_RESUMED event posted on resume failure");
+
+    /* SESSION-RESUME-01: Normal resume succeeds */
+    test_state_reset();
+    CHECK(michi_session_patch(g_token, false, 0, true, false) == ESP_OK,
+          "SESSION-RESUME-01: resume succeeds");
+    CHECK(michi_session_get_info(&info) == ESP_OK, "get_info ok");
+    CHECK(!info.paused && info.state == MICHI_SESSION_STATE_PLAYING,
+          "state is PLAYING");
+    CHECK(!test_michi_audio_state()->paused, "engine resumed");
+    CHECK(test_state_post_count(MICHI_EVENT_SESSION_RESUMED) == 1,
+          "SESSION_RESUMED event posted");
+
+    /* SESSION-PATCH-ATOMIC-01: Multi-field patch atomicity with pause failure */
+    test_state_reset();
+    test_michi_audio_set_pause_err(ESP_FAIL);
+    CHECK(michi_session_patch(g_token, true, 80, true, true) == ESP_FAIL,
+          "SESSION-PATCH-ATOMIC-01: multi-field patch with pause failure fails");
+    CHECK(michi_session_get_info(&info) == ESP_OK, "get_info ok");
+    CHECK(info.volume == 50, "volume unmutated on pause failure (still 50, not 80)");
+    CHECK(!info.paused && info.state == MICHI_SESSION_STATE_PLAYING,
+          "state unmutated on pause failure");
+    CHECK(test_state_post_count(MICHI_EVENT_SESSION_PAUSED) == 0,
+          "no SESSION_PAUSED event posted");
+
+    cleanup_session();
+}
+
+static void test_session_stop_failure_revert(void)
+{
+    printf("michi_session: stop failure reverts state (F6)\n");
+    michi_session_start_params_t p = make_params();
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK, "start ok");
+    michi_session_info_t info;
+    CHECK(michi_session_get_info(&info) == ESP_OK, "get_info ok");
+    CHECK(info.state == MICHI_SESSION_STATE_PLAYING, "session playing");
+
+    /* Inject failure into michi_audio_session_stop() */
+    test_michi_audio_set_stop_err(ESP_FAIL);
+    CHECK(michi_session_stop(g_token) == ESP_FAIL, "stop reports failure");
+    CHECK(michi_session_active(), "session still active because stop failed");
+    CHECK(michi_session_get_info(&info) == ESP_OK, "get_info ok");
+    CHECK(info.state == MICHI_SESSION_STATE_PLAYING,
+          "session state reverted back to PLAYING from STOPPING");
+
+    /* Now clean stop */
+    CHECK(michi_session_stop(g_token) == ESP_OK, "subsequent stop succeeds");
+    CHECK(!michi_session_active(), "session inactive");
+}
+
 static void test_metrics_mapping(void)
 {
     printf("michi_session: info counters from engine metrics\n");
@@ -700,6 +792,10 @@ int main(void)
     test_start_rejects_invalid();
     reset_all();
     test_patch();
+    reset_all();
+    test_pause_resume_signal_truth();
+    reset_all();
+    test_session_stop_failure_revert();
     reset_all();
     test_metrics_mapping();
     reset_all();

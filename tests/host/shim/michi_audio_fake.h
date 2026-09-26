@@ -13,6 +13,8 @@ extern "C" {
 /* The fake engine's observable state (includes the settable metrics). */
 typedef struct {
     esp_err_t start_err;        /* injected start failure (0 = success) */
+    esp_err_t pause_err;        /* injected pause failure (0 = success) */
+    esp_err_t stop_err;         /* injected stop failure (0 = success) */
     int start_calls;
     int stop_calls;
     bool active;
@@ -28,6 +30,8 @@ typedef struct {
 
 void test_michi_audio_reset(void);
 void test_michi_audio_set_start_err(esp_err_t err);
+void test_michi_audio_set_pause_err(esp_err_t err);
+void test_michi_audio_set_stop_err(esp_err_t err);
 michi_audio_fake_state_t *test_michi_audio_state(void);
 michi_audio_metrics_t *test_michi_audio_metrics(void);
 

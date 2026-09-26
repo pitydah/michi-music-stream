@@ -26,12 +26,12 @@ PRE_MERGE_CLOSURE_STATUS: IN_PROGRESS
 | Phase | Status | Reproduced | Test | Firmware | Static | Commit |
 |---|---|---|---|---|---|---|
 | F0 | PASS | YES | N/A | PASS | PASS | - |
-| F1 | PASS | YES | YES | PASS | PASS | pending |
-| F2 | PASS | YES | YES | PASS | PASS | pending |
-| F3 | PASS | YES | YES | PASS | PASS | pending |
-| F4 | PASS | YES | YES | PASS | PASS | pending |
-| F5 | TODO | - | - | - | - | - |
-| F6 | TODO | - | - | - | - | - |
+| F1 | PASS | YES | YES | PASS | PASS | 41541c8 |
+| F2 | PASS | YES | YES | PASS | PASS | 41541c8 |
+| F3 | PASS | YES | YES | PASS | PASS | 41541c8 |
+| F4 | PASS | YES | YES | PASS | PASS | 41541c8 |
+| F5 | PASS | YES | YES | PASS | PASS | pending_commit |
+| F6 | PASS | YES | YES | PASS | PASS | pending_commit |
 | F7 | TODO | - | - | - | - | - |
 | F8 | TODO | - | - | - | - | - |
 | F9 | TODO | - | - | - | - | - |
@@ -90,6 +90,17 @@ PRE_MERGE_CLOSURE_STATUS: IN_PROGRESS
   - Defect: Stale ACKs could resolve future commands; timeouts left state undefined; commands could block on dead workers.
   - Fix: Monotonic command generation `s_cmd_generation` checked on ACK (`s_cmd_ack_generation`). Dead worker check rejects immediately. Command timeout transitions pipeline to `FAULTED`. Recovery via `stop()` restores clean state.
   - Tests: `AUDIO-CMD-01..06` (6/6 PASS).
+
+### Phase F5-F6 Evidence: Session Pause/Resume & Teardown Truth
+
+- **F5 (Pause/Resume Error Propagation & Multi-field Atomicity):**
+  - Defect: `michi_audio_session_set_paused(bool)` had void return type, unconditionally updating `s_paused` and ignoring underlying quiesce/resume failure. In multi-field patches (`volume` + `paused`), volume was applied before pause/resume, leaving volume mutated even if pause failed.
+  - Fix: `michi_audio_session_set_paused` changed to return `esp_err_t`, committing `s_paused` only if quiesce/resume succeeds. In `michi_session_patch()`, fallible pause/resume executes FIRST. If it fails, mutation aborts immediately without modifying volume, without changing `s_session.info.paused`, and without posting FSM state events.
+  - Tests: `SESSION-PAUSE-01`, `SESSION-PAUSE-02`, `SESSION-RESUME-01`, `SESSION-RESUME-02`, `SESSION-PATCH-ATOMIC-01` (all PASS).
+- **F6 (Audio Teardown Revert on Stop Failure):**
+  - Defect: If `michi_audio_session_stop()` failed during teardown, session state remained set to `STOPPING` instead of rolling back to the previous state.
+  - Fix: In `session_teardown_locked()`, save `prev_state` and restore `s_session.info.state = prev_state` if `michi_audio_session_stop()` returns error.
+  - Tests: `SESSION-STOP-FAIL-01` (PASS).
 
 
 

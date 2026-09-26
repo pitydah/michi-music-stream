@@ -1038,16 +1038,23 @@ bool michi_audio_session_active(void)
     return s_session_active;
 }
 
-void michi_audio_session_set_paused(bool paused)
+esp_err_t michi_audio_session_set_paused(bool paused)
 {
-    portENTER_CRITICAL(&s_lock);
-    s_paused = paused;
-    portEXIT_CRITICAL(&s_lock);
-    if (paused) {
-        (void)michi_audio_output_quiesce();
-    } else {
-        (void)michi_audio_output_resume();
+    if (!s_session_active) {
+        return ESP_ERR_INVALID_STATE;
     }
+    esp_err_t err = ESP_OK;
+    if (paused) {
+        err = michi_audio_output_quiesce();
+    } else {
+        err = michi_audio_output_resume();
+    }
+    if (err == ESP_OK) {
+        portENTER_CRITICAL(&s_lock);
+        s_paused = paused;
+        portEXIT_CRITICAL(&s_lock);
+    }
+    return err;
 }
 
 esp_err_t michi_audio_session_get_port(uint16_t *out_port)

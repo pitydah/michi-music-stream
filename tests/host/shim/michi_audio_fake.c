@@ -48,6 +48,16 @@ void test_michi_audio_set_start_err(esp_err_t err)
     s_fake.start_err = err;
 }
 
+void test_michi_audio_set_pause_err(esp_err_t err)
+{
+    s_fake.pause_err = err;
+}
+
+void test_michi_audio_set_stop_err(esp_err_t err)
+{
+    s_fake.stop_err = err;
+}
+
 esp_err_t michi_audio_session_start(uint32_t port, uint32_t ssrc,
                                     const char *source_ip, uint16_t buffer_ms)
 {
@@ -81,6 +91,11 @@ esp_err_t michi_audio_session_start(uint32_t port, uint32_t ssrc,
 esp_err_t michi_audio_session_stop(void)
 {
     s_fake.stop_calls++;
+    if (s_fake.stop_err != ESP_OK) {
+        esp_err_t err = s_fake.stop_err;
+        s_fake.stop_err = ESP_OK; /* one-shot */
+        return err;
+    }
     s_fake.active = false;
     s_fake.paused = false;
     return ESP_OK;
@@ -91,9 +106,15 @@ bool michi_audio_session_active(void)
     return s_fake.active;
 }
 
-void michi_audio_session_set_paused(bool paused)
+esp_err_t michi_audio_session_set_paused(bool paused)
 {
+    if (s_fake.pause_err != ESP_OK) {
+        esp_err_t err = s_fake.pause_err;
+        s_fake.pause_err = ESP_OK; /* one-shot */
+        return err;
+    }
     s_fake.paused = paused;
+    return ESP_OK;
 }
 
 esp_err_t michi_audio_session_get_port(uint16_t *out_port)

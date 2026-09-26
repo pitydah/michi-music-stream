@@ -302,7 +302,7 @@ bool michi_audio_session_active(void);
  *
  * @param paused true to pause, false to resume.
  */
-void michi_audio_session_set_paused(bool paused);
+esp_err_t michi_audio_session_set_paused(bool paused);
 
 /**
  * @brief Get the UDP port the session is bound to.

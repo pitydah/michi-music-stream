@@ -362,9 +362,11 @@ static bool session_reconcile_dead_engine_locked(void)
  * watchdog re-arms). by_lease increments lease_expirations. */
 static esp_err_t session_teardown_locked(bool by_lease)
 {
+    const michi_session_state_t prev_state = s_session.info.state;
     s_session.info.state = MICHI_SESSION_STATE_STOPPING;
     const esp_err_t err = michi_audio_session_stop();
     if (err != ESP_OK) {
+        s_session.info.state = prev_state;
         return err;
     }
     esp_timer_stop(s_watchdog); /* armed only with a session */
@@ -798,21 +800,28 @@ esp_err_t michi_session_patch(const char *session_token, bool volume_set,
         return ESP_ERR_NOT_FOUND;
     }
 
-    if (volume_set) {
-        michi_volume_set(volume);
-        s_session.info.volume = michi_volume_get(); /* applied value */
-    }
-
     bool state_changed = false;
     if (paused_set && paused != s_session.info.paused) {
         /* Pause/resume is a state change, NOT a teardown: the engine
          * keeps its socket and task alive (valid packets keep being
-         * counted and are discarded while paused). */
-        michi_audio_session_set_paused(paused);
+         * counted and are discarded while paused).
+         * Execute fallible pause/resume FIRST: if it fails, abort immediately
+         * without mutating volume or committing state, and return the error. */
+        const esp_err_t err = michi_audio_session_set_paused(paused);
+        if (err != ESP_OK) {
+            xSemaphoreGive(s_mutex);
+            ESP_LOGE(TAG, "patch: pause/resume failed: %s", esp_err_to_name(err));
+            return err;
+        }
         s_session.info.paused = paused;
         s_session.info.state = paused ? MICHI_SESSION_STATE_PAUSED
                                       : MICHI_SESSION_STATE_PLAYING;
         state_changed = true;
+    }
+
+    if (volume_set) {
+        michi_volume_set(volume);
+        s_session.info.volume = michi_volume_get(); /* applied value */
     }
     xSemaphoreGive(s_mutex);
 
