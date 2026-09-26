@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <pthread.h>
 #include <unistd.h>
@@ -787,7 +788,7 @@ static void test_audio_cmd_06_no_stale_taskhandle_notification(void)
 
 /* AUDIO-CMD-07: Concurrent writer during quiesce rejects writes and post-resume content verified */
 typedef struct {
-    volatile bool stop;
+    _Atomic bool stop;
     uint32_t rejected_writes;
     uint32_t accepted_writes;
 } forbidden_writer_arg_t;
@@ -910,6 +911,87 @@ static void test_audio_cmd_08_stop_timeout_late_worker_retry_reconciles_done(voi
     CHECK(test_task_invalid_notify_count() == 0, "no invalid task notifications in CMD-08");
 }
 
+/* AUDIO-CMD-09: Deterministic barrier ordering - worker NEVER observes QUIESCE before write barrier is closed */
+typedef struct {
+    _Atomic bool stop;
+    _Atomic uint32_t writes_attempted;
+} barrier_stress_writer_t;
+
+static void *barrier_stress_writer_thread(void *arg)
+{
+    barrier_stress_writer_t *w = (barrier_stress_writer_t *)arg;
+    uint8_t pcm[128];
+    memset(pcm, 0x5A, sizeof(pcm));
+
+    while (!w->stop) {
+        (void)michi_audio_output_write(pcm, sizeof(pcm));
+        w->writes_attempted++;
+        usleep(100);
+    }
+    return NULL;
+}
+
+static void test_audio_cmd_09_worker_never_observes_quiesce_before_write_barrier_closed(void)
+{
+    printf("=== AUDIO-CMD-09: Worker never observes QUIESCE before write barrier is closed ===\n");
+    test_i2s_reset();
+    test_task_reset_invalid_notify_count();
+    test_michi_audio_output_reset_quiesce_barrier_race_count();
+
+    michi_audio_output_config_t cfg = default_cfg();
+    CHECK(michi_audio_output_init(&cfg) == ESP_OK, "init succeeds");
+    CHECK(michi_audio_output_start() == ESP_OK, "start succeeds");
+
+    /* Spawn 4 concurrent writer threads hammering write admission */
+    const int NUM_WRITERS = 4;
+    barrier_stress_writer_t wargs[4];
+    pthread_t th[4];
+
+    for (int i = 0; i < NUM_WRITERS; i++) {
+        wargs[i].stop = false;
+        wargs[i].writes_attempted = 0;
+        pthread_create(&th[i], NULL, barrier_stress_writer_thread, &wargs[i]);
+    }
+
+    /* Execute 50 rapid QUIESCE / RESUME cycles under heavy write contention */
+    for (int cycle = 0; cycle < 50; cycle++) {
+        CHECK(michi_audio_output_quiesce() == ESP_OK, "quiesce under writer contention succeeds");
+        CHECK(michi_audio_output_is_quiesced(), "pipeline is quiesced");
+
+        /* Quiesce is idempotent: repeated quiesce returns ESP_OK and keeps pipeline quiesced */
+        CHECK(michi_audio_output_quiesce() == ESP_OK, "idempotent repeated quiesce returns ESP_OK");
+        CHECK(michi_audio_output_is_quiesced(), "pipeline remains quiesced");
+
+        /* Direct write must be rejected by barrier while quiesced */
+        uint8_t sample[64] = {0};
+        CHECK(michi_audio_output_write(sample, sizeof(sample)) == ESP_ERR_INVALID_STATE,
+              "write while quiesced rejected by barrier");
+
+        CHECK(michi_audio_output_resume() == ESP_OK, "resume succeeds");
+        CHECK(!michi_audio_output_is_quiesced(), "pipeline resumed");
+
+        /* Resume is idempotent: repeated resume returns ESP_OK and keeps pipeline running */
+        CHECK(michi_audio_output_resume() == ESP_OK, "idempotent repeated resume returns ESP_OK");
+        usleep(500);
+    }
+
+    /* Stop writer threads */
+    for (int i = 0; i < NUM_WRITERS; i++) {
+        wargs[i].stop = true;
+        pthread_join(th[i], NULL);
+    }
+
+    /* VERIFY CRITICAL INVARIANT:
+     * Across all 50 QUIESCE cycles under 4 concurrent writer threads,
+     * the worker never once observed QUIESCE while the write barrier was open. */
+    CHECK(test_michi_audio_output_get_quiesce_barrier_race_count() == 0,
+          "DETERMINISTIC ORDERING: worker NEVER observed QUIESCE before write barrier was closed (race_count == 0)");
+
+    CHECK(michi_audio_output_stop() == ESP_OK, "stop succeeds");
+    CHECK(michi_audio_output_deinit() == ESP_OK, "deinit succeeds");
+    CHECK(test_task_invalid_notify_count() == 0, "no invalid task notifications in CMD-09");
+}
+
 int main(void)
 {
     test_task_reset_invalid_notify_count();
@@ -943,7 +1025,7 @@ int main(void)
     test_audio_state_07_quiesce_while_stopped_rejected();
     test_audio_state_08_illegal_write_and_flush();
 
-    printf("\n=== michi_audio_output command protocol tests (AUDIO-CMD-01..08) ===\n");
+    printf("\n=== michi_audio_output command protocol tests (AUDIO-CMD-01..09) ===\n");
     test_audio_cmd_01_late_ack_cannot_satisfy_future_cmd();
     test_audio_cmd_02_dead_worker_immediate_reject();
     test_audio_cmd_03_timeout_fault_semantics();
@@ -952,6 +1034,7 @@ int main(void)
     test_audio_cmd_06_no_stale_taskhandle_notification();
     test_audio_cmd_07_concurrent_writer_during_quiesce_content_verification();
     test_audio_cmd_08_stop_timeout_late_worker_retry_reconciles_done();
+    test_audio_cmd_09_worker_never_observes_quiesce_before_write_barrier_closed();
 
     CHECK(test_task_invalid_notify_count() == 0,
           "FINAL SUITE INVARIANT: test_task_invalid_notify_count == 0 across full test suite");

@@ -86,17 +86,26 @@ bool test_i2s_multiple_writers_detected(void)
 
 size_t test_i2s_get_bytes_written(void)
 {
-    return s_bytes_written;
+    pthread_mutex_lock(&s_i2s_shim_mux);
+    size_t b = s_bytes_written;
+    pthread_mutex_unlock(&s_i2s_shim_mux);
+    return b;
 }
 
 uint32_t test_i2s_get_write_count(void)
 {
-    return s_write_count;
+    pthread_mutex_lock(&s_i2s_shim_mux);
+    uint32_t c = s_write_count;
+    pthread_mutex_unlock(&s_i2s_shim_mux);
+    return c;
 }
 
 bool test_i2s_last_write_was_silence(void)
 {
-    return s_last_was_silence;
+    pthread_mutex_lock(&s_i2s_shim_mux);
+    bool s = s_last_was_silence;
+    pthread_mutex_unlock(&s_i2s_shim_mux);
+    return s;
 }
 
 esp_err_t i2s_new_channel(const i2s_chan_config_t *chan_cfg, i2s_chan_handle_t *tx_handle, i2s_chan_handle_t *rx_handle)
@@ -132,14 +141,18 @@ esp_err_t i2s_channel_init_std_mode(i2s_chan_handle_t handle, const i2s_std_conf
 esp_err_t i2s_channel_enable(i2s_chan_handle_t handle)
 {
     (void)handle;
+    pthread_mutex_lock(&s_i2s_shim_mux);
     s_enabled = true;
+    pthread_mutex_unlock(&s_i2s_shim_mux);
     return ESP_OK;
 }
 
 esp_err_t i2s_channel_disable(i2s_chan_handle_t handle)
 {
     (void)handle;
+    pthread_mutex_lock(&s_i2s_shim_mux);
     s_enabled = false;
+    pthread_mutex_unlock(&s_i2s_shim_mux);
     return ESP_OK;
 }
 
@@ -209,7 +222,9 @@ esp_err_t i2s_channel_write(i2s_chan_handle_t handle, const void *src, size_t si
 esp_err_t i2s_del_channel(i2s_chan_handle_t handle)
 {
     (void)handle;
+    pthread_mutex_lock(&s_i2s_shim_mux);
     s_enabled = false;
+    pthread_mutex_unlock(&s_i2s_shim_mux);
     return ESP_OK;
 }
 

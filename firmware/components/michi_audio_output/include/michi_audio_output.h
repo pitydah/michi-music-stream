@@ -238,6 +238,8 @@ esp_err_t michi_audio_output_get_error_count(uint32_t *out);
 void test_michi_audio_output_set_cmd_timeout_ms(uint32_t ms);
 void test_michi_audio_output_set_join_timeout_ms(uint32_t ms);
 void test_michi_audio_output_hold_worker(bool hold);
+uint32_t test_michi_audio_output_get_quiesce_barrier_race_count(void);
+void test_michi_audio_output_reset_quiesce_barrier_race_count(void);
 #endif
 
 #ifdef __cplusplus

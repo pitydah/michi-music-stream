@@ -1,4 +1,5 @@
 #include <inttypes.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -142,7 +143,7 @@ static uint32_t s_api_inflight = 0;
 static bool s_initialized = false;
 static bool s_shutdown_in_progress = false;
 #ifdef MICHI_HOST_TEST
-static volatile bool s_test_hold_worker = false;
+static _Atomic bool s_test_hold_worker = false;
 #endif
 
 static michi_worker_lifecycle_t worker_state_get(void)

@@ -20,6 +20,7 @@
  */
 
 #include <inttypes.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #include "sdkconfig.h"
@@ -87,7 +88,8 @@ static SemaphoreHandle_t s_cmd_ack_sem = NULL;
 #ifdef MICHI_HOST_TEST
 static uint32_t s_cmd_timeout_override_ms = 0;
 static uint32_t s_join_timeout_override_ms = 0;
-static volatile bool s_test_hold_worker = false;
+static _Atomic bool s_test_hold_worker = false;
+static _Atomic uint32_t s_test_quiesce_barrier_race_count = 0;
 #endif
 
 static size_t s_prefill_bytes = 0;
@@ -224,6 +226,14 @@ static void handle_pending_command_in_task(void)
     }
 
     if (cmd == MICHI_AUDIO_CMD_QUIESCE) {
+#ifdef MICHI_HOST_TEST
+        portENTER_CRITICAL(&s_ring_lock);
+        bool barrier_open = !s_ring_write_barrier;
+        portEXIT_CRITICAL(&s_ring_lock);
+        if (barrier_open) {
+            s_test_quiesce_barrier_race_count++;
+        }
+#endif
         /* 1. Flush ring buffer so no stale PCM remains */
         portENTER_CRITICAL(&s_ring_lock);
         s_ring.head = 0;
@@ -320,12 +330,27 @@ static esp_err_t send_cmd_and_wait_ack(michi_audio_cmd_t cmd, uint32_t timeout_m
     while (xSemaphoreTake(s_cmd_ack_sem, 0) == pdTRUE) {
     }
 
+    /* 1. Close write admission barrier BEFORE publishing QUIESCE so no PCM can enter the ring */
+    if (cmd == MICHI_AUDIO_CMD_QUIESCE) {
+        portENTER_CRITICAL(&s_ring_lock);
+        s_ring_write_barrier = true;
+        portEXIT_CRITICAL(&s_ring_lock);
+    }
+
     uint32_t my_gen = 0;
 
+    /* 2. Revalidate lifecycle AFTER closing the barrier before publishing command */
     portENTER_CRITICAL(&s_state_lock);
-    /* Dead worker check: if task is not alive, cannot process command */
-    if (s_task == NULL || s_state == MICHI_AUDIO_STATE_STOPPED || s_state == MICHI_AUDIO_STATE_STOPPING) {
+    if (s_task == NULL || s_state == MICHI_AUDIO_STATE_STOPPED || s_state == MICHI_AUDIO_STATE_STOPPING ||
+        s_state == MICHI_AUDIO_STATE_FAULTED ||
+        (cmd == MICHI_AUDIO_CMD_QUIESCE && s_state != MICHI_AUDIO_STATE_RUNNING) ||
+        (cmd == MICHI_AUDIO_CMD_RESUME && s_state != MICHI_AUDIO_STATE_QUIESCED)) {
         portEXIT_CRITICAL(&s_state_lock);
+        if (cmd == MICHI_AUDIO_CMD_QUIESCE) {
+            portENTER_CRITICAL(&s_ring_lock);
+            s_ring_write_barrier = false;
+            portEXIT_CRITICAL(&s_ring_lock);
+        }
         xSemaphoreGive(s_cmd_mux);
         return ESP_ERR_INVALID_STATE;
     }
@@ -333,13 +358,6 @@ static esp_err_t send_cmd_and_wait_ack(michi_audio_cmd_t cmd, uint32_t timeout_m
     my_gen = s_cmd_generation;
     s_pending_cmd = cmd;
     portEXIT_CRITICAL(&s_state_lock);
-
-    /* Write/admission barrier: close ring to PCM immediately upon beginning QUIESCE */
-    if (cmd == MICHI_AUDIO_CMD_QUIESCE) {
-        portENTER_CRITICAL(&s_ring_lock);
-        s_ring_write_barrier = true;
-        portEXIT_CRITICAL(&s_ring_lock);
-    }
 
     audio_task_notify();
 
@@ -1134,5 +1152,15 @@ void test_michi_audio_output_set_join_timeout_ms(uint32_t ms)
 void test_michi_audio_output_hold_worker(bool hold)
 {
     s_test_hold_worker = hold;
+}
+
+uint32_t test_michi_audio_output_get_quiesce_barrier_race_count(void)
+{
+    return s_test_quiesce_barrier_race_count;
+}
+
+void test_michi_audio_output_reset_quiesce_barrier_race_count(void)
+{
+    s_test_quiesce_barrier_race_count = 0;
 }
 #endif
