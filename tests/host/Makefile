@@ -13,21 +13,27 @@
 
 CC      ?= cc
 CFLAGS  ?= -std=c11 -O2 -Wall -Wextra -Werror -D_DEFAULT_SOURCE
-CPPFLAGS = -Ishim \
+CPPFLAGS = -Ishim -DMICHI_HOST_TEST \
            -I../../firmware/components/michi_ota \
+           -I../../firmware/components/michi_ota/include \
            -I../../firmware/components/michi_pairing \
            -I../../firmware/components/michi_pairing/include \
            -I../../firmware/components/michi_identity/include \
+           -I../../firmware/components/michi_discovery/include \
            -I../../firmware/components/michi_http/include \
            -I../../firmware/components/michi_session/include \
            -I../../firmware/components/michi_audio \
            -I../../firmware/components/michi_audio/include \
            -I../../firmware/components/michi_volume/include \
            -I../../firmware/components/michi_display/include \
+           -I../../firmware/components/michi_board/include \
+           -I../../firmware/components/michi_state/include \
            -I../../firmware/components/michi_product_profile/include \
            -I../../firmware/components/michi_dac/include
 
 FIRMWARE = ../../firmware/components
+
+export PKG_CONFIG_PATH := $(HOME)/.local/cjson/lib/pkgconfig:$(PKG_CONFIG_PATH)
 
 HAS_CJSON := $(shell pkg-config --exists libcjson && echo yes || echo no)
 CJSON_CFLAGS := $(shell pkg-config --cflags libcjson 2>/dev/null)
@@ -58,8 +64,10 @@ IDENTITY_INC = -I$(IDENTITY_DIR)/include -I$(IDENTITY_DIR)/monocypher \
                -I$(IDENTITY_DIR)/blake3
 
 TESTS := test_semver test_pairing_validators test_michi_identity \
-         test_michi_pairing test_michi_session test_rtp_guard test_michi_button \
-         test_michi_ui \
+         test_michi_pairing test_michi_session test_rtp_guard test_rtp_clock test_rtp_jitter \
+         test_michi_button test_michi_button_debounce test_michi_ui \
+         test_spiffs_journal test_michi_jb test_michi_profile_logic test_michi_ota_logic \
+         test_michi_dac test_michi_display_dma test_michi_audio_buffer test_michi_audio_output \
          $(if $(filter yes,$(HAS_CJSON)),test_json_helpers test_http_canonical test_michi_discovery test_michi_time test_capability_parity test_pairing_http test_session_http test_discovery_disc)
 
 .PHONY: all test clean
@@ -68,7 +76,7 @@ all: $(TESTS)
 
 test: all
 	@set -e; \
-	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard test_michi_button test_michi_ui; do ./$$t; done; \
+	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard test_rtp_clock test_rtp_jitter test_michi_button test_michi_button_debounce test_michi_ui test_spiffs_journal test_michi_jb test_michi_profile_logic test_michi_ota_logic test_michi_dac test_michi_display_dma test_michi_audio_buffer test_michi_audio_output; do ./$$t; done; \
 	if [ "$(HAS_CJSON)" = "yes" ]; then \
 	    ./test_json_helpers; \
 	    ./test_http_canonical; \
@@ -79,14 +87,13 @@ test: all
 	    ./test_session_http; \
 	    ./test_discovery_disc; \
 	else \
-	    echo "SKIP test_json_helpers (libcjson-dev not installed - CI installs it)"; \
-	    echo "SKIP test_http_canonical (libcjson-dev not installed - CI installs it)"; \
-	    echo "SKIP test_michi_discovery (libcjson-dev not installed - CI installs it)"; \
-	    echo "SKIP test_michi_time (libcjson-dev not installed - CI installs it)"; \
-	    echo "SKIP test_capability_parity (libcjson-dev not installed - CI installs it)"; \
-	    echo "SKIP test_pairing_http (libcjson-dev not installed - CI installs it)"; \
-	    echo "SKIP test_session_http (libcjson-dev not installed - CI installs it)"; \
-	    echo "SKIP test_discovery_disc (libcjson-dev not installed - CI installs it)"; \
+	    if [ "$$SKIP_CJSON" = "1" ]; then \
+	        echo "TEST RESULT: INCOMPLETE (libcjson-dev not installed)"; \
+	        exit 0; \
+	    else \
+	        echo "ERROR: libcjson-dev required. Install it or set SKIP_CJSON=1"; \
+	        exit 1; \
+	    fi; \
 	fi
 
 test_semver: test_semver.c $(FIRMWARE)/michi_ota/semver.c \
@@ -101,12 +108,16 @@ test_pairing_validators: test_pairing_validators.c $(FIRMWARE)/michi_pairing/val
 test_json_helpers: test_json_helpers.c $(FIRMWARE)/michi_http/json_helpers.c \
                    $(FIRMWARE)/michi_http/include/michi_http.h \
                    $(FIRMWARE)/michi_pairing/validators.c \
-                   $(FIRMWARE)/michi_pairing/validators.h $(SHIMS)
+                   $(FIRMWARE)/michi_pairing/validators.h \
+                   $(FIRMWARE)/michi_audio/michi_audio_buffer.c \
+                   shim/esp_http_server_shim.c shim/esp_timer.c $(SHIMS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CJSON_CFLAGS) -I../../firmware/components/michi_pairing/include \
 	    -I../../firmware/components/michi_identity/include \
 	    -o $@ test_json_helpers.c \
 	    $(FIRMWARE)/michi_http/json_helpers.c \
-	    $(FIRMWARE)/michi_pairing/validators.c $(CJSON_LIBS)
+	    $(FIRMWARE)/michi_pairing/validators.c \
+	    $(FIRMWARE)/michi_audio/michi_audio_buffer.c \
+	    shim/esp_http_server_shim.c shim/esp_timer.c $(CJSON_LIBS)
 
 test_http_canonical: test_http_canonical.c $(FIRMWARE)/michi_http/canonical_json.c \
                      $(FIRMWARE)/michi_http/include/michi_http.h \
@@ -120,10 +131,14 @@ test_http_canonical: test_http_canonical.c $(FIRMWARE)/michi_http/canonical_json
 test_pairing_http: test_pairing_http.c $(FIRMWARE)/michi_http/json_helpers.c \
                    $(FIRMWARE)/michi_http/include/michi_http.h \
                    $(FIRMWARE)/michi_pairing/validators.c \
-                   $(FIRMWARE)/michi_pairing/validators.h $(SHIMS)
+                   $(FIRMWARE)/michi_pairing/validators.h \
+                   $(FIRMWARE)/michi_audio/michi_audio_buffer.c \
+                   shim/esp_http_server_shim.c shim/esp_timer.c $(SHIMS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CJSON_CFLAGS) -o $@ test_pairing_http.c \
 	    $(FIRMWARE)/michi_http/json_helpers.c \
-	    $(FIRMWARE)/michi_pairing/validators.c $(CJSON_LIBS)
+	    $(FIRMWARE)/michi_pairing/validators.c \
+	    $(FIRMWARE)/michi_audio/michi_audio_buffer.c \
+	    shim/esp_http_server_shim.c shim/esp_timer.c $(CJSON_LIBS)
 
 # michi_pairing: compiles the REAL component (pairing core + validators +
 # identity for verify/derive/base64url) against the test shims. The host
@@ -132,6 +147,7 @@ PAIRING_DIR = $(FIRMWARE)/michi_pairing
 PAIRING_SRC = $(PAIRING_DIR)/michi_pairing.c $(PAIRING_DIR)/validators.c \
               shim/esp_timer.c shim/michi_state.c shim/mbedtls/sha256.c \
               shim/nvs_fake.c \
+              shim/freertos/task.c shim/freertos/queue.c \
               $(IDENTITY_DIR)/michi_identity.c $(IDENTITY_DIR)/identity_nvs.c \
               $(IDENTITY_DIR)/monocypher/monocypher.c \
               $(IDENTITY_DIR)/monocypher/monocypher-ed25519.c \
@@ -156,7 +172,8 @@ test_michi_pairing: test_michi_pairing.c $(PAIRING_SRC) \
 BUTTON_DIR = $(FIRMWARE)/michi_button
 BUTTON_SRC = $(BUTTON_DIR)/michi_button_gesture.c \
              shim/michi_pairing_fake.c shim/nvs_flash.c shim/esp_system.c \
-             shim/michi_state.c \
+             shim/michi_state.c shim/michi_display_fake.c \
+             shim/michi_dac_fake.c \
              $(IDENTITY_DIR)/michi_identity.c $(IDENTITY_DIR)/identity_nvs.c \
              shim/nvs_fake.c \
              $(IDENTITY_DIR)/monocypher/monocypher.c \
@@ -174,6 +191,16 @@ test_michi_button: test_michi_button.c $(BUTTON_SRC) \
 	    $(IDENTITY_INC) -I$(IDENTITY_DIR) $(IDENTITY_DEFS) \
 	    -o $@ test_michi_button.c $(BUTTON_SRC)
 
+# michi_button_debounce: compiles the PURE debouncer (the single-authority
+# state machine) with NO ESP/FreeRTOS/NVS/identity deps - only stdint, so it
+# links with no shim ESP headers. Proves the release-bounce P0 fix and the
+# single-PRESS/single-RELEASE-per-tap contract on the host, no hardware.
+test_michi_button_debounce: test_michi_button_debounce.c \
+                            $(BUTTON_DIR)/michi_button_debounce.c \
+                            $(BUTTON_DIR)/michi_button_debounce.h $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(BUTTON_DIR) -o $@ \
+	    test_michi_button_debounce.c $(BUTTON_DIR)/michi_button_debounce.c
+
 test_michi_identity: test_michi_identity.c $(IDENTITY_SRC) \
                      $(IDENTITY_DIR)/include/michi_identity.h $(SHIMS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(IDENTITY_INC) $(IDENTITY_DEFS) \
@@ -186,15 +213,18 @@ test_michi_identity: test_michi_identity.c $(IDENTITY_SRC) \
 SESSION_DIR = $(FIRMWARE)/michi_session
 SESSION_SRC = $(SESSION_DIR)/michi_session.c shim/esp_timer.c \
               shim/michi_state.c shim/michi_audio_fake.c \
-              shim/michi_volume_fake.c shim/michi_display_fake.c
+              shim/michi_volume_fake.c shim/michi_display_fake.c \
+              shim/michi_ota_fake.c \
+              shim/freertos/task.c shim/freertos/queue.c
 SESSION_INC = -I$(SESSION_DIR)/include
 
 test_michi_session: test_michi_session.c $(SESSION_SRC) \
                     $(SESSION_DIR)/include/michi_session.h \
+                    $(FIRMWARE)/michi_audio/michi_audio_buffer.c \
                     shim/michi_audio_fake.h shim/michi_volume_fake.h \
-                    shim/michi_display_fake.h $(SHIMS)
+                    shim/michi_display_fake.h shim/michi_ota_fake.h $(SHIMS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SESSION_INC) -pthread -o $@ \
-	    test_michi_session.c $(SESSION_SRC)
+	    test_michi_session.c $(SESSION_SRC) $(FIRMWARE)/michi_audio/michi_audio_buffer.c
 
 # michi_ui: compiles the REAL display primitives (michi_ui_text.c,
 # michi_ui_fonts.c with the generated flash tables, michi_ui_components.c)
@@ -206,16 +236,41 @@ UI_INC = -I$(UI_DIR)/include
 
 test_michi_ui: test_michi_ui.c $(UI_DIR)/michi_ui_text.c \
                $(UI_DIR)/michi_ui_fonts.c $(UI_DIR)/michi_ui_components.c \
+               $(UI_DIR)/michi_ui_screens.c $(UI_DIR)/michi_ui_icons.c \
+               $(UI_DIR)/michi_ui_theme.c \
                $(UI_DIR)/include/michi_ui.h \
                $(UI_DIR)/include/michi_ui_components.h \
+               $(UI_DIR)/include/michi_ui_screens.h \
+               $(UI_DIR)/include/michi_ui_strings.h \
                $(UI_DIR)/include/michi_ui_text.h \
                $(UI_DIR)/include/michi_ui_fonts.h \
                $(UI_DIR)/include/michi_ui_theme.h \
                $(UI_DIR)/include/michi_ui_icons.h \
-               $(UI_DIR)/assets/fonts/michi_ui_fonts_data.h $(SHIMS)
+               $(UI_DIR)/assets/fonts/michi_ui_fonts_data.h \
+               $(UI_DIR)/assets/icons/michi_ui_icons_data.h $(SHIMS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(UI_INC) -o $@ test_michi_ui.c \
 	    $(UI_DIR)/michi_ui_text.c $(UI_DIR)/michi_ui_fonts.c \
-	    $(UI_DIR)/michi_ui_components.c
+	    $(UI_DIR)/michi_ui_components.c $(UI_DIR)/michi_ui_screens.c \
+	    $(UI_DIR)/michi_ui_icons.c $(UI_DIR)/michi_ui_theme.c
+
+render_ui_previews: render_ui_previews.c $(UI_DIR)/michi_ui_text.c \
+                   $(UI_DIR)/michi_ui_fonts.c $(UI_DIR)/michi_ui_components.c \
+                   $(UI_DIR)/michi_ui_screens.c $(UI_DIR)/michi_ui_icons.c \
+                   $(UI_DIR)/michi_ui_theme.c \
+                   $(UI_DIR)/include/michi_ui.h \
+                   $(UI_DIR)/include/michi_ui_components.h \
+                   $(UI_DIR)/include/michi_ui_screens.h \
+                   $(UI_DIR)/include/michi_ui_strings.h \
+                   $(UI_DIR)/include/michi_ui_text.h \
+                   $(UI_DIR)/include/michi_ui_fonts.h \
+                   $(UI_DIR)/include/michi_ui_theme.h \
+                   $(UI_DIR)/include/michi_ui_icons.h \
+                   $(UI_DIR)/assets/fonts/michi_ui_fonts_data.h \
+                   $(UI_DIR)/assets/icons/michi_ui_icons_data.h $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(UI_INC) -o $@ render_ui_previews.c \
+	    $(UI_DIR)/michi_ui_text.c $(UI_DIR)/michi_ui_fonts.c \
+	    $(UI_DIR)/michi_ui_components.c $(UI_DIR)/michi_ui_screens.c \
+	    $(UI_DIR)/michi_ui_icons.c $(UI_DIR)/michi_ui_theme.c
 
 # rtp_guard: the SAME datagram validation the engine runs (pure C).
 test_rtp_guard: test_rtp_guard.c $(FIRMWARE)/michi_audio/rtp_guard.c \
@@ -223,15 +278,58 @@ test_rtp_guard: test_rtp_guard.c $(FIRMWARE)/michi_audio/rtp_guard.c \
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ test_rtp_guard.c \
 	    $(FIRMWARE)/michi_audio/rtp_guard.c
 
+# rtp_clock: 64-bit extended timestamp tracker (P0-02: wrap fix, header-only).
+test_rtp_clock: test_rtp_clock.c $(FIRMWARE)/michi_audio/michi_rtp_clock.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(FIRMWARE)/michi_audio -o $@ test_rtp_clock.c
+
+# rtp_jitter: RFC 3550 interarrival jitter and clock offset tracker.
+test_rtp_jitter: test_rtp_jitter.c $(FIRMWARE)/michi_audio/michi_rtp_jitter.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(FIRMWARE)/michi_audio -o $@ test_rtp_jitter.c
+
+# spiffs_journal: first-boot SPIFFS format decision logic (P0-07).
+# Pure-C decision function extracted from michi_log.c; no firmware deps.
+test_spiffs_journal: test_spiffs_journal.c
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -D_DEFAULT_SOURCE \
+	    -o $@ test_spiffs_journal.c
+
+# michi_jb: jitter-buffer insert/evict/wrap logic (P0-08, PR M, JB-01).
+# Compiles the SAME michi_jb.c production source.
+test_michi_jb: test_michi_jb.c $(FIRMWARE)/michi_audio/michi_jb.c \
+               $(FIRMWARE)/michi_audio/include/michi_jb.h $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(FIRMWARE)/michi_audio -o $@ test_michi_jb.c \
+	    $(FIRMWARE)/michi_audio/michi_jb.c
+
+# michi_profile_logic: tier + audio_available decision functions (P0-08, PR M).
+# Compiles the SAME profile_logic.c production source.
+test_michi_profile_logic: test_michi_profile_logic.c \
+                          $(FIRMWARE)/michi_product_profile/profile_logic.c \
+                          $(FIRMWARE)/michi_product_profile/include/michi_profile_logic.h \
+                          $(FIRMWARE)/michi_dac/include/michi_dac_types.h $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ test_michi_profile_logic.c \
+	    $(FIRMWARE)/michi_product_profile/profile_logic.c
+
+# michi_ota_logic: OTA state machine and gate checks (P0-08, PR M).
+# Compiles the SAME semver.c and michi_ota_logic.c production sources.
+test_michi_ota_logic: test_michi_ota_logic.c $(FIRMWARE)/michi_ota/semver.c \
+                      $(FIRMWARE)/michi_ota/semver.h \
+                      $(FIRMWARE)/michi_ota/michi_ota_logic.c \
+                      $(FIRMWARE)/michi_ota/include/michi_ota_logic.h $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ test_michi_ota_logic.c \
+	    $(FIRMWARE)/michi_ota/semver.c $(FIRMWARE)/michi_ota/michi_ota_logic.c
+
 # Session HTTP body gates: the SAME json_helpers.c + validators.c the
 # firmware builds (cJSON-gated like the other HTTP tests).
 test_session_http: test_session_http.c $(FIRMWARE)/michi_http/json_helpers.c \
                    $(FIRMWARE)/michi_http/include/michi_http.h \
                    $(FIRMWARE)/michi_pairing/validators.c \
-                   $(FIRMWARE)/michi_pairing/validators.h $(SHIMS)
+                   $(FIRMWARE)/michi_pairing/validators.h \
+                   $(FIRMWARE)/michi_audio/michi_audio_buffer.c \
+                   shim/esp_http_server_shim.c shim/esp_timer.c $(SHIMS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CJSON_CFLAGS) -o $@ test_session_http.c \
 	    $(FIRMWARE)/michi_http/json_helpers.c \
-	    $(FIRMWARE)/michi_pairing/validators.c $(CJSON_LIBS)
+	    $(FIRMWARE)/michi_pairing/validators.c \
+	    $(FIRMWARE)/michi_audio/michi_audio_buffer.c \
+	    shim/esp_http_server_shim.c shim/esp_timer.c $(CJSON_LIBS)
 
 # michi_discovery: compiles the REAL announce builder + server_id NVS
 # wrapper + the identity sources (signing) against the test shims. The
@@ -261,7 +359,7 @@ test_michi_discovery: test_michi_discovery.c $(DISCOVERY_SRC) \
 TIME_DIR = $(FIRMWARE)/michi_time
 TIME_SRC = $(TIME_DIR)/michi_time.c shim/esp_netif_sntp.c shim/time_shim.c \
            shim/lwip_sockets.c shim/mdns_shim.c shim/esp_mac_shim.c \
-           shim/freertos/task.c shim/esp_timer.c \
+           shim/freertos/task.c shim/freertos/queue.c shim/esp_timer.c \
            shim/michi_product_profile_fake.c
 TIME_INC = -I$(TIME_DIR)/include -I$(TIME_DIR)
 
@@ -317,10 +415,46 @@ test_discovery_disc: $(DISC_SRC) \
 	    $(TIME_INC) $(IDENTITY_DEFS) $(CJSON_CFLAGS) -pthread -o $@ \
 	    $(DISC_SRC) $(IDENTITY_SRC) $(CJSON_LIBS)
 
+DAC_DIR = $(FIRMWARE)/michi_dac
+DAC_SRC = $(DAC_DIR)/dac_manager.c $(DAC_DIR)/dac_registry.c \
+          $(DAC_DIR)/dac_classifier.c $(DAC_DIR)/drivers/pcm5102a.c \
+          $(DAC_DIR)/drivers/pcm512x.c $(DAC_DIR)/drivers/mock_dac.c \
+          shim/nvs_fake.c shim/i2c_master_shim.c shim/esp_system.c
+
+test_michi_dac: test_michi_dac.c $(DAC_SRC) $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(DAC_DIR)/include -I$(DAC_DIR) -o $@ \
+	    test_michi_dac.c $(DAC_SRC)
+
+BOARD_DIR = $(FIRMWARE)/michi_board
+BOARD_SRC = $(BOARD_DIR)/waveshare_s3_lcd2/board_waveshare_s3_lcd2.c \
+            shim/esp_lcd_shim.c shim/esp_system.c
+
+test_michi_display_dma: test_michi_display_dma.c $(BOARD_SRC) $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(BOARD_DIR)/include -I$(BOARD_DIR)/waveshare_s3_lcd2 -pthread -o $@ \
+	    test_michi_display_dma.c $(BOARD_SRC)
+
+test_michi_audio_buffer: test_michi_audio_buffer.c \
+                         $(FIRMWARE)/michi_audio/michi_audio_buffer.c \
+                         $(FIRMWARE)/michi_audio/include/michi_audio.h $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ test_michi_audio_buffer.c \
+	    $(FIRMWARE)/michi_audio/michi_audio_buffer.c
+
+AUDIO_OUT_DIR = $(FIRMWARE)/michi_audio_output
+AUDIO_OUT_SRC = $(AUDIO_OUT_DIR)/michi_audio_output.c shim/i2s_shim.c shim/esp_system.c \
+                shim/michi_volume_fake.c shim/freertos/task.c
+
+test_michi_audio_output: test_michi_audio_output.c $(AUDIO_OUT_SRC) \
+                         $(AUDIO_OUT_DIR)/include/michi_audio_output.h $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(AUDIO_OUT_DIR)/include -pthread -o $@ \
+	    test_michi_audio_output.c $(AUDIO_OUT_SRC)
+
 clean:
 	rm -f test_semver test_pairing_validators test_json_helpers \
 	      test_http_canonical test_michi_identity test_michi_discovery \
 	      test_michi_time test_michi_pairing test_pairing_http \
 	      test_michi_session test_rtp_guard test_session_http \
 	      test_capability_parity test_discovery_disc test_michi_button \
-	      test_michi_ui
+	      test_michi_button_debounce test_michi_ui render_ui_previews \
+	      test_michi_dac test_michi_display_dma test_spiffs_journal \
+	      test_michi_jb test_michi_profile_logic test_michi_ota_logic \
+	      test_rtp_clock test_rtp_jitter test_michi_audio_buffer test_michi_audio_output

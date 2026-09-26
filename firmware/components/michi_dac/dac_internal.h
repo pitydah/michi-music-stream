@@ -9,6 +9,7 @@
 
 #include "esp_err.h"
 
+#include "michi_dac.h"
 #include "michi_dac_types.h"
 
 #define MICHI_DAC_REGISTRY_MAX 3 /* pcm512x, pcm5102a, mock */

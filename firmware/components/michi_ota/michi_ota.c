@@ -73,6 +73,7 @@
 #include "michi_ota.h"
 #include "michi_ota_pubkey.h"
 #include "semver.h"
+#include "michi_ota_logic.h"
 #include "michi_product_profile.h"
 #include "michi_sd.h"
 #include "michi_session.h"
@@ -567,21 +568,21 @@ static esp_err_t validate_manifest(michi_ota_manifest_t *m,
         return ESP_ERR_NOT_FOUND;
     }
 
-    uint16_t cur[3], ver[3], min_ver[3];
-    if (!semver_parse(p->firmware_version, cur) ||
-        !semver_parse(m->version, ver)) {
+    semver_t cur, ver, min_ver;
+    if (!semver_parse(p->firmware_version, &cur) ||
+        !semver_parse(m->version, &ver)) {
         ESP_LOGW(TAG, "ota: state=validating semver_invalid version=%s "
                       "source=%s", m->version, source);
         return ESP_ERR_INVALID_ARG;
     }
-    if (semver_cmp(ver, cur) <= 0) {
+    if (semver_cmp(&ver, &cur) <= 0) {
         ESP_LOGW(TAG, "ota: state=validating downgrade_rejected "
                       "version=%s current=%s source=%s",
                  m->version, p->firmware_version, source);
         return ESP_ERR_INVALID_VERSION;
     }
-    if (!semver_parse(m->min_version, min_ver) ||
-        semver_cmp(ver, min_ver) < 0) {
+    if (!semver_parse(m->min_version, &min_ver) ||
+        semver_cmp(&ver, &min_ver) < 0) {
         ESP_LOGW(TAG, "ota: state=validating min_version_not_met "
                       "version=%s min_version=%s source=%s",
                  m->version, m->min_version, source);
@@ -1467,20 +1468,26 @@ static esp_err_t ota_force_close_session(void)
 static esp_err_t ota_spawn_task(TaskFunction_t task_fn, void *arg)
 {
     xSemaphoreTake(s_ctx.mutex, portMAX_DELAY);
-    if (s_ctx.task != NULL) {
-        xSemaphoreGive(s_ctx.mutex);
-        ESP_LOGW(TAG, "ota: start_rejected reason=busy");
-        return ESP_ERR_INVALID_STATE;
-    }
+    const bool task_running = (s_ctx.task != NULL);
+    bool is_pending_verify = false;
     const esp_partition_t *running = esp_ota_get_running_partition();
     if (running != NULL) {
         esp_ota_img_states_t st = ESP_OTA_IMG_UNDEFINED;
         if (esp_ota_get_state_partition(running, &st) == ESP_OK &&
             st == ESP_OTA_IMG_PENDING_VERIFY) {
-            xSemaphoreGive(s_ctx.mutex);
-            ESP_LOGW(TAG, "ota: start_rejected reason=pending_verify");
-            return ESP_ERR_NOT_ALLOWED;
+            is_pending_verify = true;
         }
+    }
+    const ota_start_gate_t gate = ota_gate_check(task_running, is_pending_verify);
+    if (gate == OTA_START_BUSY) {
+        xSemaphoreGive(s_ctx.mutex);
+        ESP_LOGW(TAG, "ota: start_rejected reason=busy");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (gate == OTA_START_PENDING_VERIFY) {
+        xSemaphoreGive(s_ctx.mutex);
+        ESP_LOGW(TAG, "ota: start_rejected reason=pending_verify");
+        return ESP_ERR_NOT_ALLOWED;
     }
     s_ctx.err[0] = '\0';
     s_ctx.state = MICHI_OTA_IDLE;
@@ -1775,7 +1782,7 @@ bool michi_ota_busy(void)
     return busy;
 }
 
-esp_err_t michi_ota_boot_selftest_done(bool selftest_ok)
+esp_err_t michi_ota_boot_selftest_done(michi_selftest_result_t selftest_result)
 {
     const esp_partition_t *running = esp_ota_get_running_partition();
     if (running == NULL) {
@@ -1792,7 +1799,7 @@ esp_err_t michi_ota_boot_selftest_done(bool selftest_ok)
                  image_state_name(st));
         return ESP_OK;
     }
-    if (selftest_ok) {
+    if (selftest_result == MICHI_SELFTEST_PASS || selftest_result == MICHI_SELFTEST_DEGRADED) {
         const esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "ota: mark_valid failed err=%s", esp_err_to_name(err));

@@ -244,11 +244,18 @@ bool michi_ota_busy(void);
  *
  * Independent of michi_ota_init(): must run even when init failed.
  *
- * @param selftest_ok true = the board self-test passed (st.overall).
+ * @param selftest_result PASS, DEGRADED, or FATAL.
  * @return ESP_OK; ESP_ERR_INVALID_STATE if the running partition state
  *         cannot be read (log-only, boot continues).
  */
-esp_err_t michi_ota_boot_selftest_done(bool selftest_ok);
+
+typedef enum {
+    MICHI_SELFTEST_PASS,
+    MICHI_SELFTEST_DEGRADED,
+    MICHI_SELFTEST_FATAL
+} michi_selftest_result_t;
+
+esp_err_t michi_ota_boot_selftest_done(michi_selftest_result_t selftest_result);
 
 #ifdef __cplusplus
 }

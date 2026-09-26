@@ -1,8 +1,6 @@
-/* Deterministic button gesture contract (P1-07): the pure decision
- * logic + the factory-reset orchestration, both host-testable without
- * GPIO/task plumbing. The debounce task (michi_button.c) feeds the
- * classification with the press duration, the FSM state snapshots and
- * the boot elapsed; this file owns the contract.
+/* Deterministic button gesture contract (P0-01 + P1-07):
+ * Hold-on-threshold classification. Pure: no I/O, no state mutation.
+ * See michi_button_gesture.h for the full contract documentation.
  */
 
 #include <inttypes.h>
@@ -15,6 +13,7 @@
 #include "nvs_flash.h"
 
 #include "michi_button_gesture.h"
+#include "michi_dac.h"
 #include "michi_identity.h"
 #include "michi_pairing.h"
 
@@ -26,39 +25,64 @@ static bool is_protected_state(michi_state_t st)
            st == MICHI_STATE_UPDATING;
 }
 
-michi_button_action_t michi_button_gesture_classify(
-    uint32_t press_ms, michi_state_t press_state, michi_state_t release_state,
-    int64_t press_boot_elapsed_ms, uint32_t recovery_ms, uint32_t factory_ms,
-    uint32_t arm_ms)
+michi_button_action_t michi_button_hold_classify(
+    int64_t                        elapsed_ms,
+    michi_state_t                  press_state,
+    michi_state_t                  current_state,
+    int64_t                        press_boot_ms,
+    const michi_button_press_ctx_t *ctx,
+    uint32_t                       pairing_ms,
+    uint32_t                       factory_warn_ms,
+    uint32_t                       factory_ms,
+    uint32_t                       arm_ms)
 {
-    /* Hard protection on BOTH flanks: the press must not have started in
-     * a protected state (held through boot, or started during OTA) AND
-     * must not be released in one - otherwise a press that began
-     * protected would fire its action once the FSM reached a stable
-     * state. */
-    if (is_protected_state(press_state) || is_protected_state(release_state)) {
+    /* Hard protection: press started or currently in a protected state. */
+    if (is_protected_state(press_state) || is_protected_state(current_state)) {
         return MICHI_BUTTON_ACTION_IGNORED_PROTECTED;
     }
 
-    if (press_ms >= factory_ms) {
-        if (press_boot_elapsed_ms < (int64_t)arm_ms) {
+    /* Factory-reset band: elapsed >= factory_ms.
+     * Only fires if:
+     *   (a) action is not already consumed
+     *   (b) arm window has elapsed (boot-hold protection)
+     * Note: factory reset IGNORES action_fired from pairing/recovery —
+     * the escalation from pairing → factory-reset requires gesture consumption,
+     * so action_fired from pairing blocks it. */
+    if ((int64_t)elapsed_ms >= (int64_t)factory_ms) {
+        if (ctx->action_fired) {
+            /* Gesture already consumed (pairing/recovery fired): block reset. */
+            return MICHI_BUTTON_ACTION_NONE;
+        }
+        if (press_boot_ms < (int64_t)arm_ms) {
             return MICHI_BUTTON_ACTION_IGNORED_ARM;
         }
         return MICHI_BUTTON_ACTION_FACTORY_RESET;
     }
 
-    if (press_ms >= recovery_ms) {
-        /* Recovery is a retry gesture: it fires only when the device is
-         * actually in RECOVERABLE_ERROR at the release (the press state
-         * does not gate it - a press started in IDLE that ends after an
-         * error landed is exactly the gesture that should work). */
-        if (release_state != MICHI_STATE_RECOVERABLE_ERROR) {
-            return MICHI_BUTTON_ACTION_IGNORED_STATE;
+    /* Factory-warning band: elapsed >= factory_warn_ms.
+     * Visual-only: does not consume the action, does not block escalation
+     * to factory reset. Only fires once (factory_warned flag in ctx). */
+    if ((int64_t)elapsed_ms >= (int64_t)factory_warn_ms) {
+        if (!ctx->factory_warned && !ctx->action_fired) {
+            return MICHI_BUTTON_ACTION_FACTORY_WARN;
         }
-        return MICHI_BUTTON_ACTION_RECOVERY;
+        return MICHI_BUTTON_ACTION_NONE;
     }
 
-    return MICHI_BUTTON_ACTION_PAIRING;
+    /* Pairing/recovery band: elapsed >= pairing_ms. */
+    if ((int64_t)elapsed_ms >= (int64_t)pairing_ms) {
+        if (ctx->action_fired) {
+            return MICHI_BUTTON_ACTION_NONE; /* already consumed */
+        }
+        /* Context-sensitive: in RECOVERABLE_ERROR → recovery, else pairing. */
+        if (current_state == MICHI_STATE_RECOVERABLE_ERROR) {
+            return MICHI_BUTTON_ACTION_RECOVERY;
+        }
+        return MICHI_BUTTON_ACTION_PAIRING;
+    }
+
+    /* Below threshold: no action yet. */
+    return MICHI_BUTTON_ACTION_NONE;
 }
 
 esp_err_t michi_button_factory_reset_run(void)
@@ -94,6 +118,12 @@ esp_err_t michi_button_factory_reset_run(void)
                  esp_err_to_name(err));
     }
 
+    /* Preserve hardware SKU identity (e.g. PCM5102A profile) across factory reset:
+     * Non-probeable DACs rely on NVS dac_profile binding. Preserve it so a factory
+     * reset returns the device to unprovisioned state without breaking audio output. */
+    char saved_dac[64] = {0};
+    bool had_dac = (michi_dac_get_nvs_profile(saved_dac, sizeof(saved_dac)) == ESP_OK && saved_dac[0] != '\0');
+
     err = nvs_flash_erase();
     if (err != ESP_OK) {
         /* Honest abort: without the full erase the reset did not achieve
@@ -103,6 +133,21 @@ esp_err_t michi_button_factory_reset_run(void)
         ESP_LOGE(TAG, "button: nvs_flash_erase failed: %s - factory reset "
                  "aborted", esp_err_to_name(err));
         return err;
+    }
+
+    if (had_dac) {
+        esp_err_t nvs_err = nvs_flash_init();
+        if (nvs_err == ESP_OK) {
+            esp_err_t set_err = michi_dac_set_nvs_profile(saved_dac);
+            if (set_err == ESP_OK) {
+                ESP_LOGI(TAG, "button: restored dac_profile=%s across factory reset", saved_dac);
+            } else {
+                ESP_LOGW(TAG, "button: failed to restore dac_profile: %s", esp_err_to_name(set_err));
+            }
+        } else {
+            ESP_LOGW(TAG, "button: nvs_flash_init failed during dac_profile restore: %s",
+                     esp_err_to_name(nvs_err));
+        }
     }
 
     /* Restart immediately, no log-flush delay: the factory-reset log is

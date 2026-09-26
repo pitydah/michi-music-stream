@@ -1,6 +1,6 @@
 menu "Michi Music Stream Time"
 
-    comment "SNTP wall clock for signed discovery (P0-02): the signed announce carries a timestamp that Michi Link rejects outside +-90 s. Requires CONFIG_LWIP_SNTP=y (set in sdkconfig.defaults)."
+    comment "SNTP wall clock for signed discovery (P0-02): the signed announce carries a timestamp that Michi Link rejects outside +-90 s. Driven by the esp_netif_sntp API in ESP-IDF."
 
     config MICHI_TIME_SNTP_SERVER
         string "SNTP server hostname"

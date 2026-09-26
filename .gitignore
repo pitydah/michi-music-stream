@@ -25,4 +25,14 @@ __pycache__/
 /tests/host/test_session_http
 /tests/host/test_discovery_disc
 /tests/host/test_michi_button
+/tests/host/test_michi_button_debounce
 /tests/host/test_michi_ui
+/tests/host/render_ui_previews
+/tests/host/test_michi_jb
+/tests/host/test_michi_ota_logic
+/tests/host/test_michi_profile_logic
+/tests/host/test_rtp_clock
+/tests/host/test_rtp_jitter
+/tests/host/test_michi_dac
+/tests/host/test_michi_display_dma
+/tests/host/test_spiffs_journal

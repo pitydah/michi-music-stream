@@ -18,6 +18,42 @@
 
 #include "cJSON.h"
 #include "michi_http.h"
+#include "michi_discovery.h"
+#include "michi_identity.h"
+
+static const char *const TEST_STUB_SERVER_ID = "550e8400-e29b-41d4-a716-446655440000";
+static const char *const TEST_STUB_MICHI_ID = "f2UwxQaeA6vA8LO7Cr1nGRr5MStned_Gbmc_ua48qUc";
+static const char *const TEST_STUB_PUBKEY_B64 = "RpHnJr9oP1DXBkPuIMuk0hJ2hAJ5SiWO2hAQVCMGREE";
+
+esp_err_t michi_discovery_get_server_id(char *out, size_t out_len)
+{
+    if (out == NULL || out_len < 37) return ESP_ERR_INVALID_SIZE;
+    snprintf(out, out_len, "%s", TEST_STUB_SERVER_ID);
+    return ESP_OK;
+}
+
+esp_err_t michi_identity_michi_id(char *out, size_t out_len)
+{
+    if (out == NULL || out_len < 44) return ESP_ERR_INVALID_SIZE;
+    snprintf(out, out_len, "%s", TEST_STUB_MICHI_ID);
+    return ESP_OK;
+}
+
+esp_err_t michi_identity_public_key(uint8_t out[32])
+{
+    if (out == NULL) return ESP_ERR_INVALID_ARG;
+    memset(out, 0x42, 32);
+    return ESP_OK;
+}
+
+esp_err_t michi_identity_base64url_encode(const uint8_t *in, size_t in_len,
+                                          char *out, size_t out_len)
+{
+    (void)in; (void)in_len;
+    if (out == NULL || out_len < 44) return ESP_ERR_INVALID_SIZE;
+    snprintf(out, out_len, "%s", TEST_STUB_PUBKEY_B64);
+    return ESP_OK;
+}
 
 static int failures = 0;
 
@@ -130,6 +166,7 @@ static void fill_profile(michi_product_profile_t *p, michi_product_tier_t tier,
 {
     memset(p, 0, sizeof(*p));
     p->tier = tier;
+    p->audio_available = (tier == MICHI_PRODUCT_HIFI || tier == MICHI_PRODUCT_STANDARD);
     snprintf(p->product_name, sizeof(p->product_name), "%s", name);
     snprintf(p->firmware_version, sizeof(p->firmware_version), "%s", version);
 }
@@ -144,9 +181,30 @@ static void test_info_profile_standard(void)
     esp_err_t err = build_info_json(root, &p);
     CHECK(err == ESP_OK, "build_info_json succeeds");
 
-    /* Exact top-level key set: the identity group is NOT emitted yet
-     * (MS-04), so exactly 8 keys. */
-    CHECK(cJSON_GetArraySize(root) == 8, "exactly 8 top-level keys");
+    /* Exact top-level key set per server-info.schema.json: 12 keys
+     * (service, name, version, api_version, roles, auth, features,
+     * server_id, identity_scheme, michi_id, public_key, audio). */
+    CHECK(cJSON_GetArraySize(root) == 12, "exactly 12 top-level keys");
+
+    const cJSON *server_id = cJSON_GetObjectItem(root, "server_id");
+    CHECK(server_id != NULL && cJSON_IsString(server_id) &&
+          strcmp(server_id->valuestring, TEST_STUB_SERVER_ID) == 0,
+          "server_id emitted correctly");
+
+    const cJSON *scheme = cJSON_GetObjectItem(root, "identity_scheme");
+    CHECK(scheme != NULL && cJSON_IsString(scheme) &&
+          strcmp(scheme->valuestring, "ed25519-blake3-v1") == 0,
+          "identity_scheme is ed25519-blake3-v1");
+
+    const cJSON *michi_id = cJSON_GetObjectItem(root, "michi_id");
+    CHECK(michi_id != NULL && cJSON_IsString(michi_id) &&
+          strcmp(michi_id->valuestring, TEST_STUB_MICHI_ID) == 0,
+          "michi_id emitted correctly");
+
+    const cJSON *pk = cJSON_GetObjectItem(root, "public_key");
+    CHECK(pk != NULL && cJSON_IsString(pk) &&
+          strcmp(pk->valuestring, TEST_STUB_PUBKEY_B64) == 0,
+          "public_key emitted correctly");
 
     const cJSON *service = cJSON_GetObjectItem(root, "service");
     CHECK(service != NULL && cJSON_IsString(service) &&
@@ -276,7 +334,7 @@ static void test_info_profile_hifi(void)
 
 static void test_info_profile_diagnostic_maps_standard(void)
 {
-    printf("info: diagnostic tier maps to standard\n");
+    printf("info: diagnostic tier maps to standard + truthful features\n");
     michi_product_profile_t p;
     fill_profile(&p, MICHI_PRODUCT_DIAGNOSTIC, "Michi Music Stream", "0.1.0");
     cJSON *root = cJSON_CreateObject();
@@ -286,6 +344,20 @@ static void test_info_profile_diagnostic_maps_standard(void)
     CHECK(service != NULL && strcmp(service->valuestring,
                                     "michi-stream-standard") == 0,
           "diagnostic service is michi-stream-standard");
+
+    /* Signal Truth (KILLCRITIC P0): in DIAGNOSTIC tier audio_available is false,
+     * so session, heartbeat and volume MUST be advertised as false. */
+    const cJSON *feat = cJSON_GetObjectItem(root, "features");
+    CHECK(feat != NULL, "features present");
+    CHECK(cJSON_IsFalse(cJSON_GetObjectItem(feat, "session")),
+          "diagnostic: features.session false");
+    CHECK(cJSON_IsFalse(cJSON_GetObjectItem(feat, "heartbeat")),
+          "diagnostic: features.heartbeat false");
+    CHECK(cJSON_IsFalse(cJSON_GetObjectItem(feat, "volume")),
+          "diagnostic: features.volume false");
+    CHECK(cJSON_IsTrue(cJSON_GetObjectItem(feat, "diagnostics")),
+          "diagnostic: features.diagnostics true");
+
     cJSON_Delete(root);
 }
 
@@ -293,6 +365,143 @@ static void test_info_profile_invalid_args(void)
 {
     printf("info: invalid args rejected\n");
     CHECK(build_info_json(NULL, NULL) != ESP_OK, "NULL args rejected");
+}
+
+static void test_info_fail_closed_missing_identity(void)
+{
+    printf("info: fail-closed missing identity (INFO-01..INFO-03)\n");
+    michi_product_profile_t p_std, p_hifi;
+    fill_profile(&p_std, MICHI_PRODUCT_STANDARD, "Michi Music Stream", "0.1.0");
+    fill_profile(&p_hifi, MICHI_PRODUCT_HIFI, "Michi Music Stream HiFi", "0.1.0");
+
+    cJSON *root = cJSON_CreateObject();
+    CHECK(root != NULL, "root created");
+
+    /* INFO-01: server_id missing/empty -> ESP_ERR_INVALID_STATE */
+    CHECK(build_info_json_with_identity(root, &p_std, NULL, TEST_STUB_MICHI_ID, TEST_STUB_PUBKEY_B64) == ESP_ERR_INVALID_STATE,
+          "INFO-01: NULL server_id returns ESP_ERR_INVALID_STATE (STANDARD)");
+    CHECK(build_info_json_with_identity(root, &p_std, "", TEST_STUB_MICHI_ID, TEST_STUB_PUBKEY_B64) == ESP_ERR_INVALID_STATE,
+          "INFO-01: empty server_id returns ESP_ERR_INVALID_STATE (STANDARD)");
+    CHECK(build_info_json_with_identity(root, &p_hifi, NULL, TEST_STUB_MICHI_ID, TEST_STUB_PUBKEY_B64) == ESP_ERR_INVALID_STATE,
+          "INFO-01: NULL server_id returns ESP_ERR_INVALID_STATE (HIFI)");
+    CHECK(build_info_json_with_identity(root, &p_hifi, "", TEST_STUB_MICHI_ID, TEST_STUB_PUBKEY_B64) == ESP_ERR_INVALID_STATE,
+          "INFO-01: empty server_id returns ESP_ERR_INVALID_STATE (HIFI)");
+
+    /* INFO-02: michi_id missing/empty -> ESP_ERR_INVALID_STATE */
+    CHECK(build_info_json_with_identity(root, &p_std, TEST_STUB_SERVER_ID, NULL, TEST_STUB_PUBKEY_B64) == ESP_ERR_INVALID_STATE,
+          "INFO-02: NULL michi_id returns ESP_ERR_INVALID_STATE (STANDARD)");
+    CHECK(build_info_json_with_identity(root, &p_std, TEST_STUB_SERVER_ID, "", TEST_STUB_PUBKEY_B64) == ESP_ERR_INVALID_STATE,
+          "INFO-02: empty michi_id returns ESP_ERR_INVALID_STATE (STANDARD)");
+    CHECK(build_info_json_with_identity(root, &p_hifi, TEST_STUB_SERVER_ID, NULL, TEST_STUB_PUBKEY_B64) == ESP_ERR_INVALID_STATE,
+          "INFO-02: NULL michi_id returns ESP_ERR_INVALID_STATE (HIFI)");
+    CHECK(build_info_json_with_identity(root, &p_hifi, TEST_STUB_SERVER_ID, "", TEST_STUB_PUBKEY_B64) == ESP_ERR_INVALID_STATE,
+          "INFO-02: empty michi_id returns ESP_ERR_INVALID_STATE (HIFI)");
+
+    /* INFO-03: public_key missing/empty -> ESP_ERR_INVALID_STATE */
+    CHECK(build_info_json_with_identity(root, &p_std, TEST_STUB_SERVER_ID, TEST_STUB_MICHI_ID, NULL) == ESP_ERR_INVALID_STATE,
+          "INFO-03: NULL public_key returns ESP_ERR_INVALID_STATE (STANDARD)");
+    CHECK(build_info_json_with_identity(root, &p_std, TEST_STUB_SERVER_ID, TEST_STUB_MICHI_ID, "") == ESP_ERR_INVALID_STATE,
+          "INFO-03: empty public_key returns ESP_ERR_INVALID_STATE (STANDARD)");
+    CHECK(build_info_json_with_identity(root, &p_hifi, TEST_STUB_SERVER_ID, TEST_STUB_MICHI_ID, NULL) == ESP_ERR_INVALID_STATE,
+          "INFO-03: NULL public_key returns ESP_ERR_INVALID_STATE (HIFI)");
+    CHECK(build_info_json_with_identity(root, &p_hifi, TEST_STUB_SERVER_ID, TEST_STUB_MICHI_ID, "") == ESP_ERR_INVALID_STATE,
+          "INFO-03: empty public_key returns ESP_ERR_INVALID_STATE (HIFI)");
+
+    cJSON_Delete(root);
+}
+
+static void test_info_fail_closed_diagnostic(void)
+{
+    printf("info: fail-closed diagnostic tier missing identity (INFO-DIAG-01..INFO-DIAG-05)\n");
+    michi_product_profile_t p_diag;
+    fill_profile(&p_diag, MICHI_PRODUCT_DIAGNOSTIC, "Michi Music Stream", "0.1.0");
+
+    cJSON *root = cJSON_CreateObject();
+    CHECK(root != NULL, "root created");
+
+    /* INFO-DIAG-01: server_id missing/empty -> ESP_ERR_INVALID_STATE */
+    CHECK(build_info_json_with_identity(root, &p_diag, NULL, TEST_STUB_MICHI_ID, TEST_STUB_PUBKEY_B64) == ESP_ERR_INVALID_STATE,
+          "INFO-DIAG-01: NULL server_id returns ESP_ERR_INVALID_STATE (DIAGNOSTIC)");
+    CHECK(build_info_json_with_identity(root, &p_diag, "", TEST_STUB_MICHI_ID, TEST_STUB_PUBKEY_B64) == ESP_ERR_INVALID_STATE,
+          "INFO-DIAG-01: empty server_id returns ESP_ERR_INVALID_STATE (DIAGNOSTIC)");
+
+    /* INFO-DIAG-02: michi_id missing/empty -> ESP_ERR_INVALID_STATE */
+    CHECK(build_info_json_with_identity(root, &p_diag, TEST_STUB_SERVER_ID, NULL, TEST_STUB_PUBKEY_B64) == ESP_ERR_INVALID_STATE,
+          "INFO-DIAG-02: NULL michi_id returns ESP_ERR_INVALID_STATE (DIAGNOSTIC)");
+    CHECK(build_info_json_with_identity(root, &p_diag, TEST_STUB_SERVER_ID, "", TEST_STUB_PUBKEY_B64) == ESP_ERR_INVALID_STATE,
+          "INFO-DIAG-02: empty michi_id returns ESP_ERR_INVALID_STATE (DIAGNOSTIC)");
+
+    /* INFO-DIAG-03: public_key missing/empty -> ESP_ERR_INVALID_STATE */
+    CHECK(build_info_json_with_identity(root, &p_diag, TEST_STUB_SERVER_ID, TEST_STUB_MICHI_ID, NULL) == ESP_ERR_INVALID_STATE,
+          "INFO-DIAG-03: NULL public_key returns ESP_ERR_INVALID_STATE (DIAGNOSTIC)");
+    CHECK(build_info_json_with_identity(root, &p_diag, TEST_STUB_SERVER_ID, TEST_STUB_MICHI_ID, "") == ESP_ERR_INVALID_STATE,
+          "INFO-DIAG-03: empty public_key returns ESP_ERR_INVALID_STATE (DIAGNOSTIC)");
+
+    /* INFO-DIAG-04: complete identity with DIAGNOSTIC tier -> ESP_OK */
+    cJSON_Delete(root);
+    root = cJSON_CreateObject();
+    CHECK(build_info_json_with_identity(root, &p_diag, TEST_STUB_SERVER_ID, TEST_STUB_MICHI_ID, TEST_STUB_PUBKEY_B64) == ESP_OK,
+          "INFO-DIAG-04: complete identity with DIAGNOSTIC succeeds");
+
+    /* INFO-DIAG-05: verify wire service and identity properties match schema requirements */
+    const cJSON *service = cJSON_GetObjectItem(root, "service");
+    CHECK(service != NULL && strcmp(service->valuestring, "michi-stream-standard") == 0,
+          "INFO-DIAG-05: wire service is michi-stream-standard");
+    const cJSON *sid = cJSON_GetObjectItem(root, "server_id");
+    CHECK(sid != NULL && strcmp(sid->valuestring, TEST_STUB_SERVER_ID) == 0,
+          "INFO-DIAG-05: server_id present");
+    const cJSON *mid = cJSON_GetObjectItem(root, "michi_id");
+    CHECK(mid != NULL && strcmp(mid->valuestring, TEST_STUB_MICHI_ID) == 0,
+          "INFO-DIAG-05: michi_id present");
+    const cJSON *pk = cJSON_GetObjectItem(root, "public_key");
+    CHECK(pk != NULL && strcmp(pk->valuestring, TEST_STUB_PUBKEY_B64) == 0,
+          "INFO-DIAG-05: public_key present");
+    const cJSON *scheme = cJSON_GetObjectItem(root, "identity_scheme");
+    CHECK(scheme != NULL && strcmp(scheme->valuestring, MICHI_IDENTITY_SCHEME) == 0,
+          "INFO-DIAG-05: identity_scheme is MICHI_IDENTITY_SCHEME");
+
+    cJSON_Delete(root);
+}
+
+/* Duplicate of request_id_generate to test formatting logic on host */
+#include "esp_random.h"
+#include <inttypes.h>
+
+static void test_request_id_generate(char *out, size_t out_len)
+{
+    if (out == NULL || out_len < 37) {
+        return;
+    }
+    const uint32_t a = esp_random();
+    const uint32_t b = esp_random();
+    const uint32_t c = esp_random();
+    const uint32_t d = esp_random();
+    const uint32_t e = esp_random();
+    /* UUID v4: time_low - time_mid - 4xxx - (10xx variant) - node. */
+    snprintf(out, out_len, "%08" PRIx32 "-%04x-4%03x-%04x-%04x%08" PRIx32,
+             a,
+             (unsigned int)(b & 0xFFFFu),          /* time_mid */
+             (unsigned int)((b >> 16) & 0xFFFu),   /* version 4 + time_hi */
+             (unsigned int)((c & 0x3FFFu) | 0x8000u), /* variant 10 + clock_seq */
+             (unsigned int)(e & 0xFFFFu),          /* node upper 16 bits */
+             d);                                   /* node lower 32 bits */
+}
+
+static void test_uuid_format(void)
+{
+    printf("uuid: generator format\n");
+    char req_id[37];
+    test_request_id_generate(req_id, sizeof(req_id));
+    
+    CHECK(strlen(req_id) == 36, "length is 36");
+    CHECK(req_id[8] == '-', "hyphen 1");
+    CHECK(req_id[13] == '-', "hyphen 2");
+    CHECK(req_id[18] == '-', "hyphen 3");
+    CHECK(req_id[23] == '-', "hyphen 4");
+    CHECK(req_id[14] == '4', "version 4");
+    
+    char variant = req_id[19];
+    CHECK(variant == '8' || variant == '9' || variant == 'a' || variant == 'b', "variant RFC 4122");
 }
 
 int main(void)
@@ -304,6 +513,9 @@ int main(void)
     test_info_profile_hifi();
     test_info_profile_diagnostic_maps_standard();
     test_info_profile_invalid_args();
+    test_info_fail_closed_missing_identity();
+    test_info_fail_closed_diagnostic();
+    test_uuid_format();
 
     if (failures != 0) {
         printf("\n%d host HTTP/JSON DTO check(s) FAILED\n", failures);

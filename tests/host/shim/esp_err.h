@@ -42,6 +42,24 @@ static inline const char *esp_err_to_name(esp_err_t err)
     }
 }
 
+/* glibc >= 2.38 (and GCC >= 16 headers) declare strlcpy in <string.h>;
+ * only provide the shim when the system does not already have it. */
+#if !defined(__APPLE__) && !defined(__FreeBSD__) && !defined(__OpenBSD__) && !defined(ESP_PLATFORM)
+#include <string.h>
+#if !defined(__GLIBC__) || (__GLIBC__ < 2) || (__GLIBC__ == 2 && __GLIBC_MINOR__ < 38)
+static inline size_t strlcpy(char *dst, const char *src, size_t size)
+{
+    size_t srclen = strlen(src);
+    if (size > 0) {
+        size_t copylen = (srclen >= size) ? size - 1 : srclen;
+        memcpy(dst, src, copylen);
+        dst[copylen] = '\0';
+    }
+    return srclen;
+}
+#endif /* glibc < 2.38 */
+#endif /* !__APPLE__ && !__FreeBSD__ && ... */
+
 #ifdef __cplusplus
 }
 #endif

@@ -3,7 +3,7 @@ idf_component_register(
          "monocypher/monocypher.c" "monocypher/monocypher-ed25519.c"
          "blake3/blake3.c" "blake3/blake3_dispatch.c" "blake3/blake3_portable.c"
     INCLUDE_DIRS "include" "monocypher" "blake3"
-    REQUIRES nvs_flash esp_hw_support
+    REQUIRES nvs_flash esp_hw_support bootloader_support
 )
 
 # BLAKE3 portable-only configuration (see README.md): the official C

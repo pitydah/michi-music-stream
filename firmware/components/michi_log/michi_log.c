@@ -773,27 +773,95 @@ esp_err_t michi_log_start_journal(void)
     }
 
     esp_vfs_spiffs_conf_t conf = {
-        .base_path = MICHI_LOG_SPIFFS_BASE,
+        .base_path       = MICHI_LOG_SPIFFS_BASE,
         .partition_label = MICHI_LOG_SPIFFS_PARTITION,
-        .max_files = 8,
+        .max_files       = 8,
+        /* P0-07 (PR G): format_if_mount_failed MUST stay false.
+         * The implicit format is opaque (no log, no NVS record, no
+         * diagnostic visibility). We do it explicitly below with a
+         * clear log entry and a first-boot-format record in NVS. */
         .format_if_mount_failed = false,
     };
     esp_err_t err = esp_vfs_spiffs_register(&conf);
+
+    /* P0-07: First-boot explicit format path.
+     * If the mount fails on a fresh / erased partition the error is
+     * typically ESP_ERR_NOT_FOUND (no SPIFFS magic found) or
+     * ESP_FAIL. Format once, record the event in NVS for diagnostics,
+     * then retry. If the second mount also fails the journal goes to
+     * the standard degraded path (tail still works). */
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "SPIFFS mount on '%s' failed: %s - journal disabled "
-                      "(tail keeps working); first boot needs a formatted "
-                      "partition",
-                 MICHI_LOG_SPIFFS_PARTITION, esp_err_to_name(err));
-        s_journal_mounted = false;
-        /* F8: a staged crash dump cannot be flushed - abandon it with a
-         * clear reason instead of keeping a dangling staging. */
-        if (s_crash_staging != NULL) {
-            ESP_LOGW(TAG, "crash dump: dump abandoned: spiffs mount failed");
-            heap_caps_free(s_crash_staging);
-            s_crash_staging = NULL;
-            s_crash_staging_len = 0;
+        /* Check whether this looks like a first-boot (no magic). */
+        const bool looks_fresh = (err == ESP_ERR_NOT_FOUND || err == ESP_FAIL ||
+                                  err == ESP_ERR_INVALID_SIZE);
+        if (looks_fresh) {
+            ESP_LOGW(TAG, "SPIFFS mount on '%s' failed (%s): looks like a "
+                          "fresh/erased partition - formatting once (P0-07)",
+                     MICHI_LOG_SPIFFS_PARTITION, esp_err_to_name(err));
+
+            /* Record the format event BEFORE the format so it survives
+             * even if the format itself fails. */
+            nvs_handle_t fh;
+            if (nvs_open(MICHI_LOG_NVS_NS, NVS_READWRITE, &fh) == ESP_OK) {
+                uint32_t fmt_count = 0;
+                nvs_get_u32(fh, "spiffs_fmt_n", &fmt_count);
+                fmt_count++;
+                nvs_set_u32(fh, "spiffs_fmt_n", fmt_count);
+                nvs_commit(fh);
+                nvs_close(fh);
+                ESP_LOGW(TAG, "journal: first-boot SPIFFS format #%u recorded in NVS",
+                         (unsigned)fmt_count);
+            } else {
+                ESP_LOGW(TAG, "journal: could not record first-boot format in NVS");
+            }
+
+            const esp_err_t fmt_err = esp_spiffs_format(MICHI_LOG_SPIFFS_PARTITION);
+            if (fmt_err != ESP_OK) {
+                ESP_LOGE(TAG, "SPIFFS format of '%s' failed: %s - journal "
+                              "disabled (tail keeps working)",
+                         MICHI_LOG_SPIFFS_PARTITION, esp_err_to_name(fmt_err));
+                s_journal_mounted = false;
+                if (s_crash_staging != NULL) {
+                    ESP_LOGW(TAG, "crash dump: abandoned (format failed)");
+                    heap_caps_free(s_crash_staging);
+                    s_crash_staging = NULL;
+                    s_crash_staging_len = 0;
+                }
+                return fmt_err;
+            }
+
+            /* Retry mount on the freshly formatted partition. */
+            err = esp_vfs_spiffs_register(&conf);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "SPIFFS mount on '%s' failed after format: %s - "
+                              "journal disabled (tail keeps working)",
+                         MICHI_LOG_SPIFFS_PARTITION, esp_err_to_name(err));
+                s_journal_mounted = false;
+                if (s_crash_staging != NULL) {
+                    ESP_LOGW(TAG, "crash dump: abandoned (remount failed)");
+                    heap_caps_free(s_crash_staging);
+                    s_crash_staging = NULL;
+                    s_crash_staging_len = 0;
+                }
+                return err;
+            }
+            ESP_LOGI(TAG, "SPIFFS '%s' formatted and mounted on first boot (P0-07)",
+                     MICHI_LOG_SPIFFS_PARTITION);
+        } else {
+            /* Non-fresh failure (hardware, full, corrupted): standard
+             * degraded path - do NOT format, log and return. */
+            ESP_LOGE(TAG, "SPIFFS mount on '%s' failed: %s - journal disabled "
+                          "(tail keeps working)",
+                     MICHI_LOG_SPIFFS_PARTITION, esp_err_to_name(err));
+            s_journal_mounted = false;
+            if (s_crash_staging != NULL) {
+                ESP_LOGW(TAG, "crash dump: abandoned (SPIFFS mount failed)");
+                heap_caps_free(s_crash_staging);
+                s_crash_staging = NULL;
+                s_crash_staging_len = 0;
+            }
+            return err;
         }
-        return err;
     }
     s_journal_mounted = true;
 

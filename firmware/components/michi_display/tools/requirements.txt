@@ -1,0 +1,5 @@
+# Generator dependencies (pinned for reproducibility).
+# The committed font assets (assets/fonts/michi_ui_fonts_data.h) were
+# generated with these exact versions. Changing versions requires
+# regenerating and committing updated assets.
+Pillow==12.2.0

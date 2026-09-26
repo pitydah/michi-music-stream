@@ -43,6 +43,7 @@
 #include "michi_state.h"
 #include "michi_volume_fake.h"
 #include "michi_display_fake.h"
+#include "michi_ota_fake.h"
 
 static int failures = 0;
 
@@ -150,6 +151,7 @@ static void test_start_success(void)
     michi_audio_fake_state_t *fake = test_michi_audio_state();
     CHECK(fake->port_requested == 0, "engine picks the port (port=0)");
     CHECK(fake->ssrc_requested == SSRC, "engine got the exact SSRC");
+    CHECK(fake->buffer_ms_requested == 120, "engine got the negotiated buffer_ms");
     CHECK(strcmp(fake->source_ip_requested, PEER_IP) == 0,
           "engine got the HTTP peer IP");
 
@@ -283,6 +285,22 @@ static void test_start_rejects_invalid(void)
     CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
           "valid start still works");
     cleanup_session();
+
+    /* Boundary and nominal buffer_ms values (50, 300, 500) succeed */
+    p.buffer_ms = 50;
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
+          "buffer 50 succeeds");
+    cleanup_session();
+
+    p.buffer_ms = 300;
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
+          "buffer 300 succeeds");
+    cleanup_session();
+
+    p.buffer_ms = 500;
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
+          "buffer 500 succeeds");
+    cleanup_session();
 }
 
 static void test_patch(void)
@@ -340,6 +358,98 @@ static void test_patch(void)
     cleanup_session();
     CHECK(michi_session_patch(g_token, true, 50, false, false) ==
               ESP_ERR_INVALID_STATE, "patch without session (HTTP: 404)");
+}
+
+static void test_pause_resume_signal_truth(void)
+{
+    printf("michi_session: pause/resume signal truth & patch atomicity (F5)\n");
+    michi_session_start_params_t p = make_params();
+    p.volume = 50;
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK, "start ok");
+    michi_session_info_t info;
+    CHECK(michi_session_get_info(&info) == ESP_OK, "get_info ok");
+    CHECK(!info.paused && info.state == MICHI_SESSION_STATE_PLAYING, "initial state playing");
+
+    /* SESSION-PAUSE-02: Pause failure injected */
+    test_state_reset();
+    test_michi_audio_set_pause_err(ESP_FAIL);
+    CHECK(michi_session_patch(g_token, false, 0, true, true) == ESP_FAIL,
+          "SESSION-PAUSE-02: pause failure returned");
+    CHECK(michi_session_get_info(&info) == ESP_OK, "get_info ok");
+    CHECK(!info.paused && info.state == MICHI_SESSION_STATE_PLAYING,
+          "state remains PLAYING on pause failure");
+    CHECK(!test_michi_audio_state()->paused, "engine not marked paused");
+    CHECK(test_state_post_count(MICHI_EVENT_SESSION_PAUSED) == 0,
+          "no SESSION_PAUSED event posted on pause failure");
+
+    /* SESSION-PAUSE-01: Normal pause succeeds */
+    test_state_reset();
+    CHECK(michi_session_patch(g_token, false, 0, true, true) == ESP_OK,
+          "SESSION-PAUSE-01: pause succeeds");
+    CHECK(michi_session_get_info(&info) == ESP_OK, "get_info ok");
+    CHECK(info.paused && info.state == MICHI_SESSION_STATE_PAUSED,
+          "state is PAUSED");
+    CHECK(test_michi_audio_state()->paused, "engine marked paused");
+    CHECK(test_state_post_count(MICHI_EVENT_SESSION_PAUSED) == 1,
+          "SESSION_PAUSED event posted");
+
+    /* SESSION-RESUME-02: Resume failure injected */
+    test_state_reset();
+    test_michi_audio_set_pause_err(ESP_FAIL);
+    CHECK(michi_session_patch(g_token, false, 0, true, false) == ESP_FAIL,
+          "SESSION-RESUME-02: resume failure returned");
+    CHECK(michi_session_get_info(&info) == ESP_OK, "get_info ok");
+    CHECK(info.paused && info.state == MICHI_SESSION_STATE_PAUSED,
+          "state remains PAUSED on resume failure");
+    CHECK(test_state_post_count(MICHI_EVENT_SESSION_RESUMED) == 0,
+          "no SESSION_RESUMED event posted on resume failure");
+
+    /* SESSION-RESUME-01: Normal resume succeeds */
+    test_state_reset();
+    CHECK(michi_session_patch(g_token, false, 0, true, false) == ESP_OK,
+          "SESSION-RESUME-01: resume succeeds");
+    CHECK(michi_session_get_info(&info) == ESP_OK, "get_info ok");
+    CHECK(!info.paused && info.state == MICHI_SESSION_STATE_PLAYING,
+          "state is PLAYING");
+    CHECK(!test_michi_audio_state()->paused, "engine resumed");
+    CHECK(test_state_post_count(MICHI_EVENT_SESSION_RESUMED) == 1,
+          "SESSION_RESUMED event posted");
+
+    /* SESSION-PATCH-ATOMIC-01: Multi-field patch atomicity with pause failure */
+    test_state_reset();
+    test_michi_audio_set_pause_err(ESP_FAIL);
+    CHECK(michi_session_patch(g_token, true, 80, true, true) == ESP_FAIL,
+          "SESSION-PATCH-ATOMIC-01: multi-field patch with pause failure fails");
+    CHECK(michi_session_get_info(&info) == ESP_OK, "get_info ok");
+    CHECK(info.volume == 50, "volume unmutated on pause failure (still 50, not 80)");
+    CHECK(!info.paused && info.state == MICHI_SESSION_STATE_PLAYING,
+          "state unmutated on pause failure");
+    CHECK(test_state_post_count(MICHI_EVENT_SESSION_PAUSED) == 0,
+          "no SESSION_PAUSED event posted");
+
+    cleanup_session();
+}
+
+static void test_session_stop_failure_revert(void)
+{
+    printf("michi_session: stop failure reverts state (F6)\n");
+    michi_session_start_params_t p = make_params();
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK, "start ok");
+    michi_session_info_t info;
+    CHECK(michi_session_get_info(&info) == ESP_OK, "get_info ok");
+    CHECK(info.state == MICHI_SESSION_STATE_PLAYING, "session playing");
+
+    /* Inject failure into michi_audio_session_stop() */
+    test_michi_audio_set_stop_err(ESP_FAIL);
+    CHECK(michi_session_stop(g_token) == ESP_FAIL, "stop reports failure");
+    CHECK(michi_session_active(), "session still active because stop failed");
+    CHECK(michi_session_get_info(&info) == ESP_OK, "get_info ok");
+    CHECK(info.state == MICHI_SESSION_STATE_PLAYING,
+          "session state reverted back to PLAYING from STOPPING");
+
+    /* Now clean stop */
+    CHECK(michi_session_stop(g_token) == ESP_OK, "subsequent stop succeeds");
+    CHECK(!michi_session_active(), "session inactive");
 }
 
 static void test_metrics_mapping(void)
@@ -443,6 +553,12 @@ static void test_ota_gate_and_abort(void)
               ESP_ERR_INVALID_STATE, "start rejected while UPDATING");
     test_state_set(MICHI_STATE_IDLE);
 
+    /* Subsystem check: rejected if michi_ota_busy() is true even while in IDLE */
+    michi_ota_fake_set_busy(true);
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) ==
+              ESP_ERR_INVALID_STATE, "start rejected while michi_ota_busy() == true");
+    michi_ota_fake_set_busy(false);
+
     CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
           "start ok");
     CHECK(michi_session_abort("ota update") == ESP_OK, "abort ok");
@@ -466,31 +582,31 @@ static void test_heartbeat(void)
     memcpy(g_session_id, info.session_id, sizeof(g_session_id));
 
     /* Malformed/wrong credential (HTTP 401) and id mismatch (HTTP 404). */
-    CHECK(michi_session_heartbeat("not-a-token", g_session_id, 1) ==
+    CHECK(michi_session_heartbeat("not-a-token", g_session_id, 1, PEER_IP) ==
               MICHI_SESSION_HEARTBEAT_TOKEN_MISMATCH,
           "malformed token rejected (401)");
     CHECK(michi_session_heartbeat(
               "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", g_session_id,
-              1) == MICHI_SESSION_HEARTBEAT_TOKEN_MISMATCH,
+              1, PEER_IP) == MICHI_SESSION_HEARTBEAT_TOKEN_MISMATCH,
           "wrong token rejected (401)");
     CHECK(michi_session_heartbeat(
               g_token, "550e8400-e29b-41d4-a716-446655440003",
-              1) == MICHI_SESSION_HEARTBEAT_SESSION_MISMATCH,
+              1, PEER_IP) == MICHI_SESSION_HEARTBEAT_SESSION_MISMATCH,
           "foreign session_id rejected (404)");
 
     /* First heartbeat: any sequence value is valid (e.g. 0). */
-    CHECK(michi_session_heartbeat(g_token, g_session_id, 0) ==
+    CHECK(michi_session_heartbeat(g_token, g_session_id, 0, PEER_IP) ==
               MICHI_SESSION_HEARTBEAT_OK,
           "first heartbeat (seq 0) renews");
     /* Strictly increasing: seq 1 renews. */
-    CHECK(michi_session_heartbeat(g_token, g_session_id, 1) ==
+    CHECK(michi_session_heartbeat(g_token, g_session_id, 1, PEER_IP) ==
               MICHI_SESSION_HEARTBEAT_OK,
           "increasing sequence renews");
     /* Repeated and older: 409, no renew. */
-    CHECK(michi_session_heartbeat(g_token, g_session_id, 1) ==
+    CHECK(michi_session_heartbeat(g_token, g_session_id, 1, PEER_IP) ==
               MICHI_SESSION_HEARTBEAT_SEQUENCE_REPLAY,
           "repeated sequence rejected (409)");
-    CHECK(michi_session_heartbeat(g_token, g_session_id, 0) ==
+    CHECK(michi_session_heartbeat(g_token, g_session_id, 0, PEER_IP) ==
               MICHI_SESSION_HEARTBEAT_SEQUENCE_REPLAY,
           "older sequence rejected (409)");
 
@@ -501,7 +617,7 @@ static void test_heartbeat(void)
     CHECK(!michi_session_active(), "session closed by the watchdog");
     CHECK(michi_session_lease_expirations() == before + 1,
           "lease_expirations incremented once");
-    CHECK(michi_session_heartbeat(g_token, g_session_id, 99) ==
+    CHECK(michi_session_heartbeat(g_token, g_session_id, 99, PEER_IP) ==
               MICHI_SESSION_HEARTBEAT_NO_SESSION,
           "heartbeat after expiry finds no session (404)");
 
@@ -520,7 +636,7 @@ static void test_heartbeat_renewal_extends(void)
 
     /* Renew at t=25 s: the window extends to t=55 s. */
     test_esp_timer_advance(25LL * 1000 * 1000);
-    CHECK(michi_session_heartbeat(g_token, g_session_id, 7) ==
+    CHECK(michi_session_heartbeat(g_token, g_session_id, 7, PEER_IP) ==
               MICHI_SESSION_HEARTBEAT_OK, "heartbeat at t=25 renews");
     test_esp_timer_advance(20LL * 1000 * 1000); /* t=45: old deadline */
     CHECK(michi_session_active(), "still alive after the OLD deadline");
@@ -549,7 +665,7 @@ static void test_lease_remaining_real(void)
           "20000 ms remaining (monotonic, floor)");
 
     /* Renewal resets the window. */
-    CHECK(michi_session_heartbeat(g_token, info.session_id, 1) ==
+    CHECK(michi_session_heartbeat(g_token, info.session_id, 1, PEER_IP) ==
               MICHI_SESSION_HEARTBEAT_OK, "heartbeat renews");
     CHECK(michi_session_get_info(&info) == ESP_OK, "get_info ok");
     CHECK(info.lease_remaining_ms == 30000, "30000 ms after renewal");
@@ -558,6 +674,43 @@ static void test_lease_remaining_real(void)
     test_esp_timer_advance(31LL * 1000 * 1000);
     CHECK(michi_session_get_info(&info) == ESP_ERR_INVALID_STATE,
           "get_info: no session after expiry (HTTP 404)");
+
+    cleanup_session();
+}
+
+static void test_heartbeat_peer_ip_policy(void)
+{
+    printf("michi_session: heartbeat rejects differing peer IP with conflict (R2-K)\n");
+    michi_session_start_params_t p = make_params();
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
+          "start ok (t=0)");
+    michi_session_info_t info;
+    CHECK(michi_session_get_info(&info) == ESP_OK, "get_info ok");
+    memcpy(g_session_id, info.session_id, sizeof(g_session_id));
+
+    /* Matching IP succeeds and renews lease */
+    CHECK(michi_session_heartbeat(g_token, g_session_id, 1, PEER_IP) ==
+              MICHI_SESSION_HEARTBEAT_OK, "matching peer IP renews");
+
+    /* NULL peer IP fails fail closed with SOURCE_MISMATCH (403) */
+    CHECK(michi_session_heartbeat(g_token, g_session_id, 2, NULL) ==
+              MICHI_SESSION_HEARTBEAT_SOURCE_MISMATCH,
+          "NULL peer IP rejected fail closed (403)");
+
+    /* Empty peer IP fails fail closed with SOURCE_MISMATCH (403) */
+    CHECK(michi_session_heartbeat(g_token, g_session_id, 2, "") ==
+              MICHI_SESSION_HEARTBEAT_SOURCE_MISMATCH,
+          "empty peer IP rejected fail closed (403)");
+
+    /* Differing IP fails with SOURCE_MISMATCH (403) */
+    CHECK(michi_session_heartbeat(g_token, g_session_id, 2, "192.168.4.99") ==
+              MICHI_SESSION_HEARTBEAT_SOURCE_MISMATCH,
+          "differing peer IP rejected with 403");
+
+    /* Heartbeat with differing IP did NOT consume sequence or renew lease:
+     * Legitimate peer can still send sequence 2 */
+    CHECK(michi_session_heartbeat(g_token, g_session_id, 2, PEER_IP) ==
+              MICHI_SESSION_HEARTBEAT_OK, "legitimate peer can send seq 2");
 
     cleanup_session();
 }
@@ -640,6 +793,10 @@ int main(void)
     reset_all();
     test_patch();
     reset_all();
+    test_pause_resume_signal_truth();
+    reset_all();
+    test_session_stop_failure_revert();
+    reset_all();
     test_metrics_mapping();
     reset_all();
     test_stop_and_new_session();
@@ -649,6 +806,8 @@ int main(void)
     test_ota_gate_and_abort();
     reset_all();
     test_heartbeat();
+    reset_all();
+    test_heartbeat_peer_ip_policy();
     reset_all();
     test_heartbeat_renewal_extends();
     reset_all();

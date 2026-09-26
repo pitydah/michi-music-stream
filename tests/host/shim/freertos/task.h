@@ -17,11 +17,12 @@ extern "C" {
 typedef void (*TaskFunction_t)(void *arg);
 typedef struct michi_shim_task michi_shim_task_t;
 typedef michi_shim_task_t *TaskHandle_t;
-typedef int BaseType_t;
 
-#define pdPASS ((BaseType_t)1)
-#define pdFALSE ((BaseType_t)0)
-#define pdTRUE ((BaseType_t)1)
+extern bool g_test_fail_task_create;
+static inline void test_task_set_create_fail(bool fail)
+{
+    g_test_fail_task_create = fail;
+}
 
 BaseType_t xTaskCreate(TaskFunction_t fn, const char *name,
                        uint32_t stack_bytes, void *arg, int priority,
@@ -31,13 +32,49 @@ BaseType_t xTaskCreate(TaskFunction_t fn, const char *name,
  * pattern michi_time uses). */
 void vTaskDelete(TaskHandle_t task);
 
-/* No-op stand-in (the pairing component's 50 ms wait only runs on a
- * full event queue, which the fake state bus never has). */
+#include <unistd.h>
+
+/* Real delay for host shim so cooperative yields/waits work. */
 static inline void vTaskDelay(uint32_t ticks)
 {
-    (void)ticks;
+    test_freertos_check_critical("vTaskDelay");
+    usleep((useconds_t)ticks * 1000);
 }
+
+
+typedef enum {
+    eNoAction = 0,
+    eSetBits,
+    eIncrement,
+    eSetValueWithOverwrite,
+    eSetValueWithoutOverwrite
+} eNotifyAction;
+
+BaseType_t xTaskNotify(TaskHandle_t xTaskToNotify, uint32_t ulValue, eNotifyAction eAction);
+BaseType_t xTaskNotifyFromISR(TaskHandle_t xTaskToNotify, uint32_t ulValue, eNotifyAction eAction,
+                              BaseType_t *pxHigherPriorityTaskWoken);
+BaseType_t xTaskNotifyWait(uint32_t ulBitsToClearOnEntry, uint32_t ulBitsToClearOnExit,
+                           uint32_t *pulNotificationValue, TickType_t xTicksToWait);
+TaskHandle_t xTaskGetCurrentTaskHandle(void);
+
+static inline void xTaskNotifyGive(TaskHandle_t task)
+{
+    (void)xTaskNotify(task, 0, eIncrement);
+}
+
+uint32_t ulTaskNotifyTake(BaseType_t clear_count, TickType_t ticks);
+
+/* Test diagnostic hooks to detect stale task handle usage and external delete */
+uint32_t test_task_invalid_notify_count(void);
+void test_task_reset_invalid_notify_count(void);
+uint32_t test_task_external_delete_count(void);
+void test_task_reset_external_delete_count(void);
 
 #ifdef __cplusplus
 }
 #endif
+
+/* Shim for portYIELD_FROM_ISR */
+static inline void portYIELD_FROM_ISR(void) {
+    /* No-op in shim */
+}

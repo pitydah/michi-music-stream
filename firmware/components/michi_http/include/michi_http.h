@@ -10,6 +10,7 @@
 
 #include "michi_product_profile.h"
 #include "michi_session.h"
+#include "michi_audio.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,15 +25,14 @@ extern "C" {
  * /api/v1/receiver-lite/session, /heartbeat, /now-playing,
  * /diagnostics and /firmware. No legacy route is kept.
  *
- * /server/info emits the exact receiver v1-lite profile (build_info_json;
- * the identity group is NOT emitted yet - it requires the persistent
- * Ed25519 identity of michi_identity, MS-04). Receiver-button pairing
- * (MS-06), the canonical RTP session (MS-07) and the heartbeat lease
- * (MS-08) are implemented; the certified now-playing payload and the
- * OTA flow answer 501 NOT_IMPLEMENTED after the route-table auth and
- * the strict JSON body gate, and the matching feature flag in
- * /server/info is false. Diagnostics is implemented (its response shape
- * is not frozen by the contract).
+ * /server/info emits the exact receiver v1-lite profile (build_info_json,
+ * including the persistent Ed25519 identity group of michi_identity).
+ * Receiver-button pairing (MS-06), the canonical RTP session (MS-07)
+ * and the heartbeat lease (MS-08) are implemented; the certified
+ * now-playing payload and the OTA flow answer 501 NOT_IMPLEMENTED
+ * after the route-table auth and the strict JSON body gate, and the
+ * matching feature flag in /server/info is false. Diagnostics is
+ * implemented (its response shape is not frozen by the contract).
  *
  * Every error response uses the single canonical envelope
  * {error:{code,message,request_id,details}} built by
@@ -65,6 +65,22 @@ extern "C" {
  * handler.
  * ------------------------------------------------------------------
  */
+
+#define MICHI_HTTP_PORT 80
+#define MICHI_HTTP_RECV_WAIT_TIMEOUT_S 1
+#define MICHI_HTTP_SEND_WAIT_TIMEOUT_S 5
+#define MICHI_HTTP_RECV_TIMEOUT_RETRIES 1  /* single timeout retry */
+#define MICHI_HTTP_BODY_TOTAL_TIMEOUT_MS 2000 /* anti-slowloris: total body deadline */
+
+/**
+ * @brief Configure httpd settings with Michi defaults.
+ *
+ * Sets port 80, LRU purge, 16 max URI handlers, 8192 stack size, 1s recv
+ * and 5s send socket timeouts to bound stalled client blocking and slowloris.
+ *
+ * @param cfg httpd_config_t structure to populate.
+ */
+void michi_http_configure_defaults(httpd_config_t *cfg);
 
 /**
  * @brief Start the HTTP server and register the canonical endpoints.
@@ -168,16 +184,10 @@ esp_err_t michi_http_build_error(cJSON **out_root, const char *code,
  * @brief Build the exact receiver v1-lite info profile into root
  *        (contract section 2.1).
  *
- * service is derived from the profile tier (michi-stream-standard or
- * michi-stream-hifi); name, version, api_version ("v1-lite"), roles
- * (["audio_receiver"]), auth (RECEIVER_BUTTON), the truthful feature
- * flags and the certified audio block follow. The feature flags are read
- * from michi_product_profile_capabilities() - the single canonical
- * source shared with the discovery announce (no duplicated literals).
- * The identity group
- * (server_id/identity_scheme/michi_id/public_key) is NOT emitted: it
- * requires the persistent Ed25519 identity (MS-04). Pure cJSON +
- * michi_product_profile_t: compiled and tested by the host-side tests.
+ * Emits the full contract surface required by server-info.schema.json:
+ * service, name, version, api_version ("v1-lite"), roles (["audio_receiver"]),
+ * auth (RECEIVER_BUTTON), truthful features, the identity group
+ * (server_id, identity_scheme, michi_id, public_key) and the certified audio block.
  *
  * @param root Target object (fresh, empty).
  * @param p    Current product profile snapshot.
@@ -185,6 +195,23 @@ esp_err_t michi_http_build_error(cJSON **out_root, const char *code,
  *         ESP_ERR_INVALID_ARG on NULL args.
  */
 esp_err_t build_info_json(cJSON *root, const michi_product_profile_t *p);
+
+/**
+ * @brief Build the receiver v1-lite info profile into root with explicitly
+ *        provided identity fields (host-testable without NVS/discovery state).
+ *
+ * @param root       Target object.
+ * @param p          Current product profile snapshot.
+ * @param server_id  Server UUID (or NULL if identity unavailable).
+ * @param michi_id   Base64url michi_id (or NULL if unavailable).
+ * @param public_key Base64url Ed25519 public key (or NULL if unavailable).
+ * @return ESP_OK; ESP_ERR_NO_MEM on allocation failure;
+ *         ESP_ERR_INVALID_ARG on NULL args.
+ */
+esp_err_t build_info_json_with_identity(cJSON *root, const michi_product_profile_t *p,
+                                        const char *server_id,
+                                        const char *michi_id,
+                                        const char *public_key);
 
 /**
  * @brief Send the single canonical error response.

@@ -21,3 +21,9 @@ esp_err_t michi_display_clear_now_playing(void)
     s_clear_count++;
     return ESP_OK;
 }
+
+esp_err_t michi_display_set_pairing_overlay(int overlay)
+{
+    (void)overlay;
+    return ESP_OK; /* ESP_OK */
+}

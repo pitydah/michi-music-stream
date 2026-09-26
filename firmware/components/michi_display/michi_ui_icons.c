@@ -19,6 +19,7 @@ static const michi_ui_icon_glyph_t s_icons[MICHI_UI_ICON_COUNT]
                                           [MICHI_UI_ICON_SIZE_COUNT] = {
     [MICHI_UI_ICON_CAT] = {
         [MICHI_UI_ICON_SIZE_12] = { 12, 12, michi_ui_icon_cat_12 },
+        [MICHI_UI_ICON_SIZE_16] = { 16, 16, michi_ui_icon_cat_16 },
         [MICHI_UI_ICON_SIZE_20] = { 20, 20, michi_ui_icon_cat_20 },
         [MICHI_UI_ICON_SIZE_24] = { 24, 24, michi_ui_icon_cat_24 },
         [MICHI_UI_ICON_SIZE_32] = { 32, 32, michi_ui_icon_cat_32 },
@@ -26,56 +27,67 @@ static const michi_ui_icon_glyph_t s_icons[MICHI_UI_ICON_COUNT]
     },
     [MICHI_UI_ICON_WIFI] = {
         [MICHI_UI_ICON_SIZE_12] = { 12, 12, michi_ui_icon_wifi_12 },
+        [MICHI_UI_ICON_SIZE_16] = { 16, 16, michi_ui_icon_wifi_16 },
         [MICHI_UI_ICON_SIZE_20] = { 20, 20, michi_ui_icon_wifi_20 },
         [MICHI_UI_ICON_SIZE_32] = { 32, 32, michi_ui_icon_wifi_32 },
     },
     [MICHI_UI_ICON_SERVER] = {
         [MICHI_UI_ICON_SIZE_12] = { 12, 12, michi_ui_icon_server_12 },
+        [MICHI_UI_ICON_SIZE_16] = { 16, 16, michi_ui_icon_server_16 },
         [MICHI_UI_ICON_SIZE_20] = { 20, 20, michi_ui_icon_server_20 },
         [MICHI_UI_ICON_SIZE_32] = { 32, 32, michi_ui_icon_server_32 },
     },
     [MICHI_UI_ICON_SPEAKER] = {
         [MICHI_UI_ICON_SIZE_12] = { 12, 12, michi_ui_icon_speaker_12 },
+        [MICHI_UI_ICON_SIZE_16] = { 16, 16, michi_ui_icon_speaker_16 },
         [MICHI_UI_ICON_SIZE_20] = { 20, 20, michi_ui_icon_speaker_20 },
         [MICHI_UI_ICON_SIZE_32] = { 32, 32, michi_ui_icon_speaker_32 },
     },
     [MICHI_UI_ICON_PLAY] = {
         [MICHI_UI_ICON_SIZE_12] = { 12, 12, michi_ui_icon_play_12 },
+        [MICHI_UI_ICON_SIZE_16] = { 16, 16, michi_ui_icon_play_16 },
         [MICHI_UI_ICON_SIZE_20] = { 20, 20, michi_ui_icon_play_20 },
         [MICHI_UI_ICON_SIZE_32] = { 32, 32, michi_ui_icon_play_32 },
     },
     [MICHI_UI_ICON_PAUSE] = {
         [MICHI_UI_ICON_SIZE_12] = { 12, 12, michi_ui_icon_pause_12 },
+        [MICHI_UI_ICON_SIZE_16] = { 16, 16, michi_ui_icon_pause_16 },
         [MICHI_UI_ICON_SIZE_20] = { 20, 20, michi_ui_icon_pause_20 },
         [MICHI_UI_ICON_SIZE_32] = { 32, 32, michi_ui_icon_pause_32 },
     },
     [MICHI_UI_ICON_PAIR] = {
         [MICHI_UI_ICON_SIZE_12] = { 12, 12, michi_ui_icon_pair_12 },
+        [MICHI_UI_ICON_SIZE_16] = { 16, 16, michi_ui_icon_pair_16 },
         [MICHI_UI_ICON_SIZE_20] = { 20, 20, michi_ui_icon_pair_20 },
         [MICHI_UI_ICON_SIZE_32] = { 32, 32, michi_ui_icon_pair_32 },
     },
     [MICHI_UI_ICON_BUTTON] = {
         [MICHI_UI_ICON_SIZE_12] = { 12, 12, michi_ui_icon_button_12 },
+        [MICHI_UI_ICON_SIZE_16] = { 16, 16, michi_ui_icon_button_16 },
         [MICHI_UI_ICON_SIZE_20] = { 20, 20, michi_ui_icon_button_20 },
         [MICHI_UI_ICON_SIZE_32] = { 32, 32, michi_ui_icon_button_32 },
     },
     [MICHI_UI_ICON_WARNING] = {
         [MICHI_UI_ICON_SIZE_12] = { 12, 12, michi_ui_icon_warning_12 },
+        [MICHI_UI_ICON_SIZE_16] = { 16, 16, michi_ui_icon_warning_16 },
         [MICHI_UI_ICON_SIZE_20] = { 20, 20, michi_ui_icon_warning_20 },
         [MICHI_UI_ICON_SIZE_32] = { 32, 32, michi_ui_icon_warning_32 },
     },
     [MICHI_UI_ICON_ERROR] = {
         [MICHI_UI_ICON_SIZE_12] = { 12, 12, michi_ui_icon_error_12 },
+        [MICHI_UI_ICON_SIZE_16] = { 16, 16, michi_ui_icon_error_16 },
         [MICHI_UI_ICON_SIZE_20] = { 20, 20, michi_ui_icon_error_20 },
         [MICHI_UI_ICON_SIZE_32] = { 32, 32, michi_ui_icon_error_32 },
     },
     [MICHI_UI_ICON_UPDATE] = {
         [MICHI_UI_ICON_SIZE_12] = { 12, 12, michi_ui_icon_update_12 },
+        [MICHI_UI_ICON_SIZE_16] = { 16, 16, michi_ui_icon_update_16 },
         [MICHI_UI_ICON_SIZE_20] = { 20, 20, michi_ui_icon_update_20 },
         [MICHI_UI_ICON_SIZE_32] = { 32, 32, michi_ui_icon_update_32 },
     },
     [MICHI_UI_ICON_WAVE] = {
         [MICHI_UI_ICON_SIZE_12] = { 12, 12, michi_ui_icon_wave_12 },
+        [MICHI_UI_ICON_SIZE_16] = { 16, 16, michi_ui_icon_wave_16 },
         [MICHI_UI_ICON_SIZE_20] = { 20, 20, michi_ui_icon_wave_20 },
         [MICHI_UI_ICON_SIZE_32] = { 32, 32, michi_ui_icon_wave_32 },
     },

@@ -31,8 +31,24 @@ typedef struct michi_shim_sem {
 
 typedef michi_shim_sem_t *SemaphoreHandle_t;
 
+__attribute__((weak)) bool g_test_fail_create_mutex = false;
+__attribute__((weak)) bool g_test_fail_create_binary_sem = false;
+
+static inline void test_semphr_set_fail_create_mutex(bool fail)
+{
+    g_test_fail_create_mutex = fail;
+}
+
+static inline void test_semphr_set_fail_create_binary(bool fail)
+{
+    g_test_fail_create_binary_sem = fail;
+}
+
 static inline SemaphoreHandle_t xSemaphoreCreateMutex(void)
 {
+    if (g_test_fail_create_mutex) {
+        return NULL;
+    }
     michi_shim_sem_t *s = (michi_shim_sem_t *)calloc(1, sizeof(*s));
     if (s == NULL) {
         return NULL;
@@ -47,6 +63,9 @@ static inline SemaphoreHandle_t xSemaphoreCreateMutex(void)
 
 static inline SemaphoreHandle_t xSemaphoreCreateBinary(void)
 {
+    if (g_test_fail_create_binary_sem) {
+        return NULL;
+    }
     michi_shim_sem_t *s = (michi_shim_sem_t *)calloc(1, sizeof(*s));
     if (s == NULL) {
         return NULL;
@@ -63,6 +82,7 @@ static inline SemaphoreHandle_t xSemaphoreCreateBinary(void)
 
 static inline bool xSemaphoreTake(SemaphoreHandle_t h, uint32_t timeout)
 {
+    test_freertos_check_critical("xSemaphoreTake");
     if (h == NULL) {
         return false;
     }
@@ -103,6 +123,7 @@ static inline bool xSemaphoreTake(SemaphoreHandle_t h, uint32_t timeout)
 
 static inline bool xSemaphoreGive(SemaphoreHandle_t h)
 {
+    test_freertos_check_critical("xSemaphoreGive");
     if (h == NULL) {
         return false;
     }
@@ -118,8 +139,18 @@ static inline bool xSemaphoreGive(SemaphoreHandle_t h)
     return true;
 }
 
+static inline bool xSemaphoreGiveFromISR(SemaphoreHandle_t h, BaseType_t *pxHigherPriorityTaskWoken)
+{
+    test_freertos_check_critical("xSemaphoreGiveFromISR");
+    if (pxHigherPriorityTaskWoken != NULL) {
+        *pxHigherPriorityTaskWoken = pdFALSE;
+    }
+    return xSemaphoreGive(h);
+}
+
 static inline void vSemaphoreDelete(SemaphoreHandle_t h)
 {
+    test_freertos_check_critical("vSemaphoreDelete");
     /* TEST-ONLY contract: callers never delete a semaphore while a task
      * is blocked on it (michi_time joins its task first). */
     if (h == NULL) {
@@ -131,6 +162,7 @@ static inline void vSemaphoreDelete(SemaphoreHandle_t h)
     pthread_mutex_destroy(&h->mutex);
     free(h);
 }
+
 
 #ifdef __cplusplus
 }
