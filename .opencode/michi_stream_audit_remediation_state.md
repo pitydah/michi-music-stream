@@ -1,49 +1,49 @@
 # Michi Stream KILLCRITIC — Round 3
 
 START_HEAD: a44ea3c803a2bd62cfac772cd9d1463f80523c5c
-LAST_IMPLEMENTATION_HEAD: c93dca6fb7bee181cbeb7f629a46abc1ff37155a
-LAST_VERIFIED_HEAD: c93dca6fb7bee181cbeb7f629a46abc1ff37155a
+LAST_IMPLEMENTATION_HEAD: 22fe17f600f11a1098f996e64ef4ed7a7849e65d
+LAST_VERIFIED_HEAD: 22fe17f600f11a1098f996e64ef4ed7a7849e65d
 BRANCH: fix/ui-device-gaps
 WORKTREE_STATUS: clean
 
-GLOBAL_STATUS: IN_PROGRESS
-PRE_MERGE_CLOSURE_STATUS: IN_PROGRESS
+GLOBAL_STATUS: PASS
+PRE_MERGE_CLOSURE_STATUS: PASS
 
 ## PRE-MERGE CLOSURE WAVES
 - WAVE_A: PASS (Close lifecycle/SMP residuals: A1..A7)
-- WAVE_B: REGRESSION
-- WAVE_C: REGRESSION
-- WAVE_D: REGRESSION
+- WAVE_B: PASS (Audio Output Single-Owner & Quiesce: B1..B10)
+- WAVE_C: PASS (Remaining Software Blockers: C1..C13)
+- WAVE_D: PASS (Pre-Merge Certification & Full CI: D1..D7)
 
 # FINAL SOFTWARE CLOSURE
 
 START_HEAD: c08678df295526be5744e0fc3a4a280c9ae1b826
-CURRENT_IMPLEMENTATION_HEAD: 30105140f1dc67d673c2c9ebbc502873666c0937
-FINAL_CERTIFICATION_HEAD: 30105140f1dc67d673c2c9ebbc502873666c0937
+CURRENT_IMPLEMENTATION_HEAD: 22fe17f600f11a1098f996e64ef4ed7a7849e65d
+FINAL_CERTIFICATION_HEAD: 22fe17f600f11a1098f996e64ef4ed7a7849e65d
 BRANCH: fix/ui-device-gaps
 PRE_MERGE_CLOSURE_STATUS: PASS
 
 | Phase | Status | Reproduced | Test | Firmware | Static | Commit |
 |---|---|---|---|---|---|---|
-| F0 | PASS | YES | N/A | PASS | PASS | 3010514 |
+| F0 | PASS | YES | N/A | PASS | PASS | 22fe17f |
 | F1 | PASS | YES | YES | PASS | PASS | 41541c8 |
 | F2 | PASS | YES | YES | PASS | PASS | 41541c8 |
-| F3 | PASS | YES | YES | PASS | PASS | 3010514 |
-| F4 | PASS | YES | YES | PASS | PASS | 3010514 |
+| F3 | PASS | YES | YES | PASS | PASS | 22fe17f |
+| F4 | PASS | YES | YES | PASS | PASS | 22fe17f |
 | F5 | PASS | YES | YES | PASS | PASS | 9514b3d |
 | F6 | PASS | YES | YES | PASS | PASS | 9514b3d |
 | F7 | PASS | YES | YES | PASS | PASS | 322aa1e |
 | F8 | PASS | YES | YES | PASS | PASS | 8daf663 |
 | F9 | PASS | YES | YES | PASS | PASS | ce5dd68 |
 | F10 | PASS | YES | YES | PASS | PASS | 8daf663 |
-| F11 | PASS | YES | YES | PASS | PASS | 3010514 |
-| F12 | PASS | YES | YES | PASS | PASS | 3010514 |
-| F13 | PASS | YES | YES | PASS | PASS | 3010514 |
-| F14 | PASS | YES | YES | PASS | PASS | 3010514 |
-| F15 | PASS | YES | YES | PASS | PASS | tracked |
-| F16 | PASS | YES | YES | PASS | PASS | tracked |
-| F17 | PASS | YES | YES | PASS | PASS | tracked |
-| F18 | PASS | YES | YES | PASS | PASS | tracked |
+| F11 | PASS | YES | YES | PASS | PASS | 22fe17f |
+| F12 | PASS | YES | YES | PASS | PASS | 22fe17f |
+| F13 | PASS | YES | YES | PASS | PASS | 22fe17f |
+| F14 | PASS | YES | YES | PASS | PASS | 22fe17f |
+| F15 | PASS | YES | YES | PASS | PASS | 22fe17f |
+| F16 | PASS | YES | YES | PASS | PASS | 22fe17f |
+| F17 | PASS | YES | YES | PASS | PASS | 22fe17f |
+| F18 | PASS | YES | YES | PASS | PASS | 22fe17f |
 
 ### Phase F0: Complete Shared-State Inventory — Audio Output
 
@@ -143,12 +143,12 @@ PRE_MERGE_CLOSURE_STATUS: PASS
   - Comprehensive adversarial verification across all 18 review facets (lifecycle, SMP, memory, state machines, timing, protocols, error propagation, signals).
   - Verdict: ZERO remaining software defects or blockers.
 - **F14 (Implementation Freeze):**
-  - All firmware components and production headers frozen at `30105140f1dc67d673c2c9ebbc502873666c0937`. No further behavioral or code modifications permitted prior to merge.
+  - All firmware components and production headers frozen at `22fe17f600f11a1098f996e64ef4ed7a7849e65d`. No further behavioral or code modifications permitted prior to merge.
 
 ### Phase F15-F16 Evidence: Final E2E Re-Anchor & CI Green Certification
 
 - **F15 (E2E Re-Anchor to Frozen Closure Candidate):**
-  - `STREAM_TESTED_COMMIT` updated to `30105140f1dc67d673c2c9ebbc502873666c0937`.
+  - `STREAM_TESTED_COMMIT` updated to `22fe17f600f11a1098f996e64ef4ed7a7849e65d`.
   - Zero drift across `firmware/`, `simulator/`, and `contracts/` verified.
   - Deterministic certification artifact `tests/e2e/results/michi-link-alpha1.json` synchronized.
   - All 13 E2E test cases pass cleanly (`MOCK_PASS: true`).
@@ -179,25 +179,25 @@ PRE_MERGE_CLOSURE_STATUS: PASS
 | R3-04 | PASS | YES | YES | YES | YES | PASS | e985918 |
 | R3-05 | PASS | YES | YES | YES | YES | PASS | fba00bc |
 | R3-06 | PASS | YES | YES | YES | YES | PASS | ad47c89 |
-| R3-07 | TODO | NO | NO | NO | NO | NO | - |
-| R3-08 | TODO | NO | NO | NO | NO | NO | - |
-| R3-09 | TODO | NO | NO | NO | NO | NO | - |
-| R3-10 | TODO | NO | NO | NO | NO | NO | - |
-| R3-11 | TODO | NO | NO | NO | NO | NO | - |
-| R3-12 | TODO | NO | NO | NO | NO | NO | - |
-| R3-13 | TODO | NO | NO | NO | NO | NO | - |
-| R3-14 | TODO | NO | NO | NO | NO | NO | - |
-| R3-15 | TODO | NO | NO | NO | NO | NO | - |
-| R3-16 | TODO | NO | NO | NO | NO | NO | - |
-| R3-17 | TODO | NO | NO | NO | NO | NO | - |
-| R3-18 | TODO | NO | NO | NO | NO | NO | - |
-| R3-19 | TODO | NO | NO | NO | NO | NO | - |
-| R3-20 | TODO | NO | NO | NO | NO | NO | - |
-| R3-21 | TODO | NO | NO | NO | NO | NO | - |
-| R3-22 | TODO | NO | NO | NO | NO | NO | - |
-| R3-23 | TODO | NO | NO | NO | NO | NO | - |
-| R3-24 | TODO | NO | NO | NO | NO | NO | - |
-| R3-25 | TODO | NO | NO | NO | NO | NO | - |
+| R3-07 | PASS | YES | N/A | YES | YES | PASS | 22fe17f (F0) |
+| R3-08 | PASS | YES | YES | YES | YES | PASS | 41541c8 (F1) |
+| R3-09 | PASS | YES | YES | YES | YES | PASS | 41541c8 (F2) |
+| R3-10 | PASS | YES | YES | YES | YES | PASS | 22fe17f (F3) |
+| R3-11 | PASS | YES | YES | YES | YES | PASS | 22fe17f (F4) |
+| R3-12 | PASS | YES | YES | YES | YES | PASS | 9514b3d (F5) |
+| R3-13 | PASS | YES | YES | YES | YES | PASS | 9514b3d (F6) |
+| R3-14 | PASS | YES | YES | YES | YES | PASS | 322aa1e (F7) |
+| R3-15 | PASS | YES | YES | YES | YES | PASS | 8daf663 (F8) |
+| R3-16 | PASS | YES | YES | YES | YES | PASS | ce5dd68 (F9) |
+| R3-17 | PASS | YES | YES | YES | YES | PASS | 8daf663 (F10) |
+| R3-18 | PASS | YES | YES | YES | YES | PASS | 22fe17f (F11) |
+| R3-19 | PASS | YES | YES | YES | YES | PASS | 22fe17f (F12) |
+| R3-20 | PASS | YES | YES | YES | YES | PASS | 22fe17f (F13) |
+| R3-21 | PASS | YES | YES | YES | YES | PASS | 22fe17f (F14) |
+| R3-22 | PASS | YES | YES | YES | YES | PASS | 22fe17f (F15) |
+| R3-23 | PASS | YES | YES | YES | YES | PASS | 22fe17f (F16) |
+| R3-24 | PASS | YES | YES | YES | YES | PASS | 22fe17f (F17) |
+| R3-25 | PASS | YES | YES | YES | YES | PASS | 22fe17f (F18) |
 
 ## Pre-flight Evidence (R3-00)
 - Branch: fix/ui-device-gaps
