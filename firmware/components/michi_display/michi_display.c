@@ -27,6 +27,7 @@
 #include "michi_version.h"
 #include "michi_volume.h"
 #include "michi_wifi.h"
+#include "michi_time.h"
 
 #define TAG "michi_display"
 
@@ -223,6 +224,7 @@ static void render_current_state(void)
         .wifi_rssi = rssi,
         .wifi_ssid = NULL,
         .server_connected = michi_session_active(),
+        .clock_synced = michi_time_is_synchronized(),
         .update_pct = 0,
         .has_update_pct = false,
         .show_diagnostics = s_show_diagnostics,

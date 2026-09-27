@@ -151,9 +151,14 @@ void michi_ui_draw_screen_pairing(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, ui
         ui_draw_text(fb, fb_w, fb_h, y_origin, 18, 128, "en Michi", font_sm, MICHI_UI_TEXT_SECONDARY);
         michi_ui_draw_activity_dots(fb, fb_w, fb_h, y_origin, 230, 175, 5, 12, MICHI_UI_ACCENT);
     } else {
-        ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 90, MICHI_UI_STR_PAIRING_WAITING_TITLE, font_lg, MICHI_UI_TEXT_PRIMARY);
-        ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 122, MICHI_UI_STR_PAIRING_WAITING_HINT, font_sm, MICHI_UI_TEXT_SECONDARY);
-        michi_ui_draw_activity_dots(fb, fb_w, fb_h, y_origin, 160, 160, 3, 12, MICHI_UI_ACCENT);
+        if (ctx != NULL && !ctx->wifi_connected) {
+            ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 90, MICHI_UI_STR_PAIRING_TITLE, font_lg, MICHI_UI_TEXT_PRIMARY);
+            ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 122, MICHI_UI_STR_NO_CONNECTION, font_sm, MICHI_UI_TEXT_SECONDARY);
+        } else {
+            ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 90, MICHI_UI_STR_PAIRING_WAITING_TITLE, font_lg, MICHI_UI_TEXT_PRIMARY);
+            ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 122, MICHI_UI_STR_PAIRING_WAITING_HINT, font_sm, MICHI_UI_TEXT_SECONDARY);
+            michi_ui_draw_activity_dots(fb, fb_w, fb_h, y_origin, 160, 160, 3, 12, MICHI_UI_ACCENT);
+        }
     }
 }
 
@@ -380,7 +385,7 @@ void michi_ui_draw_screen_diagnostics(uint16_t *fb, uint16_t fb_w, uint16_t fb_h
     ui_draw_text(fb, fb_w, fb_h, y_origin, 16, 14, MICHI_UI_STR_DIAGNOSTICS_TITLE, font_sm, MICHI_UI_TEXT_PRIMARY);
     michi_ui_draw_divider(fb, fb_w, fb_h, y_origin, false);
 
-    int y = 52;
+    int y = 48;
     int row_h = 22;
 
     typedef struct diag_row {
@@ -389,7 +394,7 @@ void michi_ui_draw_screen_diagnostics(uint16_t *fb, uint16_t fb_w, uint16_t fb_h
         uint16_t val_color;
     } diag_row_t;
 
-    diag_row_t rows[8];
+    diag_row_t rows[10];
     int r_count = 0;
 
     /* Row 0: Wi-Fi */
@@ -418,7 +423,18 @@ void michi_ui_draw_screen_diagnostics(uint16_t *fb, uint16_t fb_w, uint16_t fb_h
     }
     r_count++;
 
-    /* Row 2: DAC (Truthful) */
+    /* Row 2: Clock / SNTP */
+    rows[r_count].label = "Reloj";
+    if (ctx != NULL && ctx->clock_synced) {
+        snprintf(rows[r_count].val, sizeof(rows[r_count].val), "Sincronizado");
+        rows[r_count].val_color = MICHI_UI_SUCCESS;
+    } else {
+        snprintf(rows[r_count].val, sizeof(rows[r_count].val), "Sin sincronizar");
+        rows[r_count].val_color = MICHI_UI_WARNING;
+    }
+    r_count++;
+
+    /* Row 3: DAC (Truthful) */
     rows[r_count].label = "DAC";
     michi_ui_dac_state_t dac_st = (ctx != NULL) ? ctx->dac_state : MICHI_UI_DAC_UNKNOWN;
     if (ctx != NULL && ctx->dac_detected && dac_st == MICHI_UI_DAC_UNKNOWN) {

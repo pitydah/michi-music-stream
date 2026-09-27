@@ -5,5 +5,5 @@ idf_component_register(
     INCLUDE_DIRS "include"
     REQUIRES driver esp_system esp_timer freertos michi_state nvs_flash
              michi_pairing michi_identity michi_dac
-    PRIV_REQUIRES michi_display
+    PRIV_REQUIRES michi_display michi_wifi
 )

@@ -490,6 +490,42 @@ static void test_shutdown_clears_state(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 7. retry backoff heals without reconnect                           */
+/* ------------------------------------------------------------------ */
+
+static void test_retry_backoff_heals_without_reconnect(void)
+{
+    printf("resilience: sntp initial round failure retries via backoff and self-heals\n");
+    reset_all();
+    boot_time_and_discovery();
+
+    CHECK(michi_discovery_start("192.168.1.102") == ESP_OK, "discovery start");
+    CHECK(michi_time_start() == ESP_OK, "time start");
+
+    /* Initial 3 attempts at 250ms each will fail because no sync is fired yet */
+    usleep(850000);
+    CHECK(michi_time_is_synchronized() == false, "unsynchronized after initial attempts");
+
+    michi_discovery_status_t status = {0};
+    CHECK(michi_discovery_get_status(&status) == ESP_OK, "discovery get status ok");
+    CHECK(status.active == true, "discovery active");
+    CHECK(status.clock_synced == false, "discovery clock not synced");
+
+    /* Fire sync during backoff retry round */
+    test_esp_timer_set_time(2000000);
+    test_sntp_fire_sync(INJECTED_UNIX);
+
+    CHECK(wait_for(sent_at_least_one, 2500), "announce allowed after backoff retry sync");
+    CHECK(michi_time_is_synchronized() == true, "clock synchronized after backoff retry");
+
+    CHECK(michi_discovery_get_status(&status) == ESP_OK, "discovery get status synced ok");
+    CHECK(status.clock_synced == true, "discovery status shows clock synced");
+    CHECK(status.announces_sent >= 1, "announces sent count > 0");
+
+    teardown();
+}
+
+/* ------------------------------------------------------------------ */
 
 int main(void)
 {
@@ -501,6 +537,7 @@ int main(void)
     test_sntp_init_failure_degrades();
     test_sntp_start_failure_degrades();
     test_shutdown_clears_state();
+    test_retry_backoff_heals_without_reconnect();
 
     if (failures == 0) {
         printf("test_michi_time: all tests passed\n");

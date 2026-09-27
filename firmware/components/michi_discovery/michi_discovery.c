@@ -173,6 +173,7 @@ static esp_timer_handle_t s_announce_timer;
 static SemaphoreHandle_t s_announce_mutex;
 static SemaphoreHandle_t s_discovery_done_sem;
 static uint32_t s_discovery_generation;
+static uint32_t s_announces_sent;
 
 /* ------------------------------------------------------------------ */
 /* Internals (all called with the announce mutex held)                */
@@ -294,6 +295,7 @@ static void announce_now_locked(void)
         ESP_LOGW(TAG, "discovery: announce sendto failed (errno %d)",
                  errno);
     } else {
+        s_announces_sent++;
         ESP_LOGI(TAG, "discovery: announce sent (%u bytes, ts=%" PRId64 ")",
                  (unsigned)datagram_len, announce.timestamp_ms);
     }
@@ -850,6 +852,7 @@ esp_err_t michi_discovery_shutdown(void)
     portENTER_CRITICAL(&s_lifecycle_mux);
     s_initialized = false;
     s_shutdown_in_progress = false;
+    s_announces_sent = 0;
     portEXIT_CRITICAL(&s_lifecycle_mux);
 
     ESP_LOGI(TAG, "subsystem=discovery state=off");
@@ -866,6 +869,28 @@ esp_err_t michi_discovery_get_server_id(char *out, size_t out_len)
         return ESP_ERR_INVALID_STATE;
     }
     memcpy(out, s_server_id, MICHI_DISCOVERY_UUID_LEN);
+    return ESP_OK;
+}
+
+esp_err_t michi_discovery_get_status(michi_discovery_status_t *out)
+{
+    if (out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!discovery_api_enter()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (xSemaphoreTake(s_announce_mutex, pdMS_TO_TICKS(500)) != pdTRUE) {
+        discovery_api_exit();
+        return ESP_ERR_TIMEOUT;
+    }
+    out->active = s_active;
+    out->mdns_running = s_mdns_advertised;
+    out->socket_open = (s_sock >= 0);
+    out->clock_synced = michi_time_is_synchronized();
+    out->announces_sent = s_announces_sent;
+    xSemaphoreGive(s_announce_mutex);
+    discovery_api_exit();
     return ESP_OK;
 }
 

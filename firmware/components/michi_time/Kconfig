@@ -41,4 +41,21 @@ menu "Michi Music Stream Time"
           on semaphores almost forever and only runs the bounded
           sync_wait rounds plus a few flag stores per sync event.
 
+    config MICHI_TIME_RETRY_BASE_MS
+        int "SNTP backoff retry base interval (ms)"
+        default 30000
+        range 5000 120000
+        help
+          Base delay after exhausting initial sync attempts before retrying
+          SNTP synchronization when the network remains up and the clock
+          is unsynchronized.
+
+    config MICHI_TIME_RETRY_MAX_MS
+        int "SNTP backoff retry maximum interval (ms)"
+        default 300000
+        range 30000 600000
+        help
+          Maximum delay between SNTP synchronization retry rounds when the
+          network remains up.
+
 endmenu

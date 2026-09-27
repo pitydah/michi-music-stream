@@ -4,15 +4,16 @@
 
 Único mecanismo para abrir la ventana de pairing con un controlador. Ninguna llamada HTTP puede abrirla (fuera de la ventana, `POST /pair/start` responde 403). El mismo botón es la única vía física de recovery y factory reset.
 
-## Gestos determinísticos
+## Gestos determinísticos (Hold-on-Threshold)
 
-Umbrales de Kconfig (componente `michi_button`): `MICHI_BUTTON_RECOVERY_PRESS_MS` (5000 ms), `MICHI_BUTTON_FACTORY_RESET_PRESS_MS` (10000 ms), `MICHI_BUTTON_FACTORY_ARM_MS` (10000 ms). Ambos gestos están siempre compilados (no hay choice que los excluya).
+Umbrales de Kconfig (componente `michi_button`): `MICHI_BUTTON_PAIRING_HOLD_MS` (5000 ms), `MICHI_BUTTON_FACTORY_WARN_MS` (10000 ms), `MICHI_BUTTON_FACTORY_RESET_PRESS_MS` (15000 ms), `MICHI_BUTTON_FACTORY_ARM_MS` (10000 ms). Los gestos están siempre compilados.
 
 | Gesto | Duración | Acción |
 |-------|----------|--------|
-| Pulsación corta | < 5000 ms | Abre la ventana de pairing (ver tabla de estados) |
-| Pulsación larga | >= 5000 ms y < 10000 ms | Recovery: postea `MICHI_EVENT_RECOVER` SOLO si el estado es `RECOVERABLE_ERROR`; en cualquier otro estado se ignora |
-| Pulsación muy larga | >= 10000 ms | Factory reset: borra toda la NVS (identidad, controladores, Wi-Fi, server_id) y reinicia |
+| Pulsación corta | < 5000 ms | Sin acción (se descarta para evitar activaciones accidentales) |
+| Mantener presionado | >= 5000 ms | Abre la ventana de pairing (120 s) al cruzar el umbral. Requiere red Wi-Fi con IP asignada. En `RECOVERABLE_ERROR` ejecuta Recovery (`MICHI_EVENT_RECOVER`) |
+| Mantener continuo | >= 10000 ms | Advertencia de factory reset en pantalla (si la acción previa no fue consumida) |
+| Mantener prolongado | >= 15000 ms | Factory reset: borra toda la NVS (identidad, controladores, Wi-Fi, server_id) y reinicia |
 
 Condiciones del factory reset (en código y Kconfig):
 
@@ -31,23 +32,22 @@ Condiciones del factory reset (en código y Kconfig):
 | `unpaired` | Sin controlador asociado |
 | `paired` | Con controlador(es) asociado(s) |
 | `pairing_window_open` | Ventana de 120 s abierta (reloj monotónico) |
-| `factory_reset` | Pulsación muy larga >= 10 s (con arm window) |
+| `factory_reset` | Mantener >= 15 s (con arm window) |
 
-## Pulsación corta (< 5 s)
+## Apertura de ventana de pairing (mantener >= 5 s)
 
 | Estado actual | Comportamiento |
 |---------------|---------------|
-| `unpaired` | Abre ventana 120 s |
-| `paired` | Abre ventana 120 s para un nuevo controlador |
+| `unpaired` | Abre ventana 120 s (si Wi-Fi tiene IP) |
+| `paired` | Abre ventana 120 s para un nuevo controlador (si Wi-Fi tiene IP) |
 | `pairing_window_open` | Reemplaza la ventana previa y elimina sesiones de pairing pendientes |
 
-## Pulsación larga (5 s - 10 s)
+## Recovery (mantener >= 5 s en RECOVERABLE_ERROR)
 
 Recovery (`MICHI_EVENT_RECOVER`): solo si el estado es `RECOVERABLE_ERROR`.
-En cualquier otro estado la pulsación se ignora (si el dispositivo ya se
-recuperó solo, no hace nada).
+En cualquier otro estado la pulsación >= 5 s ejecuta pairing.
 
-## Pulsación muy larga (>= 10 s)
+## Factory reset (mantener >= 15 s)
 
 Factory reset: borra toda la NVS (incluida la identidad y los
 controladores), limpia la identidad y el registro de controladores en RAM,

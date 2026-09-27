@@ -64,6 +64,7 @@ typedef struct michi_ui_screen_ctx {
     int8_t wifi_rssi;              /*!< Wi-Fi RSSI in dBm (e.g. -52) */
     const char *wifi_ssid;         /*!< Connected or target SSID */
     bool server_connected;         /*!< Server connected flag */
+    bool clock_synced;             /*!< SNTP clock synchronized flag */
     uint8_t update_pct;            /*!< OTA progress percentage (0..100) */
     bool has_update_pct;           /*!< True if OTA progress is known */
     bool show_diagnostics;         /*!< Force diagnostics view */

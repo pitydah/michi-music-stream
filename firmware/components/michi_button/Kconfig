@@ -1,6 +1,6 @@
 menu "Michi Music Stream Button"
 
-    comment "Deterministic gestures (contract in michi_button_gesture.h): short press (< RECOVERY_PRESS_MS) opens the pairing window; long press (>= RECOVERY_PRESS_MS and < FACTORY_RESET_PRESS_MS) runs recovery ONLY in RECOVERABLE_ERROR; very long press (>= FACTORY_RESET_PRESS_MS) runs the factory reset (armed). Both gestures are ALWAYS available - no choice can build a firmware without the physical factory reset."
+    comment "Deterministic gestures (contract in michi_button_gesture.h): hold-on-threshold. Holding for >= PAIRING_HOLD_MS (5s) opens the pairing window (or recovery in RECOVERABLE_ERROR); holding for >= FACTORY_WARN_MS (10s) shows warning; holding for >= FACTORY_RESET_PRESS_MS (15s) runs factory reset (armed). Gestures are ALWAYS compiled in."
 
     config MICHI_BUTTON_DEBOUNCE_MS
         int "Debounce window (ms)"

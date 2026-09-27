@@ -56,6 +56,7 @@
 static volatile bool s_initialized;
 static volatile bool s_synchronized;
 static volatile bool s_shutdown;
+static volatile bool s_network_up;
 
 static TaskHandle_t s_sync_task;
 /* Kick: binary semaphore start() gives, the sync task takes. */
@@ -104,7 +105,9 @@ static void run_sync_callbacks(void)
 
 /* Dedicated sync task: kicked by start(), runs bounded sync_wait
  * rounds, flips the synchronized state on a FRESH sync and invokes the
- * user callback (immediate announce resume). */
+ * user callback (immediate announce resume). When unsynchronized and the
+ * network remains up, retries with exponential backoff until synchronized
+ * or link drops. */
 static void sync_task(void *arg)
 {
     (void)arg;
@@ -114,56 +117,82 @@ static void sync_task(void *arg)
             break;
         }
 
-        esp_err_t sync_err = ESP_ERR_TIMEOUT;
-        for (int attempt = 0;
-             attempt < CONFIG_MICHI_TIME_SYNC_RETRIES &&
-             !s_shutdown && s_initialized;
-             attempt++) {
-            sync_err = esp_netif_sntp_sync_wait(
-                pdMS_TO_TICKS(CONFIG_MICHI_TIME_SYNC_TIMEOUT_MS));
-            if (sync_err == ESP_OK && sync_is_fresh()) {
-                break;
-            }
-            if (s_shutdown || !s_initialized) {
-                break;
-            }
-            if (sync_err != ESP_OK) {
-                ESP_LOGW(TAG, "time: sync attempt %d/%d failed (%s) - "
-                         "retrying", attempt + 1,
-                         CONFIG_MICHI_TIME_SYNC_RETRIES,
-                         esp_err_to_name(sync_err));
-            }
-            /* IDF 5.3: start() stops and restarts the lwIP SNTP client
-             * (fresh query burst). Also re-arms the round after a stale
-             * (not fresh) semaphore give. */
-            const esp_err_t restart_err = esp_netif_sntp_start();
-            if (restart_err != ESP_OK) {
-                ESP_LOGW(TAG, "time: SNTP restart failed: %s",
-                         esp_err_to_name(restart_err));
-            }
-        }
-        if (s_shutdown || !s_initialized) {
-            break;
-        }
+        uint32_t backoff_ms = CONFIG_MICHI_TIME_RETRY_BASE_MS;
 
-        if (sync_err == ESP_OK && sync_is_fresh()) {
-            const bool first = !s_synchronized;
-            s_synchronized = true;
-            ESP_LOGI(TAG, "time: %s via %s (unix_ms=%" PRId64 ")",
-                     first ? "synchronized" : "resynchronized",
-                     michi_time_sync_source(), michi_time_unix_ms());
-            run_sync_callbacks();
-        } else if (s_synchronized) {
-            /* Documented policy (header): an outage never drops the
-             * last sync state - the RTC keeps the wall clock advancing
-             * and the drift stays far inside the +-90 s announce
-             * window. */
-            ESP_LOGW(TAG, "time: revalidation failed - conserving last "
-                     "synchronized state (RTC keeps the clock)");
-        } else {
-            ESP_LOGW(TAG, "time: sync failed after %d attempt(s) - "
-                     "clock stays unsynchronized, announces stay gated",
-                     CONFIG_MICHI_TIME_SYNC_RETRIES);
+        while (s_network_up && !s_shutdown && s_initialized) {
+            esp_err_t sync_err = ESP_ERR_TIMEOUT;
+            for (int attempt = 0;
+                 attempt < CONFIG_MICHI_TIME_SYNC_RETRIES &&
+                 !s_shutdown && s_initialized && s_network_up;
+                 attempt++) {
+                sync_err = esp_netif_sntp_sync_wait(
+                    pdMS_TO_TICKS(CONFIG_MICHI_TIME_SYNC_TIMEOUT_MS));
+                if (sync_err == ESP_OK && sync_is_fresh()) {
+                    break;
+                }
+                if (s_shutdown || !s_initialized || !s_network_up) {
+                    break;
+                }
+                if (sync_err != ESP_OK) {
+                    ESP_LOGW(TAG, "time: sync attempt %d/%d failed (%s) - "
+                             "retrying", attempt + 1,
+                             CONFIG_MICHI_TIME_SYNC_RETRIES,
+                             esp_err_to_name(sync_err));
+                }
+                /* IDF 5.3: start() stops and restarts the lwIP SNTP client
+                 * (fresh query burst). Also re-arms the round after a stale
+                 * (not fresh) semaphore give. */
+                const esp_err_t restart_err = esp_netif_sntp_start();
+                if (restart_err != ESP_OK) {
+                    ESP_LOGW(TAG, "time: SNTP restart failed: %s",
+                             esp_err_to_name(restart_err));
+                }
+            }
+            if (s_shutdown || !s_initialized || !s_network_up) {
+                break;
+            }
+
+            if (sync_err == ESP_OK && sync_is_fresh()) {
+                const bool first = !s_synchronized;
+                s_synchronized = true;
+                ESP_LOGI(TAG, "time: %s via %s (unix_ms=%" PRId64 ")",
+                         first ? "synchronized" : "resynchronized",
+                         michi_time_sync_source(), michi_time_unix_ms());
+                run_sync_callbacks();
+                break;
+            } else if (s_synchronized) {
+                /* Documented policy (header): an outage never drops the
+                 * last sync state - the RTC keeps the wall clock advancing
+                 * and the drift stays far inside the +-90 s announce
+                 * window. */
+                ESP_LOGW(TAG, "time: revalidation failed - conserving last "
+                         "synchronized state (RTC keeps the clock)");
+                break;
+            } else {
+                ESP_LOGW(TAG, "time: sync failed after %d attempt(s) - "
+                         "clock stays unsynchronized, retrying in %u ms",
+                         CONFIG_MICHI_TIME_SYNC_RETRIES, (unsigned)backoff_ms);
+
+                if (xSemaphoreTake(s_kick, pdMS_TO_TICKS(backoff_ms))) {
+                    if (s_shutdown || !s_initialized || !s_network_up) {
+                        break;
+                    }
+                    backoff_ms = CONFIG_MICHI_TIME_RETRY_BASE_MS;
+                } else {
+                    if (backoff_ms < CONFIG_MICHI_TIME_RETRY_MAX_MS / 2) {
+                        backoff_ms *= 2;
+                    } else {
+                        backoff_ms = CONFIG_MICHI_TIME_RETRY_MAX_MS;
+                    }
+                }
+                if (s_network_up && !s_shutdown && s_initialized) {
+                    const esp_err_t restart_err = esp_netif_sntp_start();
+                    if (restart_err != ESP_OK) {
+                        ESP_LOGW(TAG, "time: SNTP retry start failed: %s",
+                                 esp_err_to_name(restart_err));
+                    }
+                }
+            }
         }
     }
 
@@ -245,6 +274,7 @@ esp_err_t michi_time_start(void)
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
+    s_network_up = true;
     /* Monotonic epoch of THIS validation round: only sync events after
      * this point count as fresh (a stale semaphore give from a previous
      * sync is consumed by the task and retried). */
@@ -269,10 +299,12 @@ esp_err_t michi_time_stop(void)
     if (!s_initialized) {
         return ESP_OK;
     }
+    s_network_up = false;
     /* Documented policy (header): CONSERVE the sync state - stop()
      * never flips it. IDF 5.3 has no esp_netif_sntp_stop; the client
      * simply loses reachability without an IP and the next start()
-     * restarts it. */
+     * restarts it. Wake the task if it was waiting on retry backoff. */
+    xSemaphoreGive(s_kick);
     ESP_LOGI(TAG, "time: link down - sync state conserved "
              "(synchronized=%d)", (int)s_synchronized);
     return ESP_OK;
@@ -285,6 +317,7 @@ esp_err_t michi_time_shutdown(void)
     }
     s_initialized = false;
     s_shutdown = true;
+    s_network_up = false;
 
     /* Cooperative join: wake the task (it may be mid sync_wait - the
      * wait is bounded by one attempt timeout) and wait for its "done"

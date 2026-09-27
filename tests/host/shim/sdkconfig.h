@@ -20,6 +20,10 @@
 /* Host test retry count (firmware default is 2) */
 #define CONFIG_MICHI_TIME_SYNC_RETRIES 3
 
+/* Fast retry backoff for host tests (firmware defaults 30s / 300s) */
+#define CONFIG_MICHI_TIME_RETRY_BASE_MS 200
+#define CONFIG_MICHI_TIME_RETRY_MAX_MS 1000
+
 /* Bounded 64 KB audio ring buffer for host memory efficiency (firmware default is 1024 KB in PSRAM) */
 #define CONFIG_MICHI_AUDIO_RING_BUFFER_KB 64
 

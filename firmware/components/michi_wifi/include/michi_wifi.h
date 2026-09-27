@@ -112,6 +112,17 @@ esp_err_t michi_wifi_erase_credentials(void);
 bool michi_wifi_is_provisioned(void);
 
 /**
+ * @brief Check whether Wi-Fi station is connected and has a valid IPv4 address.
+ *
+ * Truthful network readiness check (phase 9 / pairing gate): returns true
+ * ONLY when the station is actively connected to an AP and an IPv4 address
+ * has been assigned. Reset immediately on disconnect.
+ *
+ * @return true if STA is connected with valid IP; false otherwise.
+ */
+bool michi_wifi_network_ready(void);
+
+/**
  * @brief The stored SSID (cached; updated at init and after
  *        provisioning).
  *

@@ -18,6 +18,7 @@
 #include "michi_pairing.h"
 #include "michi_state.h"
 #include "michi_display.h"
+#include "michi_wifi.h"
 
 #define TAG "michi_button"
 
@@ -137,6 +138,16 @@ static esp_err_t post_with_retry(michi_event_id_t id, uint32_t data)
 
 static void handle_pairing_action(michi_state_t st, int64_t elapsed_ms)
 {
+    /* Physical network truth: pairing requires a reachable network with valid IP.
+     * Rejecting pairing when Wi-Fi has no IP avoids misleading the user with
+     * "Esperando servidor" when the receiver cannot receive pairing requests. */
+    if (!michi_wifi_network_ready()) {
+        ESP_LOGW(TAG, "button: hold=%" PRId64 "ms pairing rejected: Wi-Fi network not ready (no IP)",
+                 elapsed_ms);
+        michi_display_set_pairing_overlay(MICHI_DISPLAY_PAIRING_OVERLAY_WAITING);
+        return;
+    }
+
     /* Pairing fires from any non-protected state.  The pairing window is the
      * ONLY authority that opens the physical pairing flow. */
     if (st == MICHI_STATE_IDLE || st == MICHI_STATE_UNPROVISIONED ||

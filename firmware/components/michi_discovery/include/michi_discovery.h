@@ -167,6 +167,25 @@ esp_err_t michi_discovery_shutdown(void);
 esp_err_t michi_discovery_get_server_id(char *out, size_t out_len);
 
 /**
+ * @brief Live discovery subsystem status (phase 12 diagnostics / operational truth).
+ */
+typedef struct {
+    bool active;             /*!< True when discovery is running (network up) */
+    bool mdns_running;       /*!< True when mDNS service is actively advertised */
+    bool socket_open;        /*!< True when UDP multicast socket is open */
+    bool clock_synced;       /*!< True when wall clock is synchronized (announces un-gated) */
+    uint32_t announces_sent; /*!< Cumulative signed announce datagrams sent this boot */
+} michi_discovery_status_t;
+
+/**
+ * @brief Get the current discovery subsystem status.
+ *
+ * @param out Receives the live status.
+ * @return ESP_OK; ESP_ERR_INVALID_ARG if out is NULL; ESP_ERR_INVALID_STATE before init.
+ */
+esp_err_t michi_discovery_get_status(michi_discovery_status_t *out);
+
+/**
  * @brief Build the CANONICAL payload of an announce: the exact JSON the
  *        signature covers. Fields serialized with lexicographically
  *        ordered keys (api_version, device_id, features, host, michi_id,

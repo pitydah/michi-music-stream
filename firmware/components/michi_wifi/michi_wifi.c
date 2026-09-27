@@ -460,6 +460,7 @@ static void handle_disconnected(void)
     (void)michi_time_stop();
 
     portENTER_CRITICAL(&s_mux);
+    s_network_ready = false;
     const bool prov_active = s_prov_active;
     portEXIT_CRITICAL(&s_mux);
 
@@ -1341,6 +1342,17 @@ bool michi_wifi_is_provisioned(void)
     const bool v = s_has_creds;
     portEXIT_CRITICAL(&s_mux);
     return v;
+}
+
+bool michi_wifi_network_ready(void)
+{
+    if (!s_initialized) {
+        return false;
+    }
+    portENTER_CRITICAL(&s_mux);
+    const bool ready = s_network_ready;
+    portEXIT_CRITICAL(&s_mux);
+    return ready;
 }
 
 const char *michi_wifi_get_ssid(void)
