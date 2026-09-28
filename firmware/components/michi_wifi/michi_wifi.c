@@ -156,6 +156,7 @@ static volatile bool s_creds_received;
 /* Set when the STA got an IP this boot (boot-race replay, see file
  * header). */
 static volatile bool s_network_ready;
+static char s_ipv4_str[16] = "0.0.0.0";
 static volatile bool s_plan_applied;
 static volatile michi_boot_plan_t s_boot_plan;
 static volatile int s_retry;
@@ -407,6 +408,8 @@ static void handle_got_ip(const ip_event_got_ip_t *event)
     portENTER_CRITICAL(&s_mux);
     s_retry = 0;
     s_network_ready = true;
+    strncpy(s_ipv4_str, ipbuf, sizeof(s_ipv4_str) - 1);
+    s_ipv4_str[sizeof(s_ipv4_str) - 1] = '\0';
     portEXIT_CRITICAL(&s_mux);
 
     /* Enforce WIFI_PS_NONE on every connection (including after BLE provisioning). */
@@ -461,6 +464,7 @@ static void handle_disconnected(void)
 
     portENTER_CRITICAL(&s_mux);
     s_network_ready = false;
+    strncpy(s_ipv4_str, "0.0.0.0", sizeof(s_ipv4_str));
     const bool prov_active = s_prov_active;
     portEXIT_CRITICAL(&s_mux);
 
@@ -1288,6 +1292,7 @@ esp_err_t michi_wifi_erase_credentials(void)
     s_creds_received = false;
     s_network_ready = false;
     s_ssid_cache[0] = '\0';
+    strncpy(s_ipv4_str, "0.0.0.0", sizeof(s_ipv4_str));
     portEXIT_CRITICAL(&s_mux);
 
     if (s_reconnect_timer != NULL) {
@@ -1355,6 +1360,23 @@ bool michi_wifi_network_ready(void)
     return ready;
 }
 
+esp_err_t michi_wifi_get_ipv4(char *out, size_t out_len)
+{
+    if (out == NULL || out_len == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    portENTER_CRITICAL(&s_mux);
+    const bool ready = s_network_ready;
+    strncpy(out, s_ipv4_str, out_len - 1);
+    out[out_len - 1] = '\0';
+    portEXIT_CRITICAL(&s_mux);
+
+    return ready ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
 const char *michi_wifi_get_ssid(void)
 {
     return s_ssid_cache;
@@ -1396,6 +1418,8 @@ esp_err_t michi_wifi_shutdown(void)
     portENTER_CRITICAL(&s_mux);
     const bool prov_active = s_prov_active;
     s_initialized = false;
+    s_network_ready = false;
+    strncpy(s_ipv4_str, "0.0.0.0", sizeof(s_ipv4_str));
     portEXIT_CRITICAL(&s_mux);
 
     if (prov_active) {

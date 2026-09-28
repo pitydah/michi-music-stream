@@ -28,6 +28,7 @@
 #include "michi_volume.h"
 #include "michi_wifi.h"
 #include "michi_time.h"
+#include "michi_discovery.h"
 
 #define TAG "michi_display"
 
@@ -187,6 +188,11 @@ static void render_current_state(void)
 
     bool wifi_prov = michi_wifi_is_provisioned();
     bool wifi_ok = (wifi_prov && (michi_wifi_get_rssi(&rssi) == ESP_OK));
+    bool net_ready = michi_wifi_network_ready();
+    char ip_buf[16] = "0.0.0.0";
+    (void)michi_wifi_get_ipv4(ip_buf, sizeof(ip_buf));
+    michi_discovery_status_t disc_st = {0};
+    (void)michi_discovery_get_status(&disc_st);
 
 #if defined(ESP_PLATFORM)
     int64_t now_ms = esp_timer_get_time() / 1000;
@@ -240,7 +246,12 @@ static void render_current_state(void)
         .board_model = binfo != NULL ? binfo->model : "Waveshare ESP32-S3-LCD-2",
         .show_volume_overlay = show_vol,
         .pairing_overlay = (michi_ui_pairing_overlay_t)pairing_overlay_snap,
+        .network_ready = net_ready,
+        .announces_sent = disc_st.announces_sent,
+        .mdns_running = disc_st.mdns_running,
     };
+    strncpy(s_frame_snapshot.ipv4_str, ip_buf, sizeof(s_frame_snapshot.ipv4_str) - 1);
+    s_frame_snapshot.ipv4_str[sizeof(s_frame_snapshot.ipv4_str) - 1] = '\0';
 
     if (s_frame_snapshot.state == MICHI_STATE_UPDATING) {
         michi_ota_state_t ota_state;

@@ -286,12 +286,11 @@ esp_err_t michi_time_start(void)
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "time: SNTP start failed: %s - announces stay "
                  "gated", esp_err_to_name(err));
-        return err;
     }
     /* Wake the sync task; it takes the bounded wait. The give is lost
      * harmlessly if the task is still processing a previous round. */
     xSemaphoreGive(s_kick);
-    return ESP_OK;
+    return err;
 }
 
 esp_err_t michi_time_stop(void)

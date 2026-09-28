@@ -76,6 +76,10 @@ typedef struct michi_ui_screen_ctx {
     const char *board_model;       /*!< Board model string */
     bool show_volume_overlay;      /*!< True if temporary volume overlay is active */
     michi_ui_pairing_overlay_t pairing_overlay; /*!< Active pairing UI overlay (NONE = no overlay) */
+    bool network_ready;            /*!< Wi-Fi connected and IPv4 assigned */
+    char ipv4_str[16];             /*!< Current IPv4 address string (e.g. "192.168.1.100") */
+    uint32_t announces_sent;       /*!< Signed discovery announces sent count */
+    bool mdns_running;             /*!< mDNS service running flag */
 } michi_ui_screen_ctx_t;
 
 /**

@@ -711,6 +711,81 @@ static void test_pairing_overlay_priority_and_orthogonality(void)
     }
 }
 
+static void test_network_truth_pairing_and_diagnostics(void)
+{
+    printf("michi_ui: network truth in pairing and diagnostics\n");
+
+    uint16_t *fb1 = calloc((size_t)PANEL_W * PANEL_H, sizeof(uint16_t));
+    uint16_t *fb2 = calloc((size_t)PANEL_W * PANEL_H, sizeof(uint16_t));
+
+    /* 1. Pairing with wifi_connected=true but network_ready=false must match wifi_connected=false ('Sin conexión') */
+    michi_ui_screen_ctx_t ctx_no_wifi = {
+        .state = MICHI_STATE_PAIRING,
+        .wifi_connected = false,
+        .network_ready = false,
+    };
+    michi_ui_screen_ctx_t ctx_wifi_no_ip = {
+        .state = MICHI_STATE_PAIRING,
+        .wifi_connected = true,
+        .network_ready = false,
+    };
+    michi_ui_screen_ctx_t ctx_ready = {
+        .state = MICHI_STATE_PAIRING,
+        .wifi_connected = true,
+        .network_ready = true,
+    };
+
+    michi_ui_render_screen(fb1, PANEL_W, PANEL_H, 0, &ctx_no_wifi);
+    michi_ui_render_screen(fb2, PANEL_W, PANEL_H, 0, &ctx_wifi_no_ip);
+
+    int diff = 0;
+    for (int i = 0; i < PANEL_W * PANEL_H; i++) {
+        if (fb1[i] != fb2[i]) diff++;
+    }
+    CHECK(diff == 0, "Pairing without IP is pixel-identical to pairing without Wi-Fi ('Sin conexión')");
+
+    /* Ready (connected + IP) is visually distinct from not ready */
+    memset(fb2, 0, (size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    michi_ui_render_screen(fb2, PANEL_W, PANEL_H, 0, &ctx_ready);
+    diff = 0;
+    for (int i = 0; i < PANEL_W * PANEL_H; i++) {
+        if (fb1[i] != fb2[i]) diff++;
+    }
+    CHECK(diff > 50, "Pairing with network_ready is visually distinct ('Esperando servidor')");
+
+    /* 2. Diagnostics: IP and discovery status rows */
+    michi_ui_screen_ctx_t diag_offline = {
+        .state = MICHI_STATE_IDLE,
+        .show_diagnostics = true,
+        .network_ready = false,
+        .clock_synced = false,
+        .mdns_running = false,
+        .announces_sent = 0,
+    };
+    michi_ui_screen_ctx_t diag_whisker = {
+        .state = MICHI_STATE_IDLE,
+        .show_diagnostics = true,
+        .wifi_connected = true,
+        .network_ready = true,
+        .ipv4_str = "192.168.1.155",
+        .clock_synced = true,
+        .announces_sent = 12,
+        .mdns_running = true,
+    };
+    memset(fb1, 0, (size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    memset(fb2, 0, (size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    michi_ui_render_screen(fb1, PANEL_W, PANEL_H, 0, &diag_offline);
+    michi_ui_render_screen(fb2, PANEL_W, PANEL_H, 0, &diag_whisker);
+    diff = 0;
+    for (int i = 0; i < PANEL_W * PANEL_H; i++) {
+        if (fb1[i] != fb2[i]) diff++;
+    }
+    CHECK(diff > 100, "Diagnostics with active Whisker and IP is visually distinct from offline diagnostics");
+
+    free(fb1);
+    free(fb2);
+}
+
 int main(void)
 {
     test_wrap();
@@ -723,6 +798,7 @@ int main(void)
     test_buffering_vs_playing_difference();
     test_pin_landscape();
     test_pairing_overlay_priority_and_orthogonality();
+    test_network_truth_pairing_and_diagnostics();
 
     if (failures == 0) {
         printf("PASS test_michi_ui (all landscape scenarios & contracts green)\n");

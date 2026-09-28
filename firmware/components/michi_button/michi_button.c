@@ -144,7 +144,6 @@ static void handle_pairing_action(michi_state_t st, int64_t elapsed_ms)
     if (!michi_wifi_network_ready()) {
         ESP_LOGW(TAG, "button: hold=%" PRId64 "ms pairing rejected: Wi-Fi network not ready (no IP)",
                  elapsed_ms);
-        michi_display_set_pairing_overlay(MICHI_DISPLAY_PAIRING_OVERLAY_WAITING);
         return;
     }
 

@@ -123,6 +123,20 @@ bool michi_wifi_is_provisioned(void);
 bool michi_wifi_network_ready(void);
 
 /**
+ * @brief Get the current station IPv4 address string (e.g. "192.168.1.100").
+ *
+ * Truthful network state: populates out with the active IPv4 address when
+ * connected and an IP has been assigned, or "0.0.0.0" when disconnected/down.
+ *
+ * @param out Buffer to receive the NUL-terminated IPv4 string.
+ * @param out_len Length of out buffer (recommended >= 16).
+ * @return ESP_OK if connected with valid IP; ESP_ERR_NOT_FOUND if no IP/disconnected;
+ *         ESP_ERR_INVALID_ARG if out is NULL or out_len == 0;
+ *         ESP_ERR_INVALID_STATE before init.
+ */
+esp_err_t michi_wifi_get_ipv4(char *out, size_t out_len);
+
+/**
  * @brief The stored SSID (cached; updated at init and after
  *        provisioning).
  *

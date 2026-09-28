@@ -151,7 +151,7 @@ void michi_ui_draw_screen_pairing(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, ui
         ui_draw_text(fb, fb_w, fb_h, y_origin, 18, 128, "en Michi", font_sm, MICHI_UI_TEXT_SECONDARY);
         michi_ui_draw_activity_dots(fb, fb_w, fb_h, y_origin, 230, 175, 5, 12, MICHI_UI_ACCENT);
     } else {
-        if (ctx != NULL && !ctx->wifi_connected) {
+        if (ctx == NULL || !ctx->wifi_connected || !ctx->network_ready) {
             ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 90, MICHI_UI_STR_PAIRING_TITLE, font_lg, MICHI_UI_TEXT_PRIMARY);
             ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 122, MICHI_UI_STR_NO_CONNECTION, font_sm, MICHI_UI_TEXT_SECONDARY);
         } else {
@@ -385,8 +385,8 @@ void michi_ui_draw_screen_diagnostics(uint16_t *fb, uint16_t fb_w, uint16_t fb_h
     ui_draw_text(fb, fb_w, fb_h, y_origin, 16, 14, MICHI_UI_STR_DIAGNOSTICS_TITLE, font_sm, MICHI_UI_TEXT_PRIMARY);
     michi_ui_draw_divider(fb, fb_w, fb_h, y_origin, false);
 
-    int y = 48;
-    int row_h = 22;
+    int y = 42;
+    int row_h = 18;
 
     typedef struct diag_row {
         const char *label;
@@ -394,7 +394,7 @@ void michi_ui_draw_screen_diagnostics(uint16_t *fb, uint16_t fb_w, uint16_t fb_h
         uint16_t val_color;
     } diag_row_t;
 
-    diag_row_t rows[10];
+    diag_row_t rows[12];
     int r_count = 0;
 
     /* Row 0: Wi-Fi */
@@ -412,7 +412,18 @@ void michi_ui_draw_screen_diagnostics(uint16_t *fb, uint16_t fb_w, uint16_t fb_h
     }
     r_count++;
 
-    /* Row 1: Server */
+    /* Row 1: IP */
+    rows[r_count].label = "IP";
+    if (ctx != NULL && ctx->network_ready && ctx->ipv4_str[0] != '\0' && strcmp(ctx->ipv4_str, "0.0.0.0") != 0) {
+        snprintf(rows[r_count].val, sizeof(rows[r_count].val), "%s", ctx->ipv4_str);
+        rows[r_count].val_color = MICHI_UI_TEXT_PRIMARY;
+    } else {
+        snprintf(rows[r_count].val, sizeof(rows[r_count].val), "Sin asignar");
+        rows[r_count].val_color = MICHI_UI_MUTED;
+    }
+    r_count++;
+
+    /* Row 2: Server */
     rows[r_count].label = "Servidor";
     if (ctx != NULL && ctx->server_connected) {
         snprintf(rows[r_count].val, sizeof(rows[r_count].val), "%s", MICHI_UI_STR_CONNECTED);
@@ -423,7 +434,7 @@ void michi_ui_draw_screen_diagnostics(uint16_t *fb, uint16_t fb_w, uint16_t fb_h
     }
     r_count++;
 
-    /* Row 2: Clock / SNTP */
+    /* Row 3: Clock / SNTP */
     rows[r_count].label = "Reloj";
     if (ctx != NULL && ctx->clock_synced) {
         snprintf(rows[r_count].val, sizeof(rows[r_count].val), "Sincronizado");
@@ -431,6 +442,20 @@ void michi_ui_draw_screen_diagnostics(uint16_t *fb, uint16_t fb_w, uint16_t fb_h
     } else {
         snprintf(rows[r_count].val, sizeof(rows[r_count].val), "Sin sincronizar");
         rows[r_count].val_color = MICHI_UI_WARNING;
+    }
+    r_count++;
+
+    /* Row 4: Discovery */
+    rows[r_count].label = "Discovery";
+    if (ctx != NULL && ctx->clock_synced && ctx->announces_sent > 0) {
+        snprintf(rows[r_count].val, sizeof(rows[r_count].val), "Whisker activo");
+        rows[r_count].val_color = MICHI_UI_SUCCESS;
+    } else if (ctx != NULL && !ctx->clock_synced && ctx->mdns_running) {
+        snprintf(rows[r_count].val, sizeof(rows[r_count].val), "mDNS activo");
+        rows[r_count].val_color = MICHI_UI_WARNING;
+    } else {
+        snprintf(rows[r_count].val, sizeof(rows[r_count].val), "Inactivo");
+        rows[r_count].val_color = MICHI_UI_MUTED;
     }
     r_count++;
 

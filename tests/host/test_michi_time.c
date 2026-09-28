@@ -526,6 +526,39 @@ static void test_retry_backoff_heals_without_reconnect(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 8. SNTP start failure self-heals in next cycle without restart     */
+/* ------------------------------------------------------------------ */
+
+static void test_sntp_start_failure_self_heals(void)
+{
+    printf("resilience: SNTP start failure self-heals in retry loop without external call\n");
+    reset_all();
+    boot_time_and_discovery();
+
+    /* Make initial esp_netif_sntp_start() fail */
+    test_sntp_set_fail_start(true);
+    CHECK(michi_time_start() != ESP_OK, "initial SNTP start fails");
+    CHECK(michi_discovery_start("192.168.1.102") == ESP_OK, "discovery start ok");
+    CHECK(test_socket_sent_count() == 0, "no announce while gated");
+
+    /* Wait for initial attempts (3 x 250ms = 750ms) */
+    usleep(850000);
+    CHECK(michi_time_is_synchronized() == false, "unsynchronized after initial failed attempts");
+
+    /* Self-healing: clear failure condition WITHOUT calling michi_time_start() again */
+    test_sntp_set_fail_start(false);
+
+    /* Advance time and fire sync during backoff / retry cycle */
+    test_esp_timer_set_time(2000000);
+    test_sntp_fire_sync(INJECTED_UNIX);
+
+    CHECK(wait_for(sent_at_least_one, 3000), "announce allowed after self-healed sntp retry");
+    CHECK(michi_time_is_synchronized() == true, "clock synchronized via retry self-heal");
+
+    teardown();
+}
+
+/* ------------------------------------------------------------------ */
 
 int main(void)
 {
@@ -538,6 +571,7 @@ int main(void)
     test_sntp_start_failure_degrades();
     test_shutdown_clears_state();
     test_retry_backoff_heals_without_reconnect();
+    test_sntp_start_failure_self_heals();
 
     if (failures == 0) {
         printf("test_michi_time: all tests passed\n");
