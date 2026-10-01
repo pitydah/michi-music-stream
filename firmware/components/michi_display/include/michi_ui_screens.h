@@ -31,6 +31,7 @@ typedef enum {
     MICHI_UI_PAIRING_OVERLAY_BUTTON_PRESS,  /*!< Button confirmed, show release hint */
     MICHI_UI_PAIRING_OVERLAY_WAITING,       /*!< Pairing window open, waiting for app */
     MICHI_UI_PAIRING_OVERLAY_PIN,           /*!< PIN available, show PIN screen */
+    MICHI_UI_PAIRING_OVERLAY_NO_NETWORK,    /*!< Pairing rejected: network not ready */
 } michi_ui_pairing_overlay_t;
 
 typedef enum {
@@ -78,7 +79,8 @@ typedef struct michi_ui_screen_ctx {
     michi_ui_pairing_overlay_t pairing_overlay; /*!< Active pairing UI overlay (NONE = no overlay) */
     bool network_ready;            /*!< Wi-Fi connected and IPv4 assigned */
     char ipv4_str[16];             /*!< Current IPv4 address string (e.g. "192.168.1.100") */
-    uint32_t announces_sent;       /*!< Signed discovery announces sent count */
+    uint32_t announces_sent;       /*!< Signed discovery announces sent count (cumulative) */
+    uint32_t announces_sent_session; /*!< Signed discovery announces sent in current session */
     bool mdns_running;             /*!< mDNS service running flag */
 } michi_ui_screen_ctx_t;
 
@@ -105,6 +107,7 @@ void michi_ui_draw_screen_recoverable_error(uint16_t *fb, uint16_t fb_w, uint16_
 void michi_ui_draw_screen_fatal_error(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin, uint32_t error_code, const michi_ui_screen_ctx_t *ctx);
 void michi_ui_draw_screen_diagnostics(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin, const michi_ui_screen_ctx_t *ctx);
 void michi_ui_draw_screen_button_press_feedback(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin);
+void michi_ui_draw_screen_pairing_no_network(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin);
 
 #ifdef __cplusplus
 }

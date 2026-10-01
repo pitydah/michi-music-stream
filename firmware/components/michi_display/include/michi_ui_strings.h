@@ -21,6 +21,7 @@ extern "C" {
 
 /* Ready / Idle */
 #define MICHI_UI_STR_READY             "Listo"
+#define MICHI_UI_STR_WAITING_IP        "Esperando IP"
 #define MICHI_UI_STR_WAITING_PLAYBACK  "Esperando reproducción"
 
 /* Status */

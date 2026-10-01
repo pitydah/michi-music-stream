@@ -703,6 +703,14 @@ static void test_pairing_overlay_priority_and_orthogonality(void)
                 .pairing_overlay = MICHI_UI_PAIRING_OVERLAY_PIN,
                 .pairing_pin = "123456",
             }
+        },
+        {
+            .id = "OVERLAY-4",
+            .description = "PLAYING + NO_NETWORK",
+            .ctx = {
+                .state = MICHI_STATE_PLAYING,
+                .pairing_overlay = MICHI_UI_PAIRING_OVERLAY_NO_NETWORK,
+            }
         }
     };
     
@@ -761,6 +769,7 @@ static void test_network_truth_pairing_and_diagnostics(void)
         .clock_synced = false,
         .mdns_running = false,
         .announces_sent = 0,
+        .announces_sent_session = 0,
     };
     michi_ui_screen_ctx_t diag_whisker = {
         .state = MICHI_STATE_IDLE,
@@ -770,6 +779,7 @@ static void test_network_truth_pairing_and_diagnostics(void)
         .ipv4_str = "192.168.1.155",
         .clock_synced = true,
         .announces_sent = 12,
+        .announces_sent_session = 12,
         .mdns_running = true,
     };
     memset(fb1, 0, (size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
@@ -781,6 +791,79 @@ static void test_network_truth_pairing_and_diagnostics(void)
         if (fb1[i] != fb2[i]) diff++;
     }
     CHECK(diff > 100, "Diagnostics with active Whisker and IP is visually distinct from offline diagnostics");
+
+    /* 3. Ready screen truth: Wi-Fi connected without IP shows 'Esperando IP' instead of 'Listo' */
+    michi_ui_screen_ctx_t ready_no_wifi = {
+        .state = MICHI_STATE_IDLE,
+        .wifi_connected = false,
+        .network_ready = false,
+    };
+    michi_ui_screen_ctx_t ready_wifi_no_ip = {
+        .state = MICHI_STATE_IDLE,
+        .wifi_connected = true,
+        .network_ready = false,
+    };
+    michi_ui_screen_ctx_t ready_full = {
+        .state = MICHI_STATE_IDLE,
+        .wifi_connected = true,
+        .network_ready = true,
+    };
+    memset(fb1, 0, (size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    memset(fb2, 0, (size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    michi_ui_render_screen(fb1, PANEL_W, PANEL_H, 0, &ready_no_wifi);
+    michi_ui_render_screen(fb2, PANEL_W, PANEL_H, 0, &ready_wifi_no_ip);
+    diff = 0;
+    for (int i = 0; i < PANEL_W * PANEL_H; i++) {
+        if (fb1[i] != fb2[i]) diff++;
+    }
+    CHECK(diff > 20, "Ready with Wi-Fi but no IP ('Esperando IP') is visually distinct from no Wi-Fi ('Sin conexión')");
+
+    memset(fb1, 0, (size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    michi_ui_render_screen(fb1, PANEL_W, PANEL_H, 0, &ready_full);
+    diff = 0;
+    for (int i = 0; i < PANEL_W * PANEL_H; i++) {
+        if (fb1[i] != fb2[i]) diff++;
+    }
+    CHECK(diff > 20, "Ready with Wi-Fi but no IP ('Esperando IP') is visually distinct from Ready ('Listo')");
+
+    /* 4. Diagnostics: historical announces without current-session announce must NOT show 'Whisker activo' */
+    michi_ui_screen_ctx_t diag_historical_only = {
+        .state = MICHI_STATE_IDLE,
+        .show_diagnostics = true,
+        .wifi_connected = true,
+        .network_ready = true,
+        .ipv4_str = "192.168.1.155",
+        .clock_synced = true,
+        .announces_sent = 50,
+        .announces_sent_session = 0,
+        .mdns_running = true,
+    };
+    memset(fb1, 0, (size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    michi_ui_render_screen(fb1, PANEL_W, PANEL_H, 0, &diag_historical_only);
+    diff = 0;
+    for (int i = 0; i < PANEL_W * PANEL_H; i++) {
+        if (fb1[i] != fb2[i]) diff++;
+    }
+    CHECK(diff > 10, "Diagnostics with historical-only announces shows mDNS and differs from Whisker active");
+
+    /* 5. Pairing overlay NO_NETWORK */
+    michi_ui_screen_ctx_t ovl_no_net = {
+        .state = MICHI_STATE_PLAYING,
+        .pairing_overlay = MICHI_UI_PAIRING_OVERLAY_NO_NETWORK,
+    };
+    michi_ui_screen_ctx_t ovl_none = {
+        .state = MICHI_STATE_PLAYING,
+        .pairing_overlay = MICHI_UI_PAIRING_OVERLAY_NONE,
+    };
+    memset(fb1, 0, (size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    memset(fb2, 0, (size_t)PANEL_W * PANEL_H * sizeof(uint16_t));
+    michi_ui_render_screen(fb1, PANEL_W, PANEL_H, 0, &ovl_none);
+    michi_ui_render_screen(fb2, PANEL_W, PANEL_H, 0, &ovl_no_net);
+    diff = 0;
+    for (int i = 0; i < PANEL_W * PANEL_H; i++) {
+        if (fb1[i] != fb2[i]) diff++;
+    }
+    CHECK(diff > 50, "NO_NETWORK overlay renders on top of PLAYING state");
 
     free(fb1);
     free(fb2);

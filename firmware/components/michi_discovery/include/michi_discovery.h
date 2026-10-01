@@ -175,6 +175,7 @@ typedef struct {
     bool socket_open;        /*!< True when UDP multicast socket is open */
     bool clock_synced;       /*!< True when wall clock is synchronized (announces un-gated) */
     uint32_t announces_sent; /*!< Cumulative signed announce datagrams sent this boot */
+    uint32_t announces_sent_session; /*!< Signed announces sent in current discovery session */
 } michi_discovery_status_t;
 
 /**

@@ -93,16 +93,19 @@ void michi_ui_draw_screen_ready(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint
     const michi_ui_font_t *font_lg = michi_ui_font_get(MICHI_FONT_LG);
 
     bool wifi = (ctx != NULL) ? ctx->wifi_connected : false;
+    bool net_ready = (ctx != NULL) ? ctx->network_ready : false;
 
     michi_ui_draw_icon(fb, fb_w, fb_h, y_origin, 136, 55, MICHI_ICON_CAT, 48, MICHI_UI_TEXT_PRIMARY);
     ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 117, MICHI_UI_STR_BRAND_LOWER, font_lg, MICHI_UI_TEXT_PRIMARY);
 
+    const michi_ui_font_t *font_sm2 = michi_ui_font_get(MICHI_FONT_SM);
     if (!wifi) {
-        const michi_ui_font_t *font_sm2 = michi_ui_font_get(MICHI_FONT_SM);
         ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 151, MICHI_UI_STR_NO_CONNECTION,
                               font_sm2, MICHI_UI_TEXT_SECONDARY);
+    } else if (!net_ready) {
+        ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 151, MICHI_UI_STR_WAITING_IP,
+                              font_sm2, MICHI_UI_TEXT_SECONDARY);
     } else {
-        const michi_ui_font_t *font_sm2 = michi_ui_font_get(MICHI_FONT_SM);
         ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 151, MICHI_UI_STR_READY,
                               font_sm2, MICHI_UI_TEXT_TERTIARY);
     }
@@ -447,10 +450,10 @@ void michi_ui_draw_screen_diagnostics(uint16_t *fb, uint16_t fb_w, uint16_t fb_h
 
     /* Row 4: Discovery */
     rows[r_count].label = "Discovery";
-    if (ctx != NULL && ctx->clock_synced && ctx->announces_sent > 0) {
+    if (ctx != NULL && ctx->network_ready && ctx->clock_synced && ctx->announces_sent_session > 0) {
         snprintf(rows[r_count].val, sizeof(rows[r_count].val), "Whisker activo");
         rows[r_count].val_color = MICHI_UI_SUCCESS;
-    } else if (ctx != NULL && !ctx->clock_synced && ctx->mdns_running) {
+    } else if (ctx != NULL && ctx->mdns_running && (ctx->network_ready || ctx->wifi_connected)) {
         snprintf(rows[r_count].val, sizeof(rows[r_count].val), "mDNS activo");
         rows[r_count].val_color = MICHI_UI_WARNING;
     } else {
@@ -554,6 +557,25 @@ void michi_ui_draw_screen_button_press_feedback(uint16_t *fb, uint16_t fb_w,
                           MICHI_UI_STR_BTN_RELEASE_SUB, font_sm, MICHI_UI_TEXT_SECONDARY);
 }
 
+void michi_ui_draw_screen_pairing_no_network(uint16_t *fb, uint16_t fb_w,
+                                             uint16_t fb_h, uint16_t y_origin)
+{
+    const michi_ui_font_t *font_lg = michi_ui_font_get(MICHI_FONT_LG);
+    const michi_ui_font_t *font_sm = michi_ui_font_get(MICHI_FONT_SM);
+
+    /* Warning icon 32x32 centered at cx=160, y=65 */
+    michi_ui_draw_icon(fb, fb_w, fb_h, y_origin, (320 - 32) / 2, 65, MICHI_ICON_WARNING, 32,
+                       MICHI_UI_WARNING);
+
+    /* Title "Sin conexión" centered at y=120 */
+    ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 120,
+                          MICHI_UI_STR_NO_CONNECTION, font_lg, MICHI_UI_TEXT_PRIMARY);
+
+    /* Subtitle "Esperando dirección IP" centered at y=152 */
+    ui_draw_text_centered(fb, fb_w, fb_h, y_origin, 152,
+                          "Esperando direcci\xc3\xb3n IP", font_sm, MICHI_UI_TEXT_SECONDARY);
+}
+
 void michi_ui_render_screen(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
                             uint16_t y_origin, const michi_ui_screen_ctx_t *ctx)
 {
@@ -600,6 +622,10 @@ void michi_ui_render_screen(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
     }
     if (ctx->pairing_overlay == MICHI_UI_PAIRING_OVERLAY_BUTTON_PRESS) {
         michi_ui_draw_screen_button_press_feedback(fb, fb_w, fb_h, y_origin);
+        return;
+    }
+    if (ctx->pairing_overlay == MICHI_UI_PAIRING_OVERLAY_NO_NETWORK) {
+        michi_ui_draw_screen_pairing_no_network(fb, fb_w, fb_h, y_origin);
         return;
     }
 

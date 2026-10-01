@@ -51,6 +51,7 @@ static volatile bool s_initialized;
 
 #if defined(ESP_PLATFORM)
 static esp_timer_handle_t s_volume_timer = NULL;
+static esp_timer_handle_t s_pairing_overlay_timer = NULL;
 #else
 static int64_t s_mock_time_ms = 0;
 void michi_display_set_mock_time_ms(int64_t now_ms)
@@ -60,6 +61,7 @@ void michi_display_set_mock_time_ms(int64_t now_ms)
 #endif
 
 static int64_t s_volume_overlay_until_ms = 0;
+static int64_t s_pairing_overlay_until_ms = 0;
 
 /* Set when a render request is dropped on a full queue; the render task
  * re-renders once after the drain so a dropped request does not leave the
@@ -93,6 +95,17 @@ static void queue_render(void)
 static void on_volume_timer(void *arg)
 {
     (void)arg;
+    queue_render();
+}
+
+static void on_pairing_overlay_timer(void *arg)
+{
+    (void)arg;
+    portENTER_CRITICAL(&s_info_mux);
+    if (s_pairing_overlay == MICHI_DISPLAY_PAIRING_OVERLAY_NO_NETWORK) {
+        s_pairing_overlay = MICHI_DISPLAY_PAIRING_OVERLAY_NONE;
+    }
+    portEXIT_CRITICAL(&s_info_mux);
     queue_render();
 }
 #endif
@@ -200,6 +213,10 @@ static void render_current_state(void)
     int64_t now_ms = s_mock_time_ms;
 #endif
     bool show_vol = (now_ms < s_volume_overlay_until_ms);
+    if (pairing_overlay_snap == MICHI_DISPLAY_PAIRING_OVERLAY_NO_NETWORK &&
+        now_ms >= s_pairing_overlay_until_ms) {
+        pairing_overlay_snap = MICHI_DISPLAY_PAIRING_OVERLAY_NONE;
+    }
 
     michi_ui_dac_state_t dac_st = MICHI_UI_DAC_UNKNOWN;
     const char *dac_name = NULL;
@@ -248,6 +265,7 @@ static void render_current_state(void)
         .pairing_overlay = (michi_ui_pairing_overlay_t)pairing_overlay_snap,
         .network_ready = net_ready,
         .announces_sent = disc_st.announces_sent,
+        .announces_sent_session = disc_st.announces_sent_session,
         .mdns_running = disc_st.mdns_running,
     };
     strncpy(s_frame_snapshot.ipv4_str, ip_buf, sizeof(s_frame_snapshot.ipv4_str) - 1);
@@ -343,6 +361,12 @@ esp_err_t michi_display_init(void)
         .name = "michi_vol_ovl",
     };
     esp_timer_create(&timer_args, &s_volume_timer);
+
+    const esp_timer_create_args_t ovl_timer_args = {
+        .callback = on_pairing_overlay_timer,
+        .name = "michi_ovl_tmr",
+    };
+    esp_timer_create(&ovl_timer_args, &s_pairing_overlay_timer);
 #endif
     ESP_LOGI(TAG, "subsystem=display state=ok phase=6");
     return ESP_OK;
@@ -429,12 +453,51 @@ esp_err_t michi_display_clear_pairing_pin(void)
     return michi_display_show_pairing_pin(NULL);
 }
 
+esp_err_t michi_display_trigger_network_error_overlay(void)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+#if defined(ESP_PLATFORM)
+    int64_t now_ms = esp_timer_get_time() / 1000;
+#else
+    int64_t now_ms = s_mock_time_ms;
+#endif
+    portENTER_CRITICAL(&s_info_mux);
+    s_pairing_overlay = MICHI_DISPLAY_PAIRING_OVERLAY_NO_NETWORK;
+    s_pairing_overlay_until_ms = now_ms + 2500;
+    portEXIT_CRITICAL(&s_info_mux);
+
+#if defined(ESP_PLATFORM)
+    if (s_pairing_overlay_timer != NULL) {
+        esp_timer_stop(s_pairing_overlay_timer);
+        esp_timer_start_once(s_pairing_overlay_timer, 2500 * 1000);
+    }
+#endif
+    queue_render();
+    return ESP_OK;
+}
+
 esp_err_t michi_display_set_pairing_overlay(int overlay)
 {
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
+#if defined(ESP_PLATFORM)
+    int64_t now_ms = esp_timer_get_time() / 1000;
+#else
+    int64_t now_ms = s_mock_time_ms;
+#endif
+    if (overlay == MICHI_DISPLAY_PAIRING_OVERLAY_NO_NETWORK) {
+        return michi_display_trigger_network_error_overlay();
+    }
     portENTER_CRITICAL(&s_info_mux);
+    if (s_pairing_overlay == MICHI_DISPLAY_PAIRING_OVERLAY_NO_NETWORK &&
+        overlay == MICHI_DISPLAY_PAIRING_OVERLAY_NONE &&
+        now_ms < s_pairing_overlay_until_ms) {
+        portEXIT_CRITICAL(&s_info_mux);
+        return ESP_OK;
+    }
     s_pairing_overlay = overlay;
     portEXIT_CRITICAL(&s_info_mux);
     queue_render();

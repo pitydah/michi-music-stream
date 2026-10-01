@@ -174,6 +174,7 @@ static SemaphoreHandle_t s_announce_mutex;
 static SemaphoreHandle_t s_discovery_done_sem;
 static uint32_t s_discovery_generation;
 static uint32_t s_announces_sent;
+static uint32_t s_announces_sent_session;
 
 /* ------------------------------------------------------------------ */
 /* Internals (all called with the announce mutex held)                */
@@ -296,6 +297,7 @@ static void announce_now_locked(void)
                  errno);
     } else {
         s_announces_sent++;
+        s_announces_sent_session++;
         ESP_LOGI(TAG, "discovery: announce sent (%u bytes, ts=%" PRId64 ")",
                  (unsigned)datagram_len, announce.timestamp_ms);
     }
@@ -662,6 +664,7 @@ static esp_err_t discovery_start_internal(const char *ipv4)
         goto out;
     }
     s_discovery_generation++;
+    s_announces_sent_session = 0;
     s_active = true;
 
     advertise_mdns_locked();
@@ -693,6 +696,7 @@ static esp_err_t discovery_stop_internal(void)
     if (s_active) {
         s_active = false;
         s_discovery_generation++;
+        s_announces_sent_session = 0;
         /* New network-up cycle: a fresh gate transition may log the
          * defer warning again (once per cycle, never per tick). */
         s_clock_gate_logged = false;
@@ -853,6 +857,7 @@ esp_err_t michi_discovery_shutdown(void)
     s_initialized = false;
     s_shutdown_in_progress = false;
     s_announces_sent = 0;
+    s_announces_sent_session = 0;
     portEXIT_CRITICAL(&s_lifecycle_mux);
 
     ESP_LOGI(TAG, "subsystem=discovery state=off");
@@ -889,6 +894,7 @@ esp_err_t michi_discovery_get_status(michi_discovery_status_t *out)
     out->socket_open = (s_sock >= 0);
     out->clock_synced = michi_time_is_synchronized();
     out->announces_sent = s_announces_sent;
+    out->announces_sent_session = s_announces_sent_session;
     xSemaphoreGive(s_announce_mutex);
     discovery_api_exit();
     return ESP_OK;
