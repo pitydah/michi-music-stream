@@ -41,6 +41,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+export PKG_CONFIG_PATH="${HOME}/.local/cjson/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+
 MODE="full"
 case "${1:-}" in
     ""|--full) MODE="full" ;;

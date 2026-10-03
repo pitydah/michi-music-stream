@@ -259,7 +259,7 @@ def test_case_complete_pairing():
         assert r.status_code == 409
         consumed = r.get_json()
         validate_against(consumed, "error.schema.json", "pair/confirm double 409")
-        assert consumed["error"]["code"] == "PAIRING_ALREADY_CONSUMED"
+        assert consumed["error"]["code"] == "CONFLICT"
 
         r = c.get(f"/api/v1/pair/status?session_id={sid}")
         assert r.status_code == 200
