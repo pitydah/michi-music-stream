@@ -415,6 +415,27 @@ def test_pairing_recover_success_and_invalidation():
     assert code_rep == 400
     assert body_rep["error"]["code"] == "INVALID_REQUEST"
 
+    # 5. Section 2.7: Lost response after recovery -> recover #2 rotates to token3, preserving device_id
+    code_start3, start_body3 = s.pairing_recover_start({
+        "michi_id": ctrl_id["michi_id"],
+        "public_key": ctrl_id["public_key"],
+    })
+    assert code_start3 == 200
+    ch_nonce3 = start_body3["challenge_nonce"]
+    sig3 = base64.urlsafe_b64encode(priv.sign(base64.urlsafe_b64decode(ch_nonce3 + "=="))).decode("ascii").rstrip("=")
+    payload3 = dict(ctrl_id)
+    payload3["challenge_nonce"] = ch_nonce3
+    payload3["challenge_signature"] = sig3
+
+    code3, body3 = s.pairing_recover(payload3)
+    assert code3 == 200
+    token3 = body3["token"]
+    assert token3 != new_token
+    assert body3["device_id"] == confirmed["device_id"]
+    assert s.validate_pairing_token(token3) is True
+    assert s.validate_pairing_token(new_token) is False
+    assert s.validate_pairing_token(old_token) is False
+
     print("PASS pairing recover rotates token and invalidates old")
     print("PASS validate pairing token (digest compare)")
 

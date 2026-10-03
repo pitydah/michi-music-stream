@@ -706,6 +706,38 @@ static void test_authenticated_recovery(void)
     CHECK(strcmp(got_id, device_id1) == 0,
           "new token resolves to the same device_id");
 
+    /* Section 2.7: Lost response after recovery: recover #1 completes remotely ->
+     * response lost in transit -> recover #2 rotates again to token3, preserving device_id */
+    char nonce3[MICHI_PAIRING_NONCE_B64_MAX];
+    CHECK(michi_pairing_recover_start(peer.michi_id, peer.public_key,
+                                      nonce3, sizeof(nonce3),
+                                      exp_iso, sizeof(exp_iso)) ==
+              MICHI_PAIRING_RECOVER_START_OK,
+          "recover_start succeeds for re-recovery after lost response");
+    strlcpy(rec_peer.challenge_nonce, nonce3, sizeof(rec_peer.challenge_nonce));
+    sign_challenge_nonce(sk, nonce3, rec_peer.challenge_signature);
+
+    char token3[MICHI_PAIRING_TOKEN_B64_LEN];
+    char device_id3[MICHI_PAIRING_DEVICE_ID_LEN];
+    CHECK(michi_pairing_recover(&rec_peer, token3, sizeof(token3),
+                                device_id3, sizeof(device_id3)) ==
+              MICHI_PAIRING_RECOVER_OK,
+          "recover #2 succeeds, rotating token again after lost response");
+    CHECK(strcmp(device_id3, device_id1) == 0,
+          "token3 preserves original device_id across consecutive recoveries");
+    CHECK(strcmp(token3, token2) != 0,
+          "token3 is distinct from token2");
+
+    /* Both token1 and token2 are now invalid; token3 is valid */
+    CHECK(michi_pairing_validate_token(token1, got_id, sizeof(got_id), &perms) != ESP_OK,
+          "token1 remains invalid");
+    CHECK(michi_pairing_validate_token(token2, got_id, sizeof(got_id), &perms) != ESP_OK,
+          "token2 invalidated by second recovery");
+    CHECK(michi_pairing_validate_token(token3, got_id, sizeof(got_id), &perms) == ESP_OK,
+          "token3 validates after second recovery");
+    CHECK(strcmp(got_id, device_id1) == 0,
+          "token3 resolves to original device_id");
+
     memset(sk, 0, sizeof(sk));
     CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
 }

@@ -1,14 +1,14 @@
 {
-  "version": "1.0.0-alpha.1",
-  "upstream_commit": "47b3091d9d0401db25186bb96a6723e1d53433cb",
+  "version": "1.0.0-alpha.2",
+  "upstream_commit": "0bb7f941c418dc17c35b9f142d3d13a611d375ff",
   "files": [
     {
       "path": "UPSTREAM_COMMIT",
-      "sha256": "594af19e368e101728ee7701ba4fd6051c2b54cb193af1b732bee0f72baec8f8"
+      "sha256": "8a3ad70baab5d52c4a7e2e1a19e7aeb0b1faf45e215ec039a6cf57072ba8dad7"
     },
     {
       "path": "VERSION",
-      "sha256": "cf99c77b65c278cace8c2d3b1fabf4e9cd4e4bee9e4ffa200748acf3445f35bf"
+      "sha256": "7cea810166d8de3820562c44d6d8f59e786a97c550dfd5285013187f60dfc296"
     },
     {
       "path": "examples/negative/error-conflict.json",
@@ -76,7 +76,7 @@
     },
     {
       "path": "openapi/michi-link-v1.yaml",
-      "sha256": "f60fa5857f81262f0ff83df1761196210881e84a6895b598186ec6ceca7f69b4"
+      "sha256": "df7b3c0ff88149a7d013113e150d1c4d61e52d9c73b38f61fb72d9aa12783173"
     },
     {
       "path": "schemas/album.schema.json",

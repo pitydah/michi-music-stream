@@ -352,6 +352,114 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /pair/recover/start:
+    post:
+      tags:
+        - Pairing
+      summary: Start authenticated token recovery
+      description: |
+        Initiates an authenticated credential recovery handshake with the receiver
+        for an already registered controller. Returns a single-use challenge nonce
+        with a short expiration (60 seconds). If an active unexpired challenge
+        already exists for the controller, the receiver returns the existing challenge.
+      operationId: startPairRecover
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PairRecoverStartRequest"
+            example:
+              michi_id: JXcHys3oHoK2xsmQqlWEKi-KH_s4TrxJGw3YbiKP9-U
+              public_key: j8oIHv906goIsvcANXl_SZX8-OPcZftDkTPwTYaQQ7E
+      responses:
+        "200":
+          description: Challenge issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PairRecoverStartResponse"
+              example:
+                challenge_nonce: VFfZjzw8JeAM7-RFiTSrMA
+                expires_at: "2026-08-12T20:02:00Z"
+                server_michi_id: QlGQosQszLQse057MCaw32IAHXv-I5klmAAsbivIays
+                server_public_key: KJN5aOu4gWhA0clmvmwqprYcwYI013vDNPx1jf90CpQ
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: Controller identity is not registered on this receiver
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: NOT_FOUND
+                  message: Controller identity is not registered on this receiver
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /pair/recover:
+    post:
+      tags:
+        - Pairing
+      summary: Complete authenticated token recovery
+      description: |
+        Completes authenticated token recovery by providing the Ed25519 signature
+        over the raw decoded bytes of the receiver-issued challenge_nonce.
+        Upon successful verification, the single-use challenge is consumed,
+        a new bearer token is issued, and the previous token is invalidated.
+      operationId: confirmPairRecover
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PairRecoverRequest"
+            example:
+              michi_id: JXcHys3oHoK2xsmQqlWEKi-KH_s4TrxJGw3YbiKP9-U
+              public_key: j8oIHv906goIsvcANXl_SZX8-OPcZftDkTPwTYaQQ7E
+              challenge_nonce: VFfZjzw8JeAM7-RFiTSrMA
+              challenge_signature: DTlMt9BYH_TnYgKAeGd8zTpza-w5b8BDm9AyIoAW2p0clD7JrzwN9cwPY5y48K14x_0z2TPq7-LTXdNTqmhr-w
+      responses:
+        "200":
+          description: Recovery successful, rotated bearer token issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PairRecoverResponse"
+              example:
+                token: EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE
+                expires_in: 0
+                device_id: 550e8400-e29b-41d4-a716-446655440002
+                server_id: 550e8400-e29b-41d4-a716-446655440000
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: Controller identity is not registered on this receiver
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: NOT_FOUND
+                  message: Controller identity is not registered on this receiver
+        "409":
+          description: Challenge already consumed or invalid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: CONFLICT
+                  message: Challenge nonce already consumed or invalid
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   # ============================================================================
   # LIBRARY
   # ============================================================================
@@ -4290,6 +4398,105 @@ components:
           minimum: 1
           maximum: 5
           description: PIN attempts remaining for this session (1..5)
+
+    # --------------------------------------------------------------------------
+    # PAIR RECOVER START
+    # --------------------------------------------------------------------------
+    PairRecoverStartRequest:
+      type: object
+      description: Request to initiate authenticated token recovery with a receiver-issued challenge.
+      required:
+        - michi_id
+        - public_key
+      properties:
+        michi_id:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+          description: Identity derived as base64url(BLAKE3(public_key)), exactly 43 chars, no padding
+        public_key:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+          description: Ed25519 public key in base64url, exactly 43 chars, no padding
+
+    PairRecoverStartResponse:
+      type: object
+      description: Response to POST /pair/recover/start containing a receiver-issued single-use challenge nonce.
+      required:
+        - challenge_nonce
+        - expires_at
+        - server_michi_id
+        - server_public_key
+      properties:
+        challenge_nonce:
+          type: string
+          minLength: 22
+          pattern: "^[A-Za-z0-9_-]{22,}$"
+          description: Random single-use nonce in base64url (at least 16 bytes, 22 chars), issued by receiver
+        expires_at:
+          type: string
+          format: date-time
+          description: Challenge expiry timestamp (RFC 3339)
+        server_michi_id:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+          description: Server identity derived as base64url(BLAKE3(public_key)), 43 chars
+        server_public_key:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+          description: Server Ed25519 public key in base64url, 43 chars
+
+    # --------------------------------------------------------------------------
+    # PAIR RECOVER
+    # --------------------------------------------------------------------------
+    PairRecoverRequest:
+      type: object
+      description: Request to complete authenticated token recovery using receiver-issued challenge.
+      required:
+        - michi_id
+        - public_key
+        - challenge_nonce
+        - challenge_signature
+      properties:
+        michi_id:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+          description: Identity derived as base64url(BLAKE3(public_key)), exactly 43 chars, no padding
+        public_key:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+          description: Ed25519 public key in base64url, exactly 43 chars, no padding
+        challenge_nonce:
+          type: string
+          minLength: 22
+          pattern: "^[A-Za-z0-9_-]{22,}$"
+          description: Receiver-issued nonce in base64url (at least 16 bytes, 22 chars)
+        challenge_signature:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{86}$"
+          description: Ed25519 signature of the decoded challenge_nonce raw bytes in base64url, exactly 86 chars, no padding
+
+    PairRecoverResponse:
+      type: object
+      description: Response to POST /pair/recover with rotated bearer token.
+      required:
+        - token
+        - expires_in
+        - device_id
+        - server_id
+      properties:
+        token:
+          type: string
+          description: Rotated opaque bearer token issued for the paired device
+        expires_in:
+          type: integer
+          minimum: 0
+          description: Token lifetime in seconds. 0 means no automatic expiry.
+        device_id:
+          type: string
+          description: Stable identifier assigned to the paired device
+        server_id:
+          type: string
+          description: Stable identifier of the server that issued the token
 
     # --------------------------------------------------------------------------
     # TOKEN REFRESH

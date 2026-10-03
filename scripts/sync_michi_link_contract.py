@@ -40,7 +40,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 BUNDLE_DIR = REPO_ROOT / "contracts" / "michi-link"
 MANIFEST_NAME = "manifest.json"
 SOURCE_BUNDLE_PATH = "contracts/receiver-v1-lite"
-DEFAULT_SOURCE_REF = "michi-link-v1.0.0-alpha.1"
+DEFAULT_SOURCE_REF = "michi-link-v1.0.0-alpha.2"
 DEFAULT_SOURCE_URL = "https://github.com/pitydah/michi-link.git"
 
 
