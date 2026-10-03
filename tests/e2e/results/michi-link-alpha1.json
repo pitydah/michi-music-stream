@@ -9,13 +9,13 @@
       "commit": "84b72029e00dcb66915acc0805df0c7f50b026bc"
     },
     "michi_music_stream": {
-      "commit": "5abc59f064f00b3d744a4a625484a5ff9662992a",
+      "commit": "3e8adc9c6f12d80ab8fefc678feb022decd9aff2",
       "note": "tip under test (firmware, simulator and contracts trees)"
     }
   },
   "bundle": {
     "version": "1.0.0-alpha.1",
-    "upstream_commit": "01b0aeec354b37a0e3f7f088649e57cf3857e410"
+    "upstream_commit": "47b3091d9d0401db25186bb96a6723e1d53433cb"
   },
   "environment": "canonical receiver simulator (simulator/receiver_sim.py, MS-02) over real TCP HTTP; real UDP RTP up to the bound socket",
   "rtp_transport": {
