@@ -276,6 +276,14 @@ bool michi_http_json_get_pair_start(const cJSON *obj,
                                     char *err_field, size_t err_field_len);
 
 /**
+ * @brief Parse + copy the canonical pair/recover/start body (POST /pair/recover/start).
+ */
+bool michi_http_json_get_pair_recover_start(const cJSON *obj,
+                                            char *michi_id, size_t michi_id_len,
+                                            char *public_key, size_t public_key_len,
+                                            char *err_field, size_t err_field_len);
+
+/**
  * @brief Parse + copy the canonical pair/recover body (POST /pair/recover).
  */
 bool michi_http_json_get_pair_recover(const cJSON *obj,

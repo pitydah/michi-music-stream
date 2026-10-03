@@ -184,7 +184,7 @@ def test_manual_pairing_flow_with_dynamic_pin():
             "public_key": vector["public_key"],
         })
         assert status == 409, status_body
-        assert status_body["error"]["code"] == "PAIRING_ALREADY_CONSUMED"
+        assert status_body["error"]["code"] == "CONFLICT"
     finally:
         if sim is not None:
             sim.stop()

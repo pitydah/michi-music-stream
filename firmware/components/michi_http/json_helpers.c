@@ -223,6 +223,41 @@ bool michi_http_json_get_pair_start(const cJSON *obj,
     return true;
 }
 
+bool michi_http_json_get_pair_recover_start(const cJSON *obj,
+                                            char *michi_id, size_t michi_id_len,
+                                            char *public_key, size_t public_key_len,
+                                            char *err_field, size_t err_field_len)
+{
+    if (obj == NULL || michi_id == NULL || public_key == NULL ||
+        err_field == NULL || err_field_len == 0) {
+        return false;
+    }
+    const char *rejected = pairing_rejected_field(obj);
+    if (rejected != NULL) {
+        snprintf(err_field, err_field_len, "%s", rejected);
+        return false;
+    }
+    const cJSON *mi = cJSON_GetObjectItem(obj, "michi_id");
+    const cJSON *pk = cJSON_GetObjectItem(obj, "public_key");
+    if (mi == NULL || !cJSON_IsString(mi) || mi->valuestring == NULL ||
+        !b64url_exact(mi->valuestring, 43)) {
+        snprintf(err_field, err_field_len, "%s", "michi_id");
+        return false;
+    }
+    if (pk == NULL || !cJSON_IsString(pk) || pk->valuestring == NULL ||
+        !b64url_exact(pk->valuestring, 43)) {
+        snprintf(err_field, err_field_len, "%s", "public_key");
+        return false;
+    }
+    if (michi_id_len < 44 || public_key_len < 44) {
+        snprintf(err_field, err_field_len, "%s", "body");
+        return false;
+    }
+    memcpy(michi_id, mi->valuestring, 44);
+    memcpy(public_key, pk->valuestring, 44);
+    return true;
+}
+
 bool michi_http_json_get_pair_recover(const cJSON *obj,
                                       char *michi_id, size_t michi_id_len,
                                       char *public_key, size_t public_key_len,

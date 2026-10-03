@@ -120,6 +120,7 @@ extern "C" {
 #define MICHI_PAIRING_DEVICE_ID_LEN 37u         /*!< Controller UUID v4 + NUL */
 #define MICHI_PAIRING_EXPIRES_AT_LEN 25u        /*!< RFC 3339 "YYYY-MM-DDTHH:MM:SSZ" + NUL */
 #define MICHI_PAIRING_NONCE_B64_MAX 64u         /*!< challenge_nonce buffer (schema: >= 22 chars) */
+#define MICHI_PAIRING_CHALLENGE_NONCE_BYTES 32u /*!< CSPRNG bytes for recovery challenge */
 #define MICHI_PAIRING_IP_MAX 46u                /*!< Source IP string (IPv4/IPv6) + NUL */
 #define MICHI_PAIRING_ACTIVITY_PERSIST_SECONDS 60u /*!< Min interval between last-activity NVS writes */
 
@@ -369,9 +370,40 @@ michi_pairing_confirm_result_t michi_pairing_confirm(
     const char *public_key, char *out_token, size_t token_len,
     char *out_device_id, size_t device_id_len);
 
+typedef enum {
+    MICHI_PAIRING_RECOVER_START_OK = 0,
+    MICHI_PAIRING_RECOVER_START_NOT_FOUND,
+    MICHI_PAIRING_RECOVER_START_INVALID,
+    MICHI_PAIRING_RECOVER_START_INTERNAL,
+} michi_pairing_recover_start_result_t;
+
+/**
+ * @brief Request an authenticated pairing recovery challenge (POST /pair/recover/start).
+ *
+ * Checks that the controller (michi_id, public_key) is already registered in NVS.
+ * If registered, mints a single-use CSPRNG challenge nonce with a 60-second TTL
+ * stored in RAM.
+ *
+ * @param michi_id        Controller michi_id (43-char b64url-nopad).
+ * @param public_key      Controller public key (43-char b64url-nopad).
+ * @param out_nonce       Buffer (>= MICHI_PAIRING_NONCE_B64_MAX).
+ * @param nonce_len       Size of out_nonce.
+ * @param out_expires_at  Buffer (>= MICHI_PAIRING_EXPIRES_AT_LEN).
+ * @param expires_at_len  Size of out_expires_at.
+ * @return A MICHI_PAIRING_RECOVER_START_* result code.
+ */
+michi_pairing_recover_start_result_t michi_pairing_recover_start(
+    const char *michi_id, const char *public_key,
+    char *out_nonce, size_t nonce_len,
+    char *out_expires_at, size_t expires_at_len);
+
 /**
  * @brief Authenticated pairing recovery: rotate the token for an already
  *        registered controller using its Ed25519 signature over challenge_nonce.
+ *
+ * Verifies that an active, unexpired challenge matching peer->challenge_nonce
+ * exists in RAM for peer->michi_id. Immediately consumes the challenge (single-use).
+ * Validates Ed25519 signature, rotates the token in NVS and preserves device_id.
  *
  * @param peer            Peer credentials and challenge signature.
  * @param out_token       Buffer (>= MICHI_PAIRING_TOKEN_B64_LEN).

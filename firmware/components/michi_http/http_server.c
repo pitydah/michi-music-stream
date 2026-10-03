@@ -628,6 +628,90 @@ static esp_err_t pair_confirm_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* POST /api/v1/pair/recover/start (no auth): mints a single-use challenge
+ * nonce for an already-paired controller to initiate authenticated recovery. */
+static esp_err_t pair_recover_start_handler(httpd_req_t *req)
+{
+    char michi_id[MICHI_IDENTITY_MICHI_ID_LEN] = {0};
+    char public_key[MICHI_IDENTITY_PUBLIC_KEY_B64_LEN] = {0};
+    char field[20] = {0};
+
+    cJSON *root = read_json_body(req);
+    if (root == NULL) {
+        return ESP_OK;
+    }
+    const bool body_ok = michi_http_json_get_pair_recover_start(
+        root, michi_id, sizeof(michi_id), public_key, sizeof(public_key),
+        field, sizeof(field));
+    cJSON_Delete(root);
+    if (!body_ok) {
+        return michi_http_send_error(req, 400,
+                                     "invalid pair/recover/start request body",
+                                     field);
+    }
+
+    char server_michi_id[MICHI_IDENTITY_MICHI_ID_LEN] = {0};
+    uint8_t server_pk_raw[MICHI_IDENTITY_KEY_BYTES] = {0};
+    char server_public_key[MICHI_IDENTITY_PUBLIC_KEY_B64_LEN] = {0};
+    if (michi_identity_michi_id(server_michi_id, sizeof(server_michi_id)) !=
+            ESP_OK ||
+        michi_identity_public_key(server_pk_raw) != ESP_OK ||
+        michi_identity_base64url_encode(server_pk_raw, sizeof(server_pk_raw),
+                                        server_public_key,
+                                        sizeof(server_public_key)) != ESP_OK) {
+        return michi_http_send_error(req, 500,
+                                     "server identity is not available",
+                                     NULL);
+    }
+
+    char nonce[MICHI_PAIRING_NONCE_B64_MAX] = {0};
+    char expires_at[MICHI_PAIRING_EXPIRES_AT_LEN] = {0};
+    const michi_pairing_recover_start_result_t result =
+        michi_pairing_recover_start(michi_id, public_key, nonce, sizeof(nonce),
+                                    expires_at, sizeof(expires_at));
+
+    switch (result) {
+    case MICHI_PAIRING_RECOVER_START_NOT_FOUND:
+        return michi_http_send_error(
+            req, 404, "controller identity is not registered on this receiver",
+            NULL);
+    case MICHI_PAIRING_RECOVER_START_INVALID:
+        return michi_http_send_error(
+            req, 400, "invalid controller public key or identity",
+            NULL);
+    case MICHI_PAIRING_RECOVER_START_INTERNAL:
+        return michi_http_send_error(
+            req, 500, "failed to issue recovery challenge",
+            NULL);
+    case MICHI_PAIRING_RECOVER_START_OK:
+        break;
+    }
+
+    cJSON *resp = cJSON_CreateObject();
+    if (resp == NULL) {
+        return michi_http_send_error(req, 500,
+                                     "out of memory while building response",
+                                     NULL);
+    }
+    esp_err_t err = ESP_OK;
+    if (cJSON_AddStringToObject(resp, "challenge_nonce", nonce) == NULL ||
+        cJSON_AddStringToObject(resp, "expires_at", expires_at) == NULL ||
+        cJSON_AddStringToObject(resp, "server_michi_id", server_michi_id) == NULL ||
+        cJSON_AddStringToObject(resp, "server_public_key", server_public_key) == NULL) {
+        err = ESP_ERR_NO_MEM;
+    }
+    if (err == ESP_OK) {
+        err = michi_http_send_json(req, 200, resp);
+    }
+    cJSON_Delete(resp);
+    if (err != ESP_OK) {
+        return michi_http_send_error(req, 500,
+                                     "failed to build pair/recover/start response",
+                                     NULL);
+    }
+    return ESP_OK;
+}
+
 /* POST /api/v1/pair/recover (no auth): authenticated token recovery for
  * already-paired controllers via Ed25519 signature over challenge_nonce. */
 static esp_err_t pair_recover_handler(httpd_req_t *req)
@@ -1533,6 +1617,7 @@ static const httpd_uri_t s_endpoints[] = {
     {.uri = "/api/v1/pair/start",                .method = HTTP_POST,   .handler = pair_start_handler},
     {.uri = "/api/v1/pair/status",               .method = HTTP_GET,    .handler = pair_status_handler},
     {.uri = "/api/v1/pair/confirm",              .method = HTTP_POST,   .handler = pair_confirm_handler},
+    {.uri = "/api/v1/pair/recover/start",        .method = HTTP_POST,   .handler = pair_recover_start_handler},
     {.uri = "/api/v1/pair/recover",              .method = HTTP_POST,   .handler = pair_recover_handler},
     {.uri = "/api/v1/receiver-lite/session",     .method = HTTP_POST,   .handler = session_start_handler},
     {.uri = "/api/v1/receiver-lite/session",     .method = HTTP_GET,    .handler = session_current_get_handler},

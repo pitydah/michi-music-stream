@@ -215,6 +215,19 @@ static void *s_pin_display_ctx;
  * throttle for validate_token). */
 static int64_t s_last_activity_persist;
 
+#define MICHI_PAIRING_RECOVER_TTL_US (60LL * 1000000LL) /* 60s single-use TTL */
+
+typedef struct {
+    char michi_id[MICHI_IDENTITY_MICHI_ID_LEN];
+    char public_key[MICHI_IDENTITY_PUBLIC_KEY_B64_LEN];
+    char challenge_nonce[MICHI_PAIRING_NONCE_B64_MAX];
+    int64_t expires_at_us;
+    int64_t expires_unix;
+    bool active;
+} michi_pairing_recovery_challenge_t;
+
+static michi_pairing_recovery_challenge_t s_recovery_challenges[CONFIG_MICHI_PAIRING_MAX_CONTROLLERS];
+
 /* --- small helpers ---------------------------------------------------- */
 
 static int64_t now_unix(void)
@@ -1170,6 +1183,129 @@ michi_pairing_confirm_result_t michi_pairing_confirm(
     return res;
 }
 
+static michi_pairing_recover_start_result_t pairing_recover_start_internal(
+    const char *michi_id, const char *public_key,
+    char *out_nonce, size_t nonce_len,
+    char *out_expires_at, size_t expires_at_len)
+{
+    if (michi_id == NULL || public_key == NULL ||
+        out_nonce == NULL || out_expires_at == NULL ||
+        nonce_len < MICHI_PAIRING_NONCE_B64_MAX ||
+        expires_at_len < MICHI_PAIRING_EXPIRES_AT_LEN) {
+        return MICHI_PAIRING_RECOVER_START_INVALID;
+    }
+
+    uint8_t pk_bytes[MICHI_IDENTITY_KEY_BYTES];
+    size_t pk_len = 0;
+    char derived_id[MICHI_IDENTITY_MICHI_ID_LEN];
+
+    if (michi_identity_base64url_decode(public_key, pk_bytes,
+                                        sizeof(pk_bytes), &pk_len) != ESP_OK ||
+        pk_len != MICHI_IDENTITY_KEY_BYTES ||
+        michi_identity_derive_michi_id(pk_bytes, derived_id,
+                                       sizeof(derived_id)) != ESP_OK ||
+        strcmp(derived_id, michi_id) != 0) {
+        ESP_LOGW(TAG, "pairing: recover_start_rejected reason=invalid_identity");
+        return MICHI_PAIRING_RECOVER_START_INVALID;
+    }
+
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+
+    size_t existing = s_blob.count;
+    for (size_t i = 0; i < s_blob.count; i++) {
+        if (strcmp((const char *)s_blob.controllers[i].michi_id, michi_id) == 0 &&
+            strcmp((const char *)s_blob.controllers[i].public_key, public_key) == 0) {
+            existing = i;
+            break;
+        }
+    }
+    if (existing >= s_blob.count) {
+        ESP_LOGW(TAG, "pairing: recover_start_rejected reason=not_registered");
+        xSemaphoreGive(s_mutex);
+        return MICHI_PAIRING_RECOVER_START_NOT_FOUND;
+    }
+
+    uint8_t nonce_raw[MICHI_PAIRING_CHALLENGE_NONCE_BYTES];
+    char nonce_b64[MICHI_PAIRING_NONCE_B64_MAX];
+    esp_fill_random(nonce_raw, sizeof(nonce_raw));
+    if (michi_identity_base64url_encode(nonce_raw, sizeof(nonce_raw),
+                                        nonce_b64, sizeof(nonce_b64)) != ESP_OK) {
+        memset(nonce_raw, 0, sizeof(nonce_raw));
+        xSemaphoreGive(s_mutex);
+        return MICHI_PAIRING_RECOVER_START_INTERNAL;
+    }
+    memset(nonce_raw, 0, sizeof(nonce_raw));
+
+    int64_t now_us = esp_timer_get_time();
+    int64_t now_sec = now_unix();
+    int64_t exp_us = now_us + MICHI_PAIRING_RECOVER_TTL_US;
+    int64_t exp_sec = (now_sec > 0) ? (now_sec + 60) : 0;
+
+    char exp_iso[MICHI_PAIRING_EXPIRES_AT_LEN];
+    rfc3339_from_unix(exp_sec, exp_iso, sizeof(exp_iso));
+
+    int target_slot = -1;
+    for (size_t i = 0; i < CONFIG_MICHI_PAIRING_MAX_CONTROLLERS; i++) {
+        if (s_recovery_challenges[i].active &&
+            strcmp(s_recovery_challenges[i].michi_id, michi_id) == 0 &&
+            strcmp(s_recovery_challenges[i].public_key, public_key) == 0) {
+            target_slot = (int)i;
+            break;
+        }
+    }
+    if (target_slot < 0) {
+        for (size_t i = 0; i < CONFIG_MICHI_PAIRING_MAX_CONTROLLERS; i++) {
+            if (!s_recovery_challenges[i].active) {
+                target_slot = (int)i;
+                break;
+            }
+        }
+    }
+    if (target_slot < 0) {
+        for (size_t i = 0; i < CONFIG_MICHI_PAIRING_MAX_CONTROLLERS; i++) {
+            if (s_recovery_challenges[i].active && now_us >= s_recovery_challenges[i].expires_at_us) {
+                target_slot = (int)i;
+                break;
+            }
+        }
+    }
+    if (target_slot < 0) {
+        target_slot = 0;
+    }
+
+    michi_pairing_recovery_challenge_t *c = &s_recovery_challenges[target_slot];
+    memset(c, 0, sizeof(*c));
+    strlcpy(c->michi_id, michi_id, sizeof(c->michi_id));
+    strlcpy(c->public_key, public_key, sizeof(c->public_key));
+    strlcpy(c->challenge_nonce, nonce_b64, sizeof(c->challenge_nonce));
+    c->expires_at_us = exp_us;
+    c->expires_unix = exp_sec;
+    c->active = true;
+
+    strlcpy(out_nonce, nonce_b64, nonce_len);
+    strlcpy(out_expires_at, exp_iso, expires_at_len);
+
+    xSemaphoreGive(s_mutex);
+
+    ESP_LOGI(TAG, "pairing: recover_start_issued controller=%s", michi_id);
+    return MICHI_PAIRING_RECOVER_START_OK;
+}
+
+michi_pairing_recover_start_result_t michi_pairing_recover_start(
+    const char *michi_id, const char *public_key,
+    char *out_nonce, size_t nonce_len,
+    char *out_expires_at, size_t expires_at_len)
+{
+    if (!pairing_api_enter()) {
+        return MICHI_PAIRING_RECOVER_START_NOT_FOUND;
+    }
+    michi_pairing_recover_start_result_t res = pairing_recover_start_internal(
+        michi_id, public_key, out_nonce, nonce_len,
+        out_expires_at, expires_at_len);
+    pairing_api_exit();
+    return res;
+}
+
 static michi_pairing_recover_result_t pairing_recover_internal(
     const michi_pairing_peer_t *peer, char *out_token, size_t token_len,
     char *out_device_id, size_t device_id_len)
@@ -1179,6 +1315,37 @@ static michi_pairing_recover_result_t pairing_recover_internal(
         device_id_len < MICHI_PAIRING_DEVICE_ID_LEN) {
         return MICHI_PAIRING_RECOVER_INVALID;
     }
+
+    /* Single-use challenge check and immediate consumption under mutex */
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    int matched_slot = -1;
+    int64_t now_us = esp_timer_get_time();
+    for (size_t i = 0; i < CONFIG_MICHI_PAIRING_MAX_CONTROLLERS; i++) {
+        if (s_recovery_challenges[i].active &&
+            strcmp(s_recovery_challenges[i].michi_id, peer->michi_id) == 0 &&
+            strcmp(s_recovery_challenges[i].public_key, peer->public_key) == 0 &&
+            strcmp(s_recovery_challenges[i].challenge_nonce, peer->challenge_nonce) == 0) {
+            matched_slot = (int)i;
+            break;
+        }
+    }
+
+    if (matched_slot < 0) {
+        ESP_LOGW(TAG, "pairing: recover_rejected reason=no_active_challenge");
+        xSemaphoreGive(s_mutex);
+        return MICHI_PAIRING_RECOVER_INVALID;
+    }
+
+    if (now_us >= s_recovery_challenges[matched_slot].expires_at_us) {
+        ESP_LOGW(TAG, "pairing: recover_rejected reason=challenge_expired");
+        memset(&s_recovery_challenges[matched_slot], 0, sizeof(s_recovery_challenges[0]));
+        xSemaphoreGive(s_mutex);
+        return MICHI_PAIRING_RECOVER_INVALID;
+    }
+
+    /* SINGLE-USE CONSUMPTION: wipe the challenge slot immediately before anything else */
+    memset(&s_recovery_challenges[matched_slot], 0, sizeof(s_recovery_challenges[0]));
+    xSemaphoreGive(s_mutex);
 
     uint8_t nonce_bytes[MICHI_PAIRING_NONCE_B64_MAX];
     size_t nonce_len = 0;
@@ -1198,19 +1365,33 @@ static michi_pairing_recover_result_t pairing_recover_internal(
                                         sizeof(pk_bytes), &pk_len) != ESP_OK ||
         nonce_len < 16 || pk_len != MICHI_IDENTITY_KEY_BYTES ||
         sig_len != MICHI_IDENTITY_SIGNATURE_BYTES) {
+        memset(nonce_bytes, 0, sizeof(nonce_bytes));
+        memset(sig_bytes, 0, sizeof(sig_bytes));
+        memset(pk_bytes, 0, sizeof(pk_bytes));
         return MICHI_PAIRING_RECOVER_INVALID;
     }
     if (!michi_identity_verify(nonce_bytes, nonce_len, sig_bytes,
                                pk_bytes)) {
         ESP_LOGW(TAG, "pairing: recover_rejected reason=signature");
+        memset(nonce_bytes, 0, sizeof(nonce_bytes));
+        memset(sig_bytes, 0, sizeof(sig_bytes));
+        memset(pk_bytes, 0, sizeof(pk_bytes));
         return MICHI_PAIRING_RECOVER_INVALID;
     }
     if (michi_identity_derive_michi_id(pk_bytes, derived_id,
                                        sizeof(derived_id)) != ESP_OK ||
         strcmp(derived_id, peer->michi_id) != 0) {
         ESP_LOGW(TAG, "pairing: recover_rejected reason=michi_id");
+        memset(nonce_bytes, 0, sizeof(nonce_bytes));
+        memset(sig_bytes, 0, sizeof(sig_bytes));
+        memset(pk_bytes, 0, sizeof(pk_bytes));
+        memset(derived_id, 0, sizeof(derived_id));
         return MICHI_PAIRING_RECOVER_INVALID;
     }
+    memset(nonce_bytes, 0, sizeof(nonce_bytes));
+    memset(sig_bytes, 0, sizeof(sig_bytes));
+    memset(pk_bytes, 0, sizeof(pk_bytes));
+    memset(derived_id, 0, sizeof(derived_id));
 
     uint8_t token_raw[MICHI_PAIRING_TOKEN_BYTES];
     uint8_t digest[MICHI_PAIRING_DIGEST_BYTES];
@@ -1223,6 +1404,7 @@ static michi_pairing_recover_result_t pairing_recover_internal(
         sha256_bytes(token_raw, sizeof(token_raw), digest) != ESP_OK) {
         memset(token_raw, 0, sizeof(token_raw));
         memset(token_b64, 0, sizeof(token_b64));
+        memset(digest, 0, sizeof(digest));
         return MICHI_PAIRING_RECOVER_INTERNAL;
     }
 
@@ -1240,6 +1422,9 @@ static michi_pairing_recover_result_t pairing_recover_internal(
     }
     if (existing >= s_blob.count) {
         ESP_LOGW(TAG, "pairing: recover_rejected reason=not_registered");
+        memset(token_raw, 0, sizeof(token_raw));
+        memset(token_b64, 0, sizeof(token_b64));
+        memset(digest, 0, sizeof(digest));
         xSemaphoreGive(s_mutex);
         return MICHI_PAIRING_RECOVER_NOT_FOUND;
     }
@@ -1252,6 +1437,9 @@ static michi_pairing_recover_result_t pairing_recover_internal(
     esp_err_t err = persist_blob(&next);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "pairing: recover_failed nvs_err=0x%x", (int)err);
+        memset(token_raw, 0, sizeof(token_raw));
+        memset(token_b64, 0, sizeof(token_b64));
+        memset(digest, 0, sizeof(digest));
         xSemaphoreGive(s_mutex);
         return MICHI_PAIRING_RECOVER_INTERNAL;
     }
@@ -1630,6 +1818,7 @@ esp_err_t michi_pairing_shutdown(void)
             esp_timer_delete(s_timer);
             s_timer = NULL;
         }
+        memset(s_recovery_challenges, 0, sizeof(s_recovery_challenges));
         xSemaphoreGive(s_mutex);
         vSemaphoreDelete(s_mutex);
         s_mutex = NULL;

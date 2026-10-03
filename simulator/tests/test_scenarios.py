@@ -173,7 +173,7 @@ def test_pairing_window_expired_status_expired():
         sid, "000000", CONTROLLER_IDENTITY["michi_id"], CONTROLLER_IDENTITY["public_key"]
     )
     assert code2 == 404
-    assert body2["error"]["code"] == "PAIRING_NOT_FOUND"
+    assert body2["error"]["code"] == "NOT_FOUND"
     print("PASS pairing window expired -> status expired")
 
 

@@ -201,7 +201,7 @@ def test_03_pairing_receiver_button_flow(sim, bundle):
 
     controller = list(state.controllers.values())[0]
     assert controller["token_sha256"] == hashlib.sha256(
-        token.encode("utf-8")
+        b64url_decode(token)
     ).hexdigest()
     assert "token" not in controller and "pin" not in controller
     assert controller["michi_id"] == michi_id
@@ -224,6 +224,54 @@ def test_03_pairing_receiver_button_flow(sim, bundle):
     assert bundle.validate("error.schema.json", err) == []
 
     sim.pairing_token = token
+    sim.controller_private_key = private_key
+    sim.controller_michi_id = michi_id
+    sim.controller_public_key = public_key
+
+
+def test_03b_pairing_recovery_flow(sim, bundle):
+    """Authenticated pairing recovery: 2-step challenge-response, rotation, replay resistance."""
+    client = sim.client
+    state = sim.state
+
+    start_req = {
+        "michi_id": sim.controller_michi_id,
+        "public_key": sim.controller_public_key,
+    }
+    assert bundle.validate("pair-recover-start.schema.json", start_req) == []
+    status, start_resp = client.request("POST", "/api/v1/pair/recover/start", start_req)
+    assert status == 200
+    assert bundle.validate("pair-recover-start-response.schema.json", start_resp) == []
+
+    nonce_b64 = start_resp["challenge_nonce"]
+    nonce_raw = b64url_decode(nonce_b64)
+    sig_b64 = b64url_nopad(sim.controller_private_key.sign(nonce_raw))
+
+    recover_req = {
+        "michi_id": sim.controller_michi_id,
+        "public_key": sim.controller_public_key,
+        "challenge_nonce": nonce_b64,
+        "challenge_signature": sig_b64,
+    }
+    assert bundle.validate("pair-recover.schema.json", recover_req) == []
+    status, recover_resp = client.request("POST", "/api/v1/pair/recover", recover_req)
+    assert status == 200
+    assert bundle.validate("pair-recover-response.schema.json", recover_resp) == []
+    assert recover_resp["expires_in"] == 0
+    assert recover_resp["server_id"] == state.server_id
+
+    # Single-use challenge: replay must be rejected with 400 INVALID_REQUEST
+    status, replay_err = client.request("POST", "/api/v1/pair/recover", recover_req)
+    assert status == 400
+    assert bundle.validate("error.schema.json", replay_err) == []
+
+    # Update pairing token to recovered token for subsequent session tests
+    old_token = sim.pairing_token
+    new_token = recover_resp["token"]
+    assert new_token != old_token
+    assert state.validate_pairing_token(old_token) is False
+    assert state.validate_pairing_token(new_token) is True
+    sim.pairing_token = new_token
 
 
 def test_04_session_create_and_rtp_transport(sim, bundle):

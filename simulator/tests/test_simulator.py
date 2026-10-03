@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """Unit tests for the canonical receiver v1-lite simulator (MS-02)."""
 
+import base64
 import os
 import re
+import secrets
 import sys
 from pathlib import Path
+
+import blake3
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from receiver_sim import (
@@ -240,7 +245,7 @@ def test_pairing_confirm_wrong_pin_401_decrements():
     wrong = "000000" if s.pairing_sessions[sid]["pin"] != "000000" else "999999"
     code, body = s.pairing_confirm(sid, wrong, CONTROLLER_IDENTITY["michi_id"], CONTROLLER_IDENTITY["public_key"])
     assert code == 401
-    assert body["error"]["code"] == "PAIRING_PIN_MISMATCH"
+    assert body["error"]["code"] == "UNAUTHORIZED"
     assert s.pairing_sessions[sid]["attempts_remaining"] == 4
     assert s.pairing_sessions[sid]["status"] == "pending"
     print("PASS pairing confirm wrong pin 401")
@@ -306,7 +311,7 @@ def test_pairing_double_confirm_409():
     s.pairing_confirm(sid, pin, CONTROLLER_IDENTITY["michi_id"], CONTROLLER_IDENTITY["public_key"])
     code, body = s.pairing_confirm(sid, pin, CONTROLLER_IDENTITY["michi_id"], CONTROLLER_IDENTITY["public_key"])
     assert code == 409
-    assert body["error"]["code"] == "PAIRING_ALREADY_CONSUMED"
+    assert body["error"]["code"] == "CONFLICT"
     print("PASS pairing double confirm 409")
 
 
@@ -331,37 +336,91 @@ def test_validate_pairing_token_sha256_digest():
 
 
 def test_pairing_recover_success_and_invalidation():
-    # 1. Unregistered identity -> 404
     s = std_state()
-    code, body = s.pairing_recover(CONTROLLER_IDENTITY)
+    priv = Ed25519PrivateKey.generate()
+    pub = priv.public_key()
+    pub_bytes = pub.public_bytes_raw()
+    pub_b64 = base64.urlsafe_b64encode(pub_bytes).decode("ascii").rstrip("=")
+    michi_id = base64.urlsafe_b64encode(blake3.blake3(pub_bytes).digest()).decode("ascii").rstrip("=")
+    start_nonce = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii").rstrip("=")
+    start_sig = base64.urlsafe_b64encode(priv.sign(base64.urlsafe_b64decode(start_nonce + "=="))).decode("ascii").rstrip("=")
+    ctrl_id = {
+        "michi_id": michi_id,
+        "public_key": pub_b64,
+        "challenge_nonce": start_nonce,
+        "challenge_signature": start_sig,
+    }
+
+    # 1. Unregistered identity -> 404 from recover_start
+    code, body = s.pairing_recover_start({
+        "michi_id": ctrl_id["michi_id"],
+        "public_key": ctrl_id["public_key"],
+    })
     assert code == 404
     assert body["error"]["code"] == "NOT_FOUND"
 
-    # 2. Pair with CONTROLLER_IDENTITY
+    # Recover without active challenge -> 400
+    code_no_ch, body_no_ch = s.pairing_recover(ctrl_id)
+    assert code_no_ch == 400
+    assert body_no_ch["error"]["code"] == "INVALID_REQUEST"
+
+    # 2. Pair with controller
     s.open_pairing_window()
-    _, started = s.pairing_start(CONTROLLER_IDENTITY)
+    _, started = s.pairing_start(ctrl_id)
     sid = started["session_id"]
     pin = s.pairing_sessions[sid]["pin"]
     _, confirmed = s.pairing_confirm(
-        sid, pin, CONTROLLER_IDENTITY["michi_id"], CONTROLLER_IDENTITY["public_key"]
+        sid, pin, ctrl_id["michi_id"], ctrl_id["public_key"]
     )
     old_token = confirmed["token"]
     assert s.validate_pairing_token(old_token) is True
 
-    # 3. Invalid signature -> 400
-    bad_payload = dict(CONTROLLER_IDENTITY)
+    # 3. Invalid signature -> 400 (and single-use challenge is consumed)
+    code_start, start_body = s.pairing_recover_start({
+        "michi_id": ctrl_id["michi_id"],
+        "public_key": ctrl_id["public_key"],
+    })
+    assert code_start == 200
+    ch_nonce = start_body["challenge_nonce"]
+
+    bad_payload = dict(ctrl_id)
+    bad_payload["challenge_nonce"] = ch_nonce
     bad_payload["challenge_signature"] = "A" * 86
     code_bad, body_bad = s.pairing_recover(bad_payload)
     assert code_bad == 400
     assert body_bad["error"]["code"] == "INVALID_REQUEST"
 
-    # 4. Successful recover with CONTROLLER_IDENTITY
-    code2, body2 = s.pairing_recover(CONTROLLER_IDENTITY)
+    # Replay of consumed challenge -> 400
+    valid_sig = base64.urlsafe_b64encode(priv.sign(base64.urlsafe_b64decode(ch_nonce + "=="))).decode("ascii").rstrip("=")
+    bad_payload["challenge_signature"] = valid_sig
+    code_reused, body_reused = s.pairing_recover(bad_payload)
+    assert code_reused == 400
+    assert body_reused["error"]["code"] == "INVALID_REQUEST"
+
+    # 4. Successful recover with fresh challenge
+    code_start2, start_body2 = s.pairing_recover_start({
+        "michi_id": ctrl_id["michi_id"],
+        "public_key": ctrl_id["public_key"],
+    })
+    assert code_start2 == 200
+    ch_nonce2 = start_body2["challenge_nonce"]
+    sig2 = base64.urlsafe_b64encode(priv.sign(base64.urlsafe_b64decode(ch_nonce2 + "=="))).decode("ascii").rstrip("=")
+
+    good_payload = dict(ctrl_id)
+    good_payload["challenge_nonce"] = ch_nonce2
+    good_payload["challenge_signature"] = sig2
+    code2, body2 = s.pairing_recover(good_payload)
     assert code2 == 200
     new_token = body2["token"]
     assert new_token != old_token
     assert s.validate_pairing_token(new_token) is True
     assert s.validate_pairing_token(old_token) is False
+
+    # 5. Replay attack rejection
+    code_rep, body_rep = s.pairing_recover(good_payload)
+    assert code_rep == 400
+    assert body_rep["error"]["code"] == "INVALID_REQUEST"
+
     print("PASS pairing recover rotates token and invalidates old")
     print("PASS validate pairing token (digest compare)")
 

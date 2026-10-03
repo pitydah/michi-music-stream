@@ -553,25 +553,76 @@ static void test_confirm_success_and_token(void)
     CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
 }
 
+static void make_test_controller_with_sk(uint8_t out_sk[64], michi_pairing_peer_t *out_peer)
+{
+    uint8_t seed[32];
+    uint8_t pk[MICHI_IDENTITY_KEY_BYTES];
+    uint8_t sig[MICHI_IDENTITY_SIGNATURE_BYTES];
+    esp_fill_random(seed, sizeof(seed));
+    crypto_ed25519_key_pair(out_sk, pk, seed);
+    memset(seed, 0, sizeof(seed));
+    char pk_b64[MICHI_IDENTITY_PUBLIC_KEY_B64_LEN];
+    char sig_b64[MICHI_IDENTITY_SIGNATURE_B64_LEN];
+    char mi[MICHI_IDENTITY_MICHI_ID_LEN];
+    michi_identity_base64url_encode(pk, sizeof(pk), pk_b64, sizeof(pk_b64));
+    michi_identity_derive_michi_id(pk, mi, sizeof(mi));
+    uint8_t nonce[MICHI_PAIRING_NONCE_B64_MAX];
+    size_t nonce_len = 0;
+    michi_identity_base64url_decode(VEC_PAIR_NONCE_B64, nonce, sizeof(nonce),
+                                    &nonce_len);
+    crypto_ed25519_sign(sig, out_sk, nonce, nonce_len);
+    michi_identity_base64url_encode(sig, sizeof(sig), sig_b64,
+                                    sizeof(sig_b64));
+    memset(nonce, 0, sizeof(nonce));
+    make_peer(out_peer, mi, pk_b64, VEC_PAIR_NONCE_B64, sig_b64);
+}
+
+static void sign_challenge_nonce(const uint8_t sk[64], const char *nonce_b64, char out_sig_b64[MICHI_IDENTITY_SIGNATURE_B64_LEN])
+{
+    uint8_t nonce[MICHI_PAIRING_NONCE_B64_MAX];
+    size_t nonce_len = 0;
+    uint8_t sig[MICHI_IDENTITY_SIGNATURE_BYTES];
+    michi_identity_base64url_decode(nonce_b64, nonce, sizeof(nonce), &nonce_len);
+    crypto_ed25519_sign(sig, sk, nonce, nonce_len);
+    michi_identity_base64url_encode(sig, sizeof(sig), out_sig_b64, MICHI_IDENTITY_SIGNATURE_B64_LEN);
+    memset(nonce, 0, sizeof(nonce));
+    memset(sig, 0, sizeof(sig));
+}
+
 static void test_authenticated_recovery(void)
 {
     printf("pairing: authenticated recovery via pair/recover rotates token and invalidates old token\n");
     pairing_test_reset(0x100A);
     CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
 
+    uint8_t sk[64];
+    michi_pairing_peer_t peer;
+    make_test_controller_with_sk(sk, &peer);
+
     char token1[MICHI_PAIRING_TOKEN_B64_LEN];
     char device_id1[MICHI_PAIRING_DEVICE_ID_LEN];
 
-    /* Unregistered controller -> NOT_FOUND */
-    CHECK(michi_pairing_recover(valid_peer(), token1, sizeof(token1),
-                                device_id1, sizeof(device_id1)) ==
-              MICHI_PAIRING_RECOVER_NOT_FOUND,
-          "unregistered identity cannot recover");
+    /* Unregistered controller -> recover_start gives NOT_FOUND */
+    char nonce[MICHI_PAIRING_NONCE_B64_MAX];
+    char exp_iso[MICHI_PAIRING_EXPIRES_AT_LEN];
+    CHECK(michi_pairing_recover_start(peer.michi_id, peer.public_key,
+                                      nonce, sizeof(nonce),
+                                      exp_iso, sizeof(exp_iso)) ==
+              MICHI_PAIRING_RECOVER_START_NOT_FOUND,
+          "unregistered identity cannot start recovery");
 
     /* Pair normally once */
+    CHECK(michi_pairing_open_window() == ESP_OK, "window open");
     char sid[MICHI_PAIRING_SESSION_ID_LEN];
-    pair_once(sid, sizeof(sid), token1, sizeof(token1), device_id1,
-              sizeof(device_id1));
+    uint32_t attempts = 0;
+    CHECK(michi_pairing_start(&peer, "192.168.1.100", sid, sizeof(sid),
+                              exp_iso, sizeof(exp_iso), &attempts) ==
+              MICHI_PAIRING_START_OK,
+          "pair_start succeeds");
+    CHECK(michi_pairing_confirm(sid, spy_pin, peer.michi_id, peer.public_key,
+                                token1, sizeof(token1), device_id1,
+                                sizeof(device_id1)) == MICHI_PAIRING_CONFIRM_OK,
+          "pair_confirm succeeds");
 
     char got_id[MICHI_PAIRING_DEVICE_ID_LEN];
     uint32_t perms = 0;
@@ -579,21 +630,42 @@ static void test_authenticated_recovery(void)
                                        &perms) == ESP_OK,
           "token1 validates before recovery");
 
-    /* Tampered signature -> INVALID */
-    michi_pairing_peer_t bad_peer = *valid_peer();
-    strlcpy(bad_peer.challenge_signature, tampered_signature(),
-            sizeof(bad_peer.challenge_signature));
+    /* Tampered signature -> INVALID (and consumes the challenge) */
+    CHECK(michi_pairing_recover_start(peer.michi_id, peer.public_key,
+                                      nonce, sizeof(nonce),
+                                      exp_iso, sizeof(exp_iso)) ==
+              MICHI_PAIRING_RECOVER_START_OK,
+          "recover_start succeeds for registered controller");
+    michi_pairing_peer_t rec_peer = peer;
+    strlcpy(rec_peer.challenge_nonce, nonce, sizeof(rec_peer.challenge_nonce));
+    strlcpy(rec_peer.challenge_signature, tampered_signature(),
+            sizeof(rec_peer.challenge_signature));
     char token_bad[MICHI_PAIRING_TOKEN_B64_LEN];
     char device_bad[MICHI_PAIRING_DEVICE_ID_LEN];
-    CHECK(michi_pairing_recover(&bad_peer, token_bad, sizeof(token_bad),
+    CHECK(michi_pairing_recover(&rec_peer, token_bad, sizeof(token_bad),
                                 device_bad, sizeof(device_bad)) ==
               MICHI_PAIRING_RECOVER_INVALID,
           "tampered signature rejected");
 
+    /* Single-use consumption: re-attempting with that same challenge fails */
+    sign_challenge_nonce(sk, nonce, rec_peer.challenge_signature);
+    CHECK(michi_pairing_recover(&rec_peer, token_bad, sizeof(token_bad),
+                                device_bad, sizeof(device_bad)) ==
+              MICHI_PAIRING_RECOVER_INVALID,
+          "previously consumed challenge cannot be reused even with valid signature");
+
     /* Successful recovery: rotates token, preserves device_id */
+    CHECK(michi_pairing_recover_start(peer.michi_id, peer.public_key,
+                                      nonce, sizeof(nonce),
+                                      exp_iso, sizeof(exp_iso)) ==
+              MICHI_PAIRING_RECOVER_START_OK,
+          "recover_start succeeds again");
+    strlcpy(rec_peer.challenge_nonce, nonce, sizeof(rec_peer.challenge_nonce));
+    sign_challenge_nonce(sk, nonce, rec_peer.challenge_signature);
+
     char token2[MICHI_PAIRING_TOKEN_B64_LEN];
     char device_id2[MICHI_PAIRING_DEVICE_ID_LEN];
-    CHECK(michi_pairing_recover(valid_peer(), token2, sizeof(token2),
+    CHECK(michi_pairing_recover(&rec_peer, token2, sizeof(token2),
                                 device_id2, sizeof(device_id2)) ==
               MICHI_PAIRING_RECOVER_OK,
           "authenticated recovery succeeds");
@@ -601,6 +673,28 @@ static void test_authenticated_recovery(void)
           "recovered device_id matches original device_id");
     CHECK(strcmp(token1, token2) != 0,
           "new token differs from old token");
+
+    /* Replay attack resistance: replaying exact same recover payload fails */
+    char token_replay[MICHI_PAIRING_TOKEN_B64_LEN];
+    char device_replay[MICHI_PAIRING_DEVICE_ID_LEN];
+    CHECK(michi_pairing_recover(&rec_peer, token_replay, sizeof(token_replay),
+                                device_replay, sizeof(device_replay)) ==
+              MICHI_PAIRING_RECOVER_INVALID,
+          "replay attack of successful recovery is rejected");
+
+    /* Challenge expiration: challenge expires after 60s */
+    CHECK(michi_pairing_recover_start(peer.michi_id, peer.public_key,
+                                      nonce, sizeof(nonce),
+                                      exp_iso, sizeof(exp_iso)) ==
+              MICHI_PAIRING_RECOVER_START_OK,
+          "recover_start succeeds for expiration test");
+    strlcpy(rec_peer.challenge_nonce, nonce, sizeof(rec_peer.challenge_nonce));
+    sign_challenge_nonce(sk, nonce, rec_peer.challenge_signature);
+    test_esp_timer_advance(65000000ULL); /* 65s > 60s TTL */
+    CHECK(michi_pairing_recover(&rec_peer, token_bad, sizeof(token_bad),
+                                device_bad, sizeof(device_bad)) ==
+              MICHI_PAIRING_RECOVER_INVALID,
+          "expired challenge rejected");
 
     /* Old token is now invalid */
     CHECK(michi_pairing_validate_token(token1, got_id, sizeof(got_id),
@@ -614,6 +708,7 @@ static void test_authenticated_recovery(void)
     CHECK(strcmp(got_id, device_id1) == 0,
           "new token resolves to the same device_id");
 
+    memset(sk, 0, sizeof(sk));
     CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
 }
 

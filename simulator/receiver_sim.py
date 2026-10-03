@@ -208,6 +208,7 @@ class SimulatorState:
         self.window_open = False
         self.window_expires_mono = 0.0
         self.pairing_sessions = {}
+        self.recovery_challenges = {}
 
         self.controllers = {}
 
@@ -363,13 +364,13 @@ class SimulatorState:
     def pairing_confirm(self, session_id, pin, michi_id, public_key):
         session = self.pairing_sessions.get(session_id)
         if session is None:
-            return 404, error_body("PAIRING_NOT_FOUND", "The pairing session was not found or has expired")
+            return 404, error_body("NOT_FOUND", "The pairing session was not found or has expired")
         if session["status"] == "confirmed":
-            return 409, error_body("PAIRING_ALREADY_CONSUMED", "This pairing session has already been used")
+            return 409, error_body("CONFLICT", "This pairing session has already been used")
         if session["status"] == "locked":
             return 429, error_body("RATE_LIMITED", "PIN attempts exceeded for this pairing session")
         if self._now() >= session["expires_mono"]:
-            return 404, error_body("PAIRING_NOT_FOUND", "The pairing session was not found or has expired")
+            return 404, error_body("NOT_FOUND", "The pairing session was not found or has expired")
         controller = session["controller"]
         if michi_id != controller["michi_id"]:
             return 400, error_body("INVALID_REQUEST", "michi_id does not match the pairing session", {"field": "michi_id"})
@@ -377,24 +378,40 @@ class SimulatorState:
             return 400, error_body("INVALID_REQUEST", "public_key does not match the pairing session", {"field": "public_key"})
         if not hmac.compare_digest(pin, session["pin"]):
             session["attempts_remaining"] -= 1
+            log.warning(
+                "PIN mismatch for session %s (%d attempts left)",
+                session_id,
+                session["attempts_remaining"],
+            )
             if session["attempts_remaining"] <= 0:
                 session["status"] = "locked"
                 return 429, error_body("RATE_LIMITED", "PIN attempts exceeded; pairing session is locked")
-            return 401, error_body("PAIRING_PIN_MISMATCH", "The provided PIN does not match this pairing session")
+            return 401, error_body("UNAUTHORIZED", "The provided PIN does not match this pairing session")
         session["status"] = "confirmed"
-        token = base64.urlsafe_b64encode(secrets.token_bytes(TOKEN_BYTES)).decode("ascii").rstrip("=")
-        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        device_id = str(uuid.uuid4())
+        raw_token = secrets.token_bytes(TOKEN_BYTES)
+        token = base64.urlsafe_b64encode(raw_token).decode("ascii").rstrip("=")
+        digest = hashlib.sha256(raw_token).hexdigest()
         now_wall = self._now_wall()
-        self.controllers[device_id] = {
-            "device_id": device_id,
-            "michi_id": michi_id,
-            "public_key": public_key,
-            "token_sha256": digest,
-            "permissions": ["receiver.status", "receiver.session", "receiver.volume", "receiver.now_playing"],
-            "created_at": now_wall,
-            "last_activity": now_wall,
-        }
+
+        existing = next(
+            (c for c in self.controllers.values() if c["michi_id"] == michi_id and c["public_key"] == public_key),
+            None,
+        )
+        if existing is not None:
+            device_id = existing["device_id"]
+            existing["token_sha256"] = digest
+            existing["last_activity"] = now_wall
+        else:
+            device_id = str(uuid.uuid4())
+            self.controllers[device_id] = {
+                "device_id": device_id,
+                "michi_id": michi_id,
+                "public_key": public_key,
+                "token_sha256": digest,
+                "permissions": ["receiver.status", "receiver.session", "receiver.volume", "receiver.now_playing"],
+                "created_at": now_wall,
+                "last_activity": now_wall,
+            }
         log.info("Pairing CONFIRMED: controller=%s device=%s", michi_id, device_id)
         return 200, {
             "token": token,
@@ -403,8 +420,55 @@ class SimulatorState:
             "server_id": self.server_id,
         }
 
+    def pairing_recover_start(self, payload):
+        challenge_error = validate_request("pair-recover-start.schema.json", payload)
+        if challenge_error is not None:
+            return 400, error_body(
+                "INVALID_REQUEST", challenge_error.message, {"field": challenge_error.field}
+            )
+        michi_id = payload["michi_id"]
+        public_key = payload["public_key"]
+
+        try:
+            public_key_bytes = decode_base64url_strict(public_key)
+            if len(public_key_bytes) != 32:
+                return 400, error_body("INVALID_REQUEST", "public_key must be 32 bytes", {"field": "public_key"})
+            derived = derive_michi_id(public_key_bytes)
+            if not hmac.compare_digest(derived, michi_id):
+                return 400, error_body("INVALID_REQUEST", "michi_id does not correspond to public_key", {"field": "michi_id"})
+        except Exception:
+            return 400, error_body("INVALID_REQUEST", "invalid public_key or michi_id encoding", {"field": "public_key"})
+
+        existing = next(
+            (c for c in self.controllers.values() if c["michi_id"] == michi_id and c["public_key"] == public_key),
+            None,
+        )
+        if existing is None:
+            log.warning("Pair recover/start REJECTED (unregistered controller %s)", michi_id)
+            return 404, error_body("NOT_FOUND", "controller identity is not registered on this receiver")
+
+        raw_nonce = secrets.token_bytes(32)
+        nonce = base64.urlsafe_b64encode(raw_nonce).decode("ascii").rstrip("=")
+        now_mono = self._now()
+        now_wall = self._now_wall()
+        exp_iso = self._rfc3339(now_wall + 60.0)
+
+        self.recovery_challenges[(michi_id, public_key)] = {
+            "challenge_nonce": nonce,
+            "expires_mono": now_mono + 60.0,
+            "expires_at": exp_iso,
+        }
+
+        log.info("Pairing RECOVER START: controller=%s challenge=%s", michi_id, nonce[:8])
+        return 200, {
+            "challenge_nonce": nonce,
+            "expires_at": exp_iso,
+            "server_michi_id": self.michi_id,
+            "server_public_key": self.public_key,
+        }
+
     def pairing_recover(self, payload):
-        challenge_error = self._validate_pair_challenge(payload)
+        challenge_error = validate_request("pair-recover.schema.json", payload)
         if challenge_error is not None:
             log.warning("Pair recover REJECTED (%s)", challenge_error.field)
             return 400, error_body(
@@ -412,6 +476,28 @@ class SimulatorState:
             )
         michi_id = payload["michi_id"]
         public_key = payload["public_key"]
+        challenge_nonce = payload["challenge_nonce"]
+
+        challenge = self.recovery_challenges.get((michi_id, public_key))
+        if challenge is None or challenge["challenge_nonce"] != challenge_nonce:
+            log.warning("Pair recover REJECTED: no active challenge matching nonce for %s", michi_id)
+            return 400, error_body("INVALID_REQUEST", "no active recovery challenge matching nonce")
+
+        now_mono = self._now()
+        if now_mono >= challenge["expires_mono"]:
+            self.recovery_challenges.pop((michi_id, public_key), None)
+            log.warning("Pair recover REJECTED: challenge expired for %s", michi_id)
+            return 400, error_body("INVALID_REQUEST", "recovery challenge has expired")
+
+        self.recovery_challenges.pop((michi_id, public_key), None)
+
+        challenge_error = self._validate_pair_challenge(payload)
+        if challenge_error is not None:
+            log.warning("Pair recover REJECTED (%s)", challenge_error.field)
+            return 400, error_body(
+                "INVALID_REQUEST", challenge_error.message, {"field": challenge_error.field}
+            )
+
         existing = next(
             (c for c in self.controllers.values() if c["michi_id"] == michi_id and c["public_key"] == public_key),
             None,
@@ -419,9 +505,11 @@ class SimulatorState:
         if existing is None:
             log.warning("Pair recover REJECTED (unregistered controller %s)", michi_id)
             return 404, error_body("NOT_FOUND", "controller identity is not registered on this receiver")
+
         device_id = existing["device_id"]
-        token = base64.urlsafe_b64encode(secrets.token_bytes(TOKEN_BYTES)).decode("ascii").rstrip("=")
-        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        raw_token = secrets.token_bytes(TOKEN_BYTES)
+        token = base64.urlsafe_b64encode(raw_token).decode("ascii").rstrip("=")
+        digest = hashlib.sha256(raw_token).hexdigest()
         now_wall = self._now_wall()
         existing["token_sha256"] = digest
         existing["last_activity"] = now_wall
@@ -434,7 +522,13 @@ class SimulatorState:
         }
 
     def validate_pairing_token(self, token):
-        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        try:
+            token_raw = decode_base64url_strict(token)
+            if len(token_raw) != TOKEN_BYTES:
+                return False
+            digest = hashlib.sha256(token_raw).hexdigest()
+        except Exception:
+            return False
         return any(
             hmac.compare_digest(digest, controller["token_sha256"])
             for controller in self.controllers.values()
@@ -771,6 +865,17 @@ def create_app(state: SimulatorState) -> Flask:
         status, body = state.pairing_confirm(
             payload["session_id"], payload["pin"], payload["michi_id"], payload["public_key"]
         )
+        return jsonify(body), status
+
+    @app.route("/api/v1/pair/recover/start", methods=["POST"])
+    def pair_recover_start():
+        payload = json_payload()
+        if payload is None:
+            return jsonify(error_body("INVALID_REQUEST", "request body must be a JSON object", {"field": "body"})), 400
+        err = validate_request("pair-recover-start.schema.json", payload)
+        if err is not None:
+            return jsonify(error_body("INVALID_REQUEST", err.message, {"field": err.field})), 400
+        status, body = state.pairing_recover_start(payload)
         return jsonify(body), status
 
     @app.route("/api/v1/pair/recover", methods=["POST"])
