@@ -1170,6 +1170,120 @@ michi_pairing_confirm_result_t michi_pairing_confirm(
     return res;
 }
 
+static michi_pairing_recover_result_t pairing_recover_internal(
+    const michi_pairing_peer_t *peer, char *out_token, size_t token_len,
+    char *out_device_id, size_t device_id_len)
+{
+    if (peer == NULL || out_token == NULL || out_device_id == NULL ||
+        token_len < MICHI_PAIRING_TOKEN_B64_LEN ||
+        device_id_len < MICHI_PAIRING_DEVICE_ID_LEN) {
+        return MICHI_PAIRING_RECOVER_INVALID;
+    }
+
+    uint8_t nonce_bytes[MICHI_PAIRING_NONCE_B64_MAX];
+    size_t nonce_len = 0;
+    uint8_t sig_bytes[MICHI_IDENTITY_SIGNATURE_BYTES];
+    size_t sig_len = 0;
+    uint8_t pk_bytes[MICHI_IDENTITY_KEY_BYTES];
+    size_t pk_len = 0;
+    char derived_id[MICHI_IDENTITY_MICHI_ID_LEN];
+
+    if (michi_identity_base64url_decode(peer->challenge_nonce, nonce_bytes,
+                                        sizeof(nonce_bytes),
+                                        &nonce_len) != ESP_OK ||
+        michi_identity_base64url_decode(peer->challenge_signature, sig_bytes,
+                                        sizeof(sig_bytes),
+                                        &sig_len) != ESP_OK ||
+        michi_identity_base64url_decode(peer->public_key, pk_bytes,
+                                        sizeof(pk_bytes), &pk_len) != ESP_OK ||
+        nonce_len < 16 || pk_len != MICHI_IDENTITY_KEY_BYTES ||
+        sig_len != MICHI_IDENTITY_SIGNATURE_BYTES) {
+        return MICHI_PAIRING_RECOVER_INVALID;
+    }
+    if (!michi_identity_verify(nonce_bytes, nonce_len, sig_bytes,
+                               pk_bytes)) {
+        ESP_LOGW(TAG, "pairing: recover_rejected reason=signature");
+        return MICHI_PAIRING_RECOVER_INVALID;
+    }
+    if (michi_identity_derive_michi_id(pk_bytes, derived_id,
+                                       sizeof(derived_id)) != ESP_OK ||
+        strcmp(derived_id, peer->michi_id) != 0) {
+        ESP_LOGW(TAG, "pairing: recover_rejected reason=michi_id");
+        return MICHI_PAIRING_RECOVER_INVALID;
+    }
+
+    uint8_t token_raw[MICHI_PAIRING_TOKEN_BYTES];
+    uint8_t digest[MICHI_PAIRING_DIGEST_BYTES];
+    char token_b64[MICHI_PAIRING_TOKEN_B64_LEN];
+
+    esp_fill_random(token_raw, sizeof(token_raw));
+    if (michi_identity_base64url_encode(token_raw, sizeof(token_raw),
+                                        token_b64, sizeof(token_b64)) !=
+            ESP_OK ||
+        sha256_bytes(token_raw, sizeof(token_raw), digest) != ESP_OK) {
+        memset(token_raw, 0, sizeof(token_raw));
+        memset(token_b64, 0, sizeof(token_b64));
+        return MICHI_PAIRING_RECOVER_INTERNAL;
+    }
+
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+
+    size_t existing = s_blob.count;
+    for (size_t i = 0; i < s_blob.count; i++) {
+        if (strcmp((const char *)s_blob.controllers[i].michi_id,
+                   peer->michi_id) == 0 &&
+            strcmp((const char *)s_blob.controllers[i].public_key,
+                   peer->public_key) == 0) {
+            existing = i;
+            break;
+        }
+    }
+    if (existing >= s_blob.count) {
+        ESP_LOGW(TAG, "pairing: recover_rejected reason=not_registered");
+        xSemaphoreGive(s_mutex);
+        return MICHI_PAIRING_RECOVER_NOT_FOUND;
+    }
+
+    michi_pairing_blob_t next = s_blob;
+    memcpy(next.controllers[existing].digest, digest,
+           MICHI_PAIRING_DIGEST_BYTES);
+    next.controllers[existing].last_activity_unix = now_unix();
+
+    esp_err_t err = persist_blob(&next);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "pairing: recover_failed nvs_err=0x%x", (int)err);
+        xSemaphoreGive(s_mutex);
+        return MICHI_PAIRING_RECOVER_INTERNAL;
+    }
+
+    s_blob = next;
+    strlcpy(out_token, token_b64, token_len);
+    strlcpy(out_device_id, (const char *)s_blob.controllers[existing].device_id,
+            device_id_len);
+
+    memset(token_raw, 0, sizeof(token_raw));
+    memset(token_b64, 0, sizeof(token_b64));
+    memset(digest, 0, sizeof(digest));
+    xSemaphoreGive(s_mutex);
+
+    ESP_LOGI(TAG, "pairing: recover_success controller=%s device_id=%s",
+             peer->michi_id, out_device_id);
+    return MICHI_PAIRING_RECOVER_OK;
+}
+
+michi_pairing_recover_result_t michi_pairing_recover(
+    const michi_pairing_peer_t *peer, char *out_token, size_t token_len,
+    char *out_device_id, size_t device_id_len)
+{
+    if (!pairing_api_enter()) {
+        return MICHI_PAIRING_RECOVER_NOT_FOUND;
+    }
+    michi_pairing_recover_result_t res = pairing_recover_internal(
+        peer, out_token, token_len, out_device_id, device_id_len);
+    pairing_api_exit();
+    return res;
+}
+
 static esp_err_t pairing_validate_token_internal(const char *token,
                                                 char *out_device_id,
                                                 size_t id_len,

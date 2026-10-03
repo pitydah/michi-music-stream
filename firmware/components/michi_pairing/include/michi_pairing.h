@@ -160,6 +160,14 @@ typedef enum {
     MICHI_PAIRING_CONFIRM_INTERNAL,      /*!< 500 (persistence/identity failure) */
 } michi_pairing_confirm_result_t;
 
+/* Result codes of michi_pairing_recover(). */
+typedef enum {
+    MICHI_PAIRING_RECOVER_OK = 0,        /*!< 200: token rotated and issued */
+    MICHI_PAIRING_RECOVER_NOT_FOUND,     /*!< 404 (controller not registered) */
+    MICHI_PAIRING_RECOVER_INVALID,       /*!< 400 (signature/key/nonce invalid) */
+    MICHI_PAIRING_RECOVER_INTERNAL,      /*!< 500 (persistence/crypto failure) */
+} michi_pairing_recover_result_t;
+
 /* Pairing session status (pair/status contract: pending, confirmed,
  * expired, locked). */
 typedef enum {
@@ -359,6 +367,21 @@ michi_pairing_status_result_t michi_pairing_status(
 michi_pairing_confirm_result_t michi_pairing_confirm(
     const char *session_id, const char *pin, const char *michi_id,
     const char *public_key, char *out_token, size_t token_len,
+    char *out_device_id, size_t device_id_len);
+
+/**
+ * @brief Authenticated pairing recovery: rotate the token for an already
+ *        registered controller using its Ed25519 signature over challenge_nonce.
+ *
+ * @param peer            Peer credentials and challenge signature.
+ * @param out_token       Buffer (>= MICHI_PAIRING_TOKEN_B64_LEN).
+ * @param token_len       Size of out_token.
+ * @param out_device_id   Buffer (>= MICHI_PAIRING_DEVICE_ID_LEN).
+ * @param device_id_len   Size of out_device_id.
+ * @return A MICHI_PAIRING_RECOVER_* result code.
+ */
+michi_pairing_recover_result_t michi_pairing_recover(
+    const michi_pairing_peer_t *peer, char *out_token, size_t token_len,
     char *out_device_id, size_t device_id_len);
 
 /**

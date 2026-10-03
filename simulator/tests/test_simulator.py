@@ -328,6 +328,41 @@ def test_validate_pairing_token_sha256_digest():
     assert s.validate_pairing_token(token) is True
     assert s.validate_pairing_token("wrong") is False
     assert s.validate_pairing_token(token + "x") is False
+
+
+def test_pairing_recover_success_and_invalidation():
+    # 1. Unregistered identity -> 404
+    s = std_state()
+    code, body = s.pairing_recover(CONTROLLER_IDENTITY)
+    assert code == 404
+    assert body["error"]["code"] == "NOT_FOUND"
+
+    # 2. Pair with CONTROLLER_IDENTITY
+    s.open_pairing_window()
+    _, started = s.pairing_start(CONTROLLER_IDENTITY)
+    sid = started["session_id"]
+    pin = s.pairing_sessions[sid]["pin"]
+    _, confirmed = s.pairing_confirm(
+        sid, pin, CONTROLLER_IDENTITY["michi_id"], CONTROLLER_IDENTITY["public_key"]
+    )
+    old_token = confirmed["token"]
+    assert s.validate_pairing_token(old_token) is True
+
+    # 3. Invalid signature -> 400
+    bad_payload = dict(CONTROLLER_IDENTITY)
+    bad_payload["challenge_signature"] = "A" * 86
+    code_bad, body_bad = s.pairing_recover(bad_payload)
+    assert code_bad == 400
+    assert body_bad["error"]["code"] == "INVALID_REQUEST"
+
+    # 4. Successful recover with CONTROLLER_IDENTITY
+    code2, body2 = s.pairing_recover(CONTROLLER_IDENTITY)
+    assert code2 == 200
+    new_token = body2["token"]
+    assert new_token != old_token
+    assert s.validate_pairing_token(new_token) is True
+    assert s.validate_pairing_token(old_token) is False
+    print("PASS pairing recover rotates token and invalidates old")
     print("PASS validate pairing token (digest compare)")
 
 

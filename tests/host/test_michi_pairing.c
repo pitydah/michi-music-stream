@@ -553,6 +553,70 @@ static void test_confirm_success_and_token(void)
     CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
 }
 
+static void test_authenticated_recovery(void)
+{
+    printf("pairing: authenticated recovery via pair/recover rotates token and invalidates old token\n");
+    pairing_test_reset(0x100A);
+    CHECK(michi_pairing_init() == ESP_OK, "init succeeds");
+
+    char token1[MICHI_PAIRING_TOKEN_B64_LEN];
+    char device_id1[MICHI_PAIRING_DEVICE_ID_LEN];
+
+    /* Unregistered controller -> NOT_FOUND */
+    CHECK(michi_pairing_recover(valid_peer(), token1, sizeof(token1),
+                                device_id1, sizeof(device_id1)) ==
+              MICHI_PAIRING_RECOVER_NOT_FOUND,
+          "unregistered identity cannot recover");
+
+    /* Pair normally once */
+    char sid[MICHI_PAIRING_SESSION_ID_LEN];
+    pair_once(sid, sizeof(sid), token1, sizeof(token1), device_id1,
+              sizeof(device_id1));
+
+    char got_id[MICHI_PAIRING_DEVICE_ID_LEN];
+    uint32_t perms = 0;
+    CHECK(michi_pairing_validate_token(token1, got_id, sizeof(got_id),
+                                       &perms) == ESP_OK,
+          "token1 validates before recovery");
+
+    /* Tampered signature -> INVALID */
+    michi_pairing_peer_t bad_peer = *valid_peer();
+    strlcpy(bad_peer.challenge_signature, tampered_signature(),
+            sizeof(bad_peer.challenge_signature));
+    char token_bad[MICHI_PAIRING_TOKEN_B64_LEN];
+    char device_bad[MICHI_PAIRING_DEVICE_ID_LEN];
+    CHECK(michi_pairing_recover(&bad_peer, token_bad, sizeof(token_bad),
+                                device_bad, sizeof(device_bad)) ==
+              MICHI_PAIRING_RECOVER_INVALID,
+          "tampered signature rejected");
+
+    /* Successful recovery: rotates token, preserves device_id */
+    char token2[MICHI_PAIRING_TOKEN_B64_LEN];
+    char device_id2[MICHI_PAIRING_DEVICE_ID_LEN];
+    CHECK(michi_pairing_recover(valid_peer(), token2, sizeof(token2),
+                                device_id2, sizeof(device_id2)) ==
+              MICHI_PAIRING_RECOVER_OK,
+          "authenticated recovery succeeds");
+    CHECK(strcmp(device_id1, device_id2) == 0,
+          "recovered device_id matches original device_id");
+    CHECK(strcmp(token1, token2) != 0,
+          "new token differs from old token");
+
+    /* Old token is now invalid */
+    CHECK(michi_pairing_validate_token(token1, got_id, sizeof(got_id),
+                                       &perms) != ESP_OK,
+          "old token invalidated after recovery");
+
+    /* New token validates */
+    CHECK(michi_pairing_validate_token(token2, got_id, sizeof(got_id),
+                                       &perms) == ESP_OK,
+          "new token validates after recovery");
+    CHECK(strcmp(got_id, device_id1) == 0,
+          "new token resolves to the same device_id");
+
+    CHECK(michi_pairing_shutdown() == ESP_OK, "shutdown succeeds");
+}
+
 /* ── persistence (NVS) ────────────────────────────────────── */
 
 static bool blob_contains(const uint8_t *blob, size_t len, const char *needle)
@@ -1643,6 +1707,7 @@ int main(void)
     test_status_and_wrong_pin();
     test_pin_lockout_sixth_attempt();
     test_confirm_success_and_token();
+    test_authenticated_recovery();
     test_reboot_persists_digest_only();
     test_revocation_and_erase_all();
     test_p104_first_controller_added();

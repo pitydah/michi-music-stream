@@ -10,6 +10,7 @@ contracts/michi-link/). No legacy routes exist:
   POST   /api/v1/pair/start
   GET    /api/v1/pair/status?session_id=<uuid>
   POST   /api/v1/pair/confirm
+  POST   /api/v1/pair/recover
   POST   /api/v1/receiver-lite/session
   GET    /api/v1/receiver-lite/session
   PATCH  /api/v1/receiver-lite/session
@@ -402,6 +403,36 @@ class SimulatorState:
             "server_id": self.server_id,
         }
 
+    def pairing_recover(self, payload):
+        challenge_error = self._validate_pair_challenge(payload)
+        if challenge_error is not None:
+            log.warning("Pair recover REJECTED (%s)", challenge_error.field)
+            return 400, error_body(
+                "INVALID_REQUEST", challenge_error.message, {"field": challenge_error.field}
+            )
+        michi_id = payload["michi_id"]
+        public_key = payload["public_key"]
+        existing = next(
+            (c for c in self.controllers.values() if c["michi_id"] == michi_id and c["public_key"] == public_key),
+            None,
+        )
+        if existing is None:
+            log.warning("Pair recover REJECTED (unregistered controller %s)", michi_id)
+            return 404, error_body("NOT_FOUND", "controller identity is not registered on this receiver")
+        device_id = existing["device_id"]
+        token = base64.urlsafe_b64encode(secrets.token_bytes(TOKEN_BYTES)).decode("ascii").rstrip("=")
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        now_wall = self._now_wall()
+        existing["token_sha256"] = digest
+        existing["last_activity"] = now_wall
+        log.info("Pairing RECOVERED: controller=%s device=%s", michi_id, device_id)
+        return 200, {
+            "token": token,
+            "expires_in": 0,
+            "device_id": device_id,
+            "server_id": self.server_id,
+        }
+
     def validate_pairing_token(self, token):
         digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
         return any(
@@ -740,6 +771,17 @@ def create_app(state: SimulatorState) -> Flask:
         status, body = state.pairing_confirm(
             payload["session_id"], payload["pin"], payload["michi_id"], payload["public_key"]
         )
+        return jsonify(body), status
+
+    @app.route("/api/v1/pair/recover", methods=["POST"])
+    def pair_recover():
+        payload = json_payload()
+        if payload is None:
+            return jsonify(error_body("INVALID_REQUEST", "request body must be a JSON object", {"field": "body"})), 400
+        for f in ("michi_id", "public_key", "challenge_nonce", "challenge_signature"):
+            if f not in payload:
+                return jsonify(error_body("INVALID_REQUEST", f"missing required field: {f}", {"field": f})), 400
+        status, body = state.pairing_recover(payload)
         return jsonify(body), status
 
     @app.route("/api/v1/receiver-lite/session", methods=["POST"])

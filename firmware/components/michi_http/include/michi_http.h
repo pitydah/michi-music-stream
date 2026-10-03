@@ -276,6 +276,18 @@ bool michi_http_json_get_pair_start(const cJSON *obj,
                                     char *err_field, size_t err_field_len);
 
 /**
+ * @brief Parse + copy the canonical pair/recover body (POST /pair/recover).
+ */
+bool michi_http_json_get_pair_recover(const cJSON *obj,
+                                      char *michi_id, size_t michi_id_len,
+                                      char *public_key, size_t public_key_len,
+                                      char *challenge_nonce, size_t nonce_len,
+                                      char *challenge_signature,
+                                      size_t signature_len,
+                                      char *err_field, size_t err_field_len);
+
+
+/**
  * @brief Parse + copy the canonical pair/confirm body (POST /pair/confirm).
  *
  * Rejects the legacy fields initiator_id and client_token, validates

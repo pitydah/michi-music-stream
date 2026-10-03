@@ -150,6 +150,50 @@ class TestPairing:
             assert r.status_code == 400
             assert r.get_json()["error"]["code"] == "INVALID_REQUEST"
 
+    def test_pair_recover_http_flow(self, app_std):
+        app, state = app_std
+        with app.test_client() as c:
+            # 1. Recover before pairing -> 404
+            r = c.post("/api/v1/pair/recover", json={
+                "michi_id": CONTROLLER_IDENTITY["michi_id"],
+                "public_key": CONTROLLER_IDENTITY["public_key"],
+                "challenge_nonce": CONTROLLER_IDENTITY["challenge_nonce"],
+                "challenge_signature": CONTROLLER_IDENTITY["challenge_signature"],
+            })
+            assert r.status_code == 404
+            assert r.get_json()["error"]["code"] == "NOT_FOUND"
+
+            # 2. Pair normally
+            state.open_pairing_window()
+            r = c.post("/api/v1/pair/start", json=CONTROLLER_IDENTITY)
+            sid = r.get_json()["session_id"]
+            pin = state.pairing_sessions[sid]["pin"]
+            r = c.post("/api/v1/pair/confirm", json={
+                "session_id": sid,
+                "pin": pin,
+                "michi_id": CONTROLLER_IDENTITY["michi_id"],
+                "public_key": CONTROLLER_IDENTITY["public_key"],
+            })
+            assert r.status_code == 200
+            token1 = r.get_json()["token"]
+
+            # 3. Recover rotates token
+            r = c.post("/api/v1/pair/recover", json={
+                "michi_id": CONTROLLER_IDENTITY["michi_id"],
+                "public_key": CONTROLLER_IDENTITY["public_key"],
+                "challenge_nonce": CONTROLLER_IDENTITY["challenge_nonce"],
+                "challenge_signature": CONTROLLER_IDENTITY["challenge_signature"],
+            })
+            assert r.status_code == 200
+            token2 = r.get_json()["token"]
+            assert token2 != token1
+
+            # 4. Old token fails session create, new token succeeds
+            r = c.post("/api/v1/receiver-lite/session", json=SESSION_BODY, headers={"Authorization": f"Bearer {token1}"})
+            assert r.status_code == 401
+            r = c.post("/api/v1/receiver-lite/session", json=SESSION_BODY, headers={"Authorization": f"Bearer {token2}"})
+            assert r.status_code == 201
+
 
 class TestSessionAuth:
     def test_session_create_401_no_bearer(self, app_std):
