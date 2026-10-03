@@ -375,13 +375,21 @@ def test_pairing_recover_success_and_invalidation():
     old_token = confirmed["token"]
     assert s.validate_pairing_token(old_token) is True
 
-    # 3. Invalid signature -> 400 (and single-use challenge is consumed)
+    # 3. Idempotent recover_start and invalid signature rejected without burning challenge (anti-DoS)
     code_start, start_body = s.pairing_recover_start({
         "michi_id": ctrl_id["michi_id"],
         "public_key": ctrl_id["public_key"],
     })
     assert code_start == 200
     ch_nonce = start_body["challenge_nonce"]
+
+    # Repeated recover_start returns identical challenge before expiry
+    code_start_idem, start_body_idem = s.pairing_recover_start({
+        "michi_id": ctrl_id["michi_id"],
+        "public_key": ctrl_id["public_key"],
+    })
+    assert code_start_idem == 200
+    assert start_body_idem["challenge_nonce"] == ch_nonce
 
     bad_payload = dict(ctrl_id)
     bad_payload["challenge_nonce"] = ch_nonce
@@ -390,25 +398,11 @@ def test_pairing_recover_success_and_invalidation():
     assert code_bad == 400
     assert body_bad["error"]["code"] == "INVALID_REQUEST"
 
-    # Replay of consumed challenge -> 400
+    # Legitimate controller can still recover with valid signature (anti-DoS)
     valid_sig = base64.urlsafe_b64encode(priv.sign(base64.urlsafe_b64decode(ch_nonce + "=="))).decode("ascii").rstrip("=")
-    bad_payload["challenge_signature"] = valid_sig
-    code_reused, body_reused = s.pairing_recover(bad_payload)
-    assert code_reused == 400
-    assert body_reused["error"]["code"] == "INVALID_REQUEST"
-
-    # 4. Successful recover with fresh challenge
-    code_start2, start_body2 = s.pairing_recover_start({
-        "michi_id": ctrl_id["michi_id"],
-        "public_key": ctrl_id["public_key"],
-    })
-    assert code_start2 == 200
-    ch_nonce2 = start_body2["challenge_nonce"]
-    sig2 = base64.urlsafe_b64encode(priv.sign(base64.urlsafe_b64decode(ch_nonce2 + "=="))).decode("ascii").rstrip("=")
-
     good_payload = dict(ctrl_id)
-    good_payload["challenge_nonce"] = ch_nonce2
-    good_payload["challenge_signature"] = sig2
+    good_payload["challenge_nonce"] = ch_nonce
+    good_payload["challenge_signature"] = valid_sig
     code2, body2 = s.pairing_recover(good_payload)
     assert code2 == 200
     new_token = body2["token"]
@@ -416,7 +410,7 @@ def test_pairing_recover_success_and_invalidation():
     assert s.validate_pairing_token(new_token) is True
     assert s.validate_pairing_token(old_token) is False
 
-    # 5. Replay attack rejection
+    # 4. Replay attack rejection: consumed challenge cannot be reused
     code_rep, body_rep = s.pairing_recover(good_payload)
     assert code_rep == 400
     assert body_rep["error"]["code"] == "INVALID_REQUEST"

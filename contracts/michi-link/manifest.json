@@ -1,10 +1,10 @@
 {
   "version": "1.0.0-alpha.1",
-  "upstream_commit": "01b0aeec354b37a0e3f7f088649e57cf3857e410",
+  "upstream_commit": "47b3091d9d0401db25186bb96a6723e1d53433cb",
   "files": [
     {
       "path": "UPSTREAM_COMMIT",
-      "sha256": "b7db006763ddf90357d708d4d44830d7868e1748a1b29cc172cbf9cc7f146d00"
+      "sha256": "594af19e368e101728ee7701ba4fd6051c2b54cb193af1b732bee0f72baec8f8"
     },
     {
       "path": "VERSION",
@@ -76,7 +76,7 @@
     },
     {
       "path": "openapi/michi-link-v1.yaml",
-      "sha256": "3c9dbc303913d3026855a73d0831aa76d9b6cbfd67b198a7c845c86560001eff"
+      "sha256": "f60fa5857f81262f0ff83df1761196210881e84a6895b598186ec6ceca7f69b4"
     },
     {
       "path": "schemas/album.schema.json",
@@ -153,6 +153,22 @@
     {
       "path": "schemas/pair-confirm.schema.json",
       "sha256": "06583cb370719a84029b3b6cd7726a6ad3fff0bb0b2a351d4e735b9ad09c2f70"
+    },
+    {
+      "path": "schemas/pair-recover-response.schema.json",
+      "sha256": "56a7b4e7af0c42dcba9d1ccabdde1ac850992a0fa0a8c4e2db375321aef1f517"
+    },
+    {
+      "path": "schemas/pair-recover-start-response.schema.json",
+      "sha256": "a759e176d7a68f17267e7734d60febcd37f0c25505705d0f3dd3c8e24d164fbf"
+    },
+    {
+      "path": "schemas/pair-recover-start.schema.json",
+      "sha256": "9e2244a86640e31e4a54d50b1d95ddd2ee136d08003a13b742664331aee274e1"
+    },
+    {
+      "path": "schemas/pair-recover.schema.json",
+      "sha256": "679819baba504461eafa642a44cabb362ecca1d0341ce5ab7364fe659df000e8"
     },
     {
       "path": "schemas/pair-start-response.schema.json",

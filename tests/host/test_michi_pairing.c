@@ -630,12 +630,24 @@ static void test_authenticated_recovery(void)
                                        &perms) == ESP_OK,
           "token1 validates before recovery");
 
-    /* Tampered signature -> INVALID (and consumes the challenge) */
+    /* recover_start succeeds for registered controller */
     CHECK(michi_pairing_recover_start(peer.michi_id, peer.public_key,
                                       nonce, sizeof(nonce),
                                       exp_iso, sizeof(exp_iso)) ==
               MICHI_PAIRING_RECOVER_START_OK,
           "recover_start succeeds for registered controller");
+
+    /* Idempotent recover_start: second call returns the same nonce */
+    char nonce2[MICHI_PAIRING_NONCE_B64_MAX];
+    char exp_iso2[MICHI_PAIRING_EXPIRES_AT_LEN];
+    CHECK(michi_pairing_recover_start(peer.michi_id, peer.public_key,
+                                      nonce2, sizeof(nonce2),
+                                      exp_iso2, sizeof(exp_iso2)) ==
+              MICHI_PAIRING_RECOVER_START_OK,
+          "recover_start is idempotent");
+    CHECK(strcmp(nonce, nonce2) == 0, "idempotent recover_start returns same nonce");
+
+    /* Tampered signature -> INVALID (and does NOT consume challenge, anti-DoS) */
     michi_pairing_peer_t rec_peer = peer;
     strlcpy(rec_peer.challenge_nonce, nonce, sizeof(rec_peer.challenge_nonce));
     strlcpy(rec_peer.challenge_signature, tampered_signature(),
@@ -647,40 +659,26 @@ static void test_authenticated_recovery(void)
               MICHI_PAIRING_RECOVER_INVALID,
           "tampered signature rejected");
 
-    /* Single-use consumption: re-attempting with that same challenge fails */
+    /* Legitimate controller can still recover with valid signature (challenge was not burned) */
     sign_challenge_nonce(sk, nonce, rec_peer.challenge_signature);
-    CHECK(michi_pairing_recover(&rec_peer, token_bad, sizeof(token_bad),
-                                device_bad, sizeof(device_bad)) ==
-              MICHI_PAIRING_RECOVER_INVALID,
-          "previously consumed challenge cannot be reused even with valid signature");
-
-    /* Successful recovery: rotates token, preserves device_id */
-    CHECK(michi_pairing_recover_start(peer.michi_id, peer.public_key,
-                                      nonce, sizeof(nonce),
-                                      exp_iso, sizeof(exp_iso)) ==
-              MICHI_PAIRING_RECOVER_START_OK,
-          "recover_start succeeds again");
-    strlcpy(rec_peer.challenge_nonce, nonce, sizeof(rec_peer.challenge_nonce));
-    sign_challenge_nonce(sk, nonce, rec_peer.challenge_signature);
-
     char token2[MICHI_PAIRING_TOKEN_B64_LEN];
     char device_id2[MICHI_PAIRING_DEVICE_ID_LEN];
     CHECK(michi_pairing_recover(&rec_peer, token2, sizeof(token2),
                                 device_id2, sizeof(device_id2)) ==
               MICHI_PAIRING_RECOVER_OK,
-          "authenticated recovery succeeds");
+          "authenticated recovery succeeds after rejected attack (anti-DoS)");
     CHECK(strcmp(device_id1, device_id2) == 0,
           "recovered device_id matches original device_id");
     CHECK(strcmp(token1, token2) != 0,
           "new token differs from old token");
 
-    /* Replay attack resistance: replaying exact same recover payload fails */
+    /* Single-use consumption: replaying exact same recover payload fails */
     char token_replay[MICHI_PAIRING_TOKEN_B64_LEN];
     char device_replay[MICHI_PAIRING_DEVICE_ID_LEN];
     CHECK(michi_pairing_recover(&rec_peer, token_replay, sizeof(token_replay),
                                 device_replay, sizeof(device_replay)) ==
               MICHI_PAIRING_RECOVER_INVALID,
-          "replay attack of successful recovery is rejected");
+          "previously consumed challenge cannot be reused (replay attack rejected)");
 
     /* Challenge expiration: challenge expires after 60s */
     CHECK(michi_pairing_recover_start(peer.michi_id, peer.public_key,

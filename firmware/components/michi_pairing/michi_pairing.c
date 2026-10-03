@@ -1225,6 +1225,28 @@ static michi_pairing_recover_start_result_t pairing_recover_start_internal(
         return MICHI_PAIRING_RECOVER_START_NOT_FOUND;
     }
 
+    int64_t now_us = esp_timer_get_time();
+    int64_t now_sec = now_unix();
+
+    /* Idempotent recovery start: if an active, unexpired challenge already exists
+     * for this controller, return it rather than clobbering it. */
+    for (size_t i = 0; i < CONFIG_MICHI_PAIRING_MAX_CONTROLLERS; i++) {
+        if (s_recovery_challenges[i].active &&
+            strcmp(s_recovery_challenges[i].michi_id, michi_id) == 0 &&
+            strcmp(s_recovery_challenges[i].public_key, public_key) == 0) {
+            if (now_us < s_recovery_challenges[i].expires_at_us) {
+                char exp_iso[MICHI_PAIRING_EXPIRES_AT_LEN];
+                rfc3339_from_unix(s_recovery_challenges[i].expires_unix, exp_iso, sizeof(exp_iso));
+                strlcpy(out_nonce, s_recovery_challenges[i].challenge_nonce, nonce_len);
+                strlcpy(out_expires_at, exp_iso, expires_at_len);
+                xSemaphoreGive(s_mutex);
+                ESP_LOGI(TAG, "pairing: recover_start_reused_active controller=%s", michi_id);
+                return MICHI_PAIRING_RECOVER_START_OK;
+            }
+            break;
+        }
+    }
+
     uint8_t nonce_raw[MICHI_PAIRING_CHALLENGE_NONCE_BYTES];
     char nonce_b64[MICHI_PAIRING_NONCE_B64_MAX];
     esp_fill_random(nonce_raw, sizeof(nonce_raw));
@@ -1236,8 +1258,6 @@ static michi_pairing_recover_start_result_t pairing_recover_start_internal(
     }
     memset(nonce_raw, 0, sizeof(nonce_raw));
 
-    int64_t now_us = esp_timer_get_time();
-    int64_t now_sec = now_unix();
     int64_t exp_us = now_us + MICHI_PAIRING_RECOVER_TTL_US;
     int64_t exp_sec = (now_sec > 0) ? (now_sec + 60) : 0;
 
@@ -1316,7 +1336,7 @@ static michi_pairing_recover_result_t pairing_recover_internal(
         return MICHI_PAIRING_RECOVER_INVALID;
     }
 
-    /* Single-use challenge check and immediate consumption under mutex */
+    /* Verify challenge presence and TTL without consuming yet (prevents DoS via bad signatures) */
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     int matched_slot = -1;
     int64_t now_us = esp_timer_get_time();
@@ -1343,8 +1363,6 @@ static michi_pairing_recover_result_t pairing_recover_internal(
         return MICHI_PAIRING_RECOVER_INVALID;
     }
 
-    /* SINGLE-USE CONSUMPTION: wipe the challenge slot immediately before anything else */
-    memset(&s_recovery_challenges[matched_slot], 0, sizeof(s_recovery_challenges[0]));
     xSemaphoreGive(s_mutex);
 
     uint8_t nonce_bytes[MICHI_PAIRING_NONCE_B64_MAX];
@@ -1409,6 +1427,30 @@ static michi_pairing_recover_result_t pairing_recover_internal(
     }
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
+
+    /* Atomic single-use challenge consumption: wipe slot only now that signature is verified */
+    int consume_slot = -1;
+    now_us = esp_timer_get_time();
+    for (size_t i = 0; i < CONFIG_MICHI_PAIRING_MAX_CONTROLLERS; i++) {
+        if (s_recovery_challenges[i].active &&
+            strcmp(s_recovery_challenges[i].michi_id, peer->michi_id) == 0 &&
+            strcmp(s_recovery_challenges[i].public_key, peer->public_key) == 0 &&
+            strcmp(s_recovery_challenges[i].challenge_nonce, peer->challenge_nonce) == 0) {
+            if (now_us < s_recovery_challenges[i].expires_at_us) {
+                consume_slot = (int)i;
+            }
+            break;
+        }
+    }
+    if (consume_slot < 0) {
+        ESP_LOGW(TAG, "pairing: recover_rejected reason=challenge_already_consumed_or_expired");
+        memset(token_raw, 0, sizeof(token_raw));
+        memset(token_b64, 0, sizeof(token_b64));
+        memset(digest, 0, sizeof(digest));
+        xSemaphoreGive(s_mutex);
+        return MICHI_PAIRING_RECOVER_INVALID;
+    }
+    memset(&s_recovery_challenges[consume_slot], 0, sizeof(s_recovery_challenges[0]));
 
     size_t existing = s_blob.count;
     for (size_t i = 0; i < s_blob.count; i++) {

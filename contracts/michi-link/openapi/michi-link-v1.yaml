@@ -247,7 +247,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PairConfirmResponse"
-              example: {"token": "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE", "expires_in": 0, "device_id": "550e8400-e29b-41d4-a716-446655440002", "server_id": "550e8400-e29b-41d4-a716-446655440000"}
+              example: {"token": "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE", "refresh_token": "tok_michi_refresh_9c4e2a7f1d8b3e6a5c0f2d4b8a1e7c3f", "expires_in": 0, "device_id": "550e8400-e29b-41d4-a716-446655440002", "server_id": "550e8400-e29b-41d4-a716-446655440000"}
         "400":
           description: Invalid request body
           content:
@@ -2209,6 +2209,35 @@ paths:
                   - limit
                   - total
                   - items
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /queue/transfer:
+    post:
+      tags:
+        - Queue
+      summary: Transfer queue
+      description: |
+        Queue transfer request for Continue-on-Server handoff. Replaces the entire playback queue
+        with the specified track list, current index, and playback position.
+      operationId: transferQueue
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/QueueTransferRequest"
+      responses:
+        "200":
+          description: Queue transfer accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueueTransferResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
@@ -5023,6 +5052,68 @@ components:
             Use null to move to the end.
       required:
         - item_ids
+
+    # --------------------------------------------------------------------------
+    # QUEUE TRANSFER REQUEST
+    # --------------------------------------------------------------------------
+    QueueTransferRequest:
+      type: object
+      description: Queue transfer request for Continue-on-Server handoff
+      properties:
+        track_ids:
+          type: array
+          items:
+            type: string
+          description: Ordered list of remote track IDs
+        current_index:
+          type: integer
+          minimum: 0
+          description: Current track index in the queue
+        position_ms:
+          type: integer
+          minimum: 0
+          description: Current playback position in milliseconds
+        source:
+          type: string
+          description: Source device identifier
+        queue_id:
+          type: string
+          description: Source queue ID for traceability
+      required:
+        - track_ids
+        - current_index
+        - position_ms
+        - source
+
+    # --------------------------------------------------------------------------
+    # QUEUE TRANSFER RESPONSE
+    # --------------------------------------------------------------------------
+    QueueTransferResponse:
+      type: object
+      description: Response from queue transfer operation
+      properties:
+        queue_id:
+          type: string
+          description: Created queue identifier on the destination
+        accepted:
+          type: boolean
+          description: True if the queue transfer was accepted
+        items_count:
+          type: integer
+          minimum: 0
+          description: Number of tracks in the queue
+        current_index:
+          type: integer
+          minimum: 0
+          description: Confirmed current index
+        position_ms:
+          type: integer
+          minimum: 0
+          description: Confirmed position in milliseconds
+      required:
+        - queue_id
+        - accepted
+        - items_count
 
     # --------------------------------------------------------------------------
     # ROOM

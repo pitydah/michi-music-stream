@@ -447,9 +447,19 @@ class SimulatorState:
             log.warning("Pair recover/start REJECTED (unregistered controller %s)", michi_id)
             return 404, error_body("NOT_FOUND", "controller identity is not registered on this receiver")
 
+        now_mono = self._now()
+        existing_ch = self.recovery_challenges.get((michi_id, public_key))
+        if existing_ch and now_mono < existing_ch["expires_mono"]:
+            log.info("Pairing RECOVER START: reusing active challenge for controller=%s", michi_id)
+            return 200, {
+                "challenge_nonce": existing_ch["challenge_nonce"],
+                "expires_at": existing_ch["expires_at"],
+                "server_michi_id": self.michi_id,
+                "server_public_key": self.public_key,
+            }
+
         raw_nonce = secrets.token_bytes(32)
         nonce = base64.urlsafe_b64encode(raw_nonce).decode("ascii").rstrip("=")
-        now_mono = self._now()
         now_wall = self._now_wall()
         exp_iso = self._rfc3339(now_wall + 60.0)
 
@@ -489,14 +499,16 @@ class SimulatorState:
             log.warning("Pair recover REJECTED: challenge expired for %s", michi_id)
             return 400, error_body("INVALID_REQUEST", "recovery challenge has expired")
 
-        self.recovery_challenges.pop((michi_id, public_key), None)
-
+        # Validate signature first (prevents DoS by unauthenticated bad signatures)
         challenge_error = self._validate_pair_challenge(payload)
         if challenge_error is not None:
             log.warning("Pair recover REJECTED (%s)", challenge_error.field)
             return 400, error_body(
                 "INVALID_REQUEST", challenge_error.message, {"field": challenge_error.field}
             )
+
+        # Consume challenge single-use only AFTER successful signature verification
+        self.recovery_challenges.pop((michi_id, public_key), None)
 
         existing = next(
             (c for c in self.controllers.values() if c["michi_id"] == michi_id and c["public_key"] == public_key),
