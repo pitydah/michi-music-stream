@@ -19,9 +19,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 RESULTS_FILE = REPO_ROOT / "tests/e2e/results/michi-link-alpha1.json"
 BUNDLE_DIR = REPO_ROOT / "contracts/michi-link"
 
-MICHI_LINK_TAG = "michi-link-v1.0.0-alpha.1"
-MICHI_LINK_TAG_COMMIT = "84b72029e00dcb66915acc0805df0c7f50b026bc"
-STREAM_TESTED_COMMIT = "3e8adc9c6f12d80ab8fefc678feb022decd9aff2"
+MICHI_LINK_TAG = "michi-link-v1.0.0-alpha.2"
+MICHI_LINK_TAG_COMMIT = "f9e96c739fffd26a73389057d9e8c37ea201302d"
+STREAM_TESTED_COMMIT = "c08dee5bd09c831c783621a84b6d8bffb5d52ae9"
 
 CASES = [
     {"id": "E2E-01", "name": "signed discovery announce vector (schema + Ed25519 + michi_id; altered signature rejected)", "result": "pass"},

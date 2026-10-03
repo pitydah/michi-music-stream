@@ -5,17 +5,17 @@
   },
   "commits": {
     "michi_link": {
-      "tag": "michi-link-v1.0.0-alpha.1",
-      "commit": "84b72029e00dcb66915acc0805df0c7f50b026bc"
+      "tag": "michi-link-v1.0.0-alpha.2",
+      "commit": "f9e96c739fffd26a73389057d9e8c37ea201302d"
     },
     "michi_music_stream": {
-      "commit": "3e8adc9c6f12d80ab8fefc678feb022decd9aff2",
+      "commit": "c08dee5bd09c831c783621a84b6d8bffb5d52ae9",
       "note": "tip under test (firmware, simulator and contracts trees)"
     }
   },
   "bundle": {
-    "version": "1.0.0-alpha.1",
-    "upstream_commit": "47b3091d9d0401db25186bb96a6723e1d53433cb"
+    "version": "1.0.0-alpha.2",
+    "upstream_commit": "0bb7f941c418dc17c35b9f142d3d13a611d375ff"
   },
   "environment": "canonical receiver simulator (simulator/receiver_sim.py, MS-02) over real TCP HTTP; real UDP RTP up to the bound socket",
   "rtp_transport": {
