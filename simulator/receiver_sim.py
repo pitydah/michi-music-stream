@@ -41,6 +41,7 @@ import os
 import secrets
 import socket
 import sys
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -831,6 +832,39 @@ class SimulatorState:
         self.packets_lost = 0
         self.underruns = 0
         log.info("Session STARTED: id=%s port=%d peer=%s", session_id, port, source_ip)
+
+        def _rtp_listener(s_sock, expected_ssrc, expected_pt):
+            s_sock.settimeout(0.5)
+            while self.stream_socket is s_sock and self.session_id == session_id:
+                try:
+                    data, _ = s_sock.recvfrom(4096)
+                except (socket.timeout, OSError):
+                    continue
+                if len(data) < 12:
+                    self.packets_rejected += 1
+                    continue
+                v_p_x_cc = data[0]
+                version = (v_p_x_cc >> 6) & 0x03
+                if version != 2:
+                    self.packets_rejected += 1
+                    continue
+                pt = data[1] & 0x7F
+                ssrc = int.from_bytes(data[8:12], "big")
+                if expected_ssrc is not None and ssrc != expected_ssrc:
+                    self.packets_rejected += 1
+                    continue
+                if expected_pt is not None and pt != expected_pt:
+                    self.packets_rejected += 1
+                    continue
+                self.packets_received += 1
+
+        t = threading.Thread(
+            target=_rtp_listener,
+            args=(sock, payload.get("ssrc"), payload.get("payload_type")),
+            daemon=True,
+        )
+        t.start()
+
         return 201, {
             "session_id": session_id,
             "session_token": session_token,
