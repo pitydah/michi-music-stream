@@ -34,6 +34,8 @@ servers:
 tags:
   - name: Server
     description: Server metadata, health checks, and clock endpoints.
+  - name: Authentication
+    description: Device authentication and session tokens within a Michi Home.
   - name: Pairing
     description: Device pairing handshake and token management.
   - name: Library
@@ -88,7 +90,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ServerInfo"
-              example: {"service": "michi-stream-standard", "name": "Michi Stream Cocina", "server_id": "550e8400-e29b-41d4-a716-446655440000", "version": "0.3.0", "api_version": "v1-lite", "roles": ["audio_receiver"], "identity_scheme": "ed25519-blake3-v1", "michi_id": "QlGQosQszLQse057MCaw32IAHXv-I5klmAAsbivIays", "public_key": "KJN5aOu4gWhA0clmvmwqprYcwYI013vDNPx1jf90CpQ", "auth": {"required": true, "strategy": "RECEIVER_BUTTON", "token_refresh": false}, "features": {"session": true, "heartbeat": true, "volume": true, "now_playing": true, "diagnostics": true, "ota": true}, "audio": {"transports": ["rtp_udp"], "codecs": ["pcm_s16le"], "sample_rates": [48000], "bit_depths": [16], "channels": [2], "packet_ms": [10], "payload_types": [97], "buffer_ms_min": 50, "buffer_ms_max": 500}}
+              example: {"service": "michi-stream-standard", "name": "Michi Stream Cocina", "server_id": "550e8400-e29b-41d4-a716-446655440000", "version": "0.3.0", "api_version": "v1-lite", "roles": ["audio_receiver"], "identity_scheme": "ed25519-blake3-v1", "michi_id": "QlGQosQszLQse057MCaw32IAHXv-I5klmAAsbivIays", "public_key": "KJN5aOu4gWhA0clmvmwqprYcwYI013vDNPx1jf90CpQ", "auth": {"required": true, "strategy": "HOME_MEMBERSHIP", "token_refresh": false}, "features": {"session": true, "heartbeat": true, "volume": true, "now_playing": true, "diagnostics": true, "ota": true}, "audio": {"transports": ["rtp_udp"], "codecs": ["pcm_s16le"], "sample_rates": [48000], "bit_depths": [16], "channels": [2], "packet_ms": [10], "payload_types": [97], "buffer_ms_min": 50, "buffer_ms_max": 500}}
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -174,6 +176,79 @@ paths:
                     example: "2026-06-29T14:30:00Z"
                 required:
                   - server_time
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ============================================================================
+  # DEVICE AUTHENTICATION (MICHI TRUST ARCHITECTURE V2)
+  # ============================================================================
+  /auth/challenge:
+    post:
+      tags:
+        - Authentication
+      summary: Request device authentication challenge
+      description: |
+        Initiates challenge-response authentication between devices belonging to
+        the same Michi Home. Returns a challenge nonce with a short TTL.
+      operationId: requestDeviceAuthChallenge
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceAuthChallengeRequest"
+            example: {"client_michi_id": "QlGQosQszLQse057MCaw32IAHXv-I5klmAAsbivIays", "client_public_key": "fDBBmExOH6h74KpGq2ckfDNN0Mzi7oMN4g_V2IKAR8Y", "home_id": "vLzV3iL3x7eJ8qZ0a1b2c3d4e5f6g7h8i9j0k1l2m3n"}
+      responses:
+        "200":
+          description: Challenge issued successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceAuthChallengeResponse"
+              example: {"challenge_id": "550e8400-e29b-41d4-a716-446655440001", "challenge_nonce": "VFfZjzw8JeAM7-RFiTSrMA", "server_michi_id": "97ryPKOLZ-JgVKQFc2ZuuSk0alWzxagdNILuDW26jEc", "server_public_key": "KJN5aOu4gWhA0clmvmwqprYcwYI013vDNPx1jf90CpQ", "expires_in": 60}
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /auth/session:
+    post:
+      tags:
+        - Authentication
+      summary: Establish authenticated device session
+      description: |
+        Submits the client proof and membership certificate answering an active
+        challenge. If valid, grants a short-lived bearer session token in RAM.
+      operationId: establishDeviceAuthSession
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceAuthSessionRequest"
+            example: {"challenge_id": "550e8400-e29b-41d4-a716-446655440001", "client_michi_id": "QlGQosQszLQse057MCaw32IAHXv-I5klmAAsbivIays", "membership": {"version": 1, "home_id": "vLzV3iL3x7eJ8qZ0a1b2c3d4e5f6g7h8i9j0k1l2m3n", "device_michi_id": "QlGQosQszLQse057MCaw32IAHXv-I5klmAAsbivIays", "device_public_key": "fDBBmExOH6h74KpGq2ckfDNN0Mzi7oMN4g_V2IKAR8Y", "device_type": "stream", "roles": ["audio_receiver"], "issued_at": "2026-10-04T12:00:00Z", "serial": 1, "signature": "DTlMt9BYH_TnYgKAeGd8zTpza-w5b8BDm9AyIoAW2p0clD7JrzwN9cwPY5y48K14x_0z2TPq7-LTXdNTqmhr-w"}, "client_signature": "DTlMt9BYH_TnYgKAeGd8zTpza-w5b8BDm9AyIoAW2p0clD7JrzwN9cwPY5y48K14x_0z2TPq7-LTXdNTqmhr-w"}
+      responses:
+        "200":
+          description: Session established successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceAuthSessionResponse"
+              example: {"session_token": "michi_session_ram_token_example_1234567890", "token_type": "Bearer", "expires_in": 3600, "server_michi_id": "97ryPKOLZ-JgVKQFc2ZuuSk0alWzxagdNILuDW26jEc", "server_signature": "DTlMt9BYH_TnYgKAeGd8zTpza-w5b8BDm9AyIoAW2p0clD7JrzwN9cwPY5y48K14x_0z2TPq7-LTXdNTqmhr-w"}
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -4006,6 +4081,7 @@ components:
                 - SERVER_CODE
                 - RECEIVER_BUTTON
                 - ED25519_CHALLENGE
+                - HOME_MEMBERSHIP
                 - LEGACY
             token_refresh:
               type: boolean
@@ -4198,6 +4274,283 @@ components:
         - status
 
     # --------------------------------------------------------------------------
+    # MICHI HOME & DEVICE AUTHENTICATION (TRUST ARCHITECTURE V2)
+    # --------------------------------------------------------------------------
+    MichiHome:
+      type: object
+      description: Michi Home root entity representing a trusted local home ecosystem.
+      required:
+        - version
+        - home_id
+        - home_name
+        - home_root_public_key
+        - created_at
+      properties:
+        version:
+          type: integer
+          enum: [1]
+        home_id:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+        home_name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        home_root_public_key:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+        created_at:
+          type: string
+          format: date-time
+
+    MichiMembership:
+      type: object
+      description: Cryptographic membership certificate issued to a device by the Home Root Authority.
+      required:
+        - version
+        - home_id
+        - device_michi_id
+        - device_public_key
+        - device_type
+        - roles
+        - issued_at
+        - serial
+        - signature
+      properties:
+        version:
+          type: integer
+          enum: [1]
+        home_id:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+        device_michi_id:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+        device_public_key:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+        device_type:
+          type: string
+          enum: [player, server, stream, mobile]
+        roles:
+          type: array
+          items:
+            type: string
+            enum:
+              - desktop_player
+              - library_master
+              - sync_host
+              - music_server
+              - library_host
+              - playback_host
+              - mobile_player
+              - remote_controller
+              - sync_client
+              - audio_receiver
+          minItems: 1
+          uniqueItems: true
+        issued_at:
+          type: string
+          format: date-time
+        serial:
+          type: integer
+          minimum: 1
+        signature:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{86}$"
+
+    DeviceAuthChallengeRequest:
+      type: object
+      description: Request initiated by a client to obtain an authentication challenge from a receiver or server.
+      required:
+        - client_michi_id
+        - client_public_key
+        - home_id
+      properties:
+        client_michi_id:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+        client_public_key:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+        home_id:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+
+    DeviceAuthChallengeResponse:
+      type: object
+      description: Challenge response returned by a receiver or server for mutual home device authentication.
+      required:
+        - challenge_id
+        - challenge_nonce
+        - server_michi_id
+        - server_public_key
+        - expires_in
+      properties:
+        challenge_id:
+          type: string
+          format: uuid
+        challenge_nonce:
+          type: string
+          minLength: 22
+          pattern: "^[A-Za-z0-9_-]{22,}$"
+        server_michi_id:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+        server_public_key:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+        expires_in:
+          type: integer
+          minimum: 1
+          maximum: 300
+
+    DeviceAuthSessionRequest:
+      type: object
+      description: Client proof and membership submission answering a challenge to obtain a short-lived session token.
+      required:
+        - challenge_id
+        - client_michi_id
+        - membership
+        - client_signature
+      properties:
+        challenge_id:
+          type: string
+          format: uuid
+        client_michi_id:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+        membership:
+          $ref: "#/components/schemas/MichiMembership"
+        client_signature:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{86}$"
+
+    DeviceAuthSessionResponse:
+      type: object
+      description: Session established response containing a short-lived bearer token and server mutual proof.
+      required:
+        - session_token
+        - token_type
+        - expires_in
+        - server_michi_id
+        - server_signature
+      properties:
+        session_token:
+          type: string
+          minLength: 16
+          maxLength: 512
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+          minimum: 1
+        server_michi_id:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+        server_signature:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{86}$"
+
+    HomeDeviceRoster:
+      type: object
+      description: Roster of all registered devices in a Michi Home.
+      required:
+        - version
+        - home_id
+        - devices
+        - updated_at
+      properties:
+        version:
+          type: integer
+          enum: [1]
+        home_id:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+        devices:
+          type: array
+          items:
+            type: object
+            required:
+              - device_michi_id
+              - device_name
+              - device_type
+              - roles
+              - membership
+              - status
+              - last_seen_at
+            properties:
+              device_michi_id:
+                type: string
+                pattern: "^[A-Za-z0-9_-]{43}$"
+              device_name:
+                type: string
+                minLength: 1
+                maxLength: 128
+              device_type:
+                type: string
+                enum: [player, server, stream, mobile]
+              roles:
+                type: array
+                items:
+                  type: string
+                  enum:
+                    - desktop_player
+                    - library_master
+                    - sync_host
+                    - music_server
+                    - library_host
+                    - playback_host
+                    - mobile_player
+                    - remote_controller
+                    - sync_client
+                    - audio_receiver
+                minItems: 1
+              membership:
+                $ref: "#/components/schemas/MichiMembership"
+              status:
+                type: string
+                enum: [online, offline, unreachable]
+              last_seen_at:
+                type: string
+                format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    HomeDeviceRevocation:
+      type: object
+      description: Cryptographic revocation record for a removed or compromised device in a Michi Home.
+      required:
+        - version
+        - home_id
+        - revoked_device_michi_id
+        - revoked_at
+        - reason
+        - signature
+      properties:
+        version:
+          type: integer
+          enum: [1]
+        home_id:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+        revoked_device_michi_id:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+        revoked_at:
+          type: string
+          format: date-time
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 256
+        signature:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{86}$"
+
+    # --------------------------------------------------------------------------
     # PAIR START
     # --------------------------------------------------------------------------
     PairStartRequest:
@@ -4256,6 +4609,7 @@ components:
             - SERVER_CODE
             - ED25519_CHALLENGE
             - RECEIVER_BUTTON
+            - HOME_MEMBERSHIP
             - LEGACY
         michi_id:
           type: string
@@ -4942,6 +5296,14 @@ components:
           type: string
           format: date-time
           description: When the manifest was last updated
+        home:
+          $ref: "#/components/schemas/MichiHome"
+        devices:
+          $ref: "#/components/schemas/HomeDeviceRoster"
+        revocations:
+          type: array
+          items:
+            $ref: "#/components/schemas/HomeDeviceRevocation"
       required:
         - cursor
         - tracks_checksum

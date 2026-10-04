@@ -47,7 +47,8 @@ from datetime import datetime, timezone
 
 import blake3
 from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives import serialization as ser
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 try:
     from flask import Flask, request, jsonify
@@ -73,6 +74,40 @@ def decode_base64url_strict(value):
 def derive_michi_id(public_key_bytes):
     return base64.urlsafe_b64encode(blake3.blake3(public_key_bytes).digest()).decode("ascii").rstrip("=")
 
+
+def canonical_membership_bytes(home_id, dev_michi_id, dev_pubkey, dev_type, roles, issued_at, serial):
+    sorted_roles = sorted(roles)
+    payload = (
+        b"michi-link-membership-v1"
+        + home_id.encode("ascii")
+        + dev_michi_id.encode("ascii")
+        + dev_pubkey.encode("ascii")
+        + dev_type.encode("ascii")
+    )
+    for r in sorted_roles:
+        payload += b":" + r.encode("utf-8")
+    payload += b":" + issued_at.encode("ascii") + b":" + str(serial).encode("ascii")
+    return payload
+
+
+def make_membership_cert(root_private_key, home_id, dev_michi_id, dev_pubkey, dev_type="server", roles=None, issued_at="2026-10-04T12:00:00Z", serial=1):
+    if roles is None:
+        roles = ["music_server"]
+    canon = canonical_membership_bytes(home_id, dev_michi_id, dev_pubkey, dev_type, roles, issued_at, serial)
+    sig = root_private_key.sign(canon)
+    sig_b64 = base64.urlsafe_b64encode(sig).decode("ascii").rstrip("=")
+    return {
+        "version": 1,
+        "home_id": home_id,
+        "device_michi_id": dev_michi_id,
+        "device_public_key": dev_pubkey,
+        "device_type": dev_type,
+        "roles": roles,
+        "issued_at": issued_at,
+        "serial": serial,
+        "signature": sig_b64,
+    }
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -90,6 +125,8 @@ TOKEN_BYTES = 32
 VECTOR_SERVER_ID = "550e8400-e29b-41d4-a716-446655440000"
 VECTOR_MICHI_ID = "f2UwxQaeA6vA8LO7Cr1nGRr5MStned_Gbmc_ua48qUc"
 VECTOR_PUBLIC_KEY = "RpHnJr9oP1DXBkPuIMuk0hJ2hAJ5SiWO2hAQVCMGREE"
+VECTOR_HOME_ID = "FU1FL-wFLfsfew3qpbR7XjDkmStWZY4g84MyW-zXPOs"
+VECTOR_ROOT_PUBLIC_KEY = "SSUmCh_mEGLUkwz9IJyZVv9MapeD_PCkKI17twD3c_g"
 VECTOR_NAME = "Michi Stream Cocina"
 VECTOR_VERSION = "0.3.0"
 
@@ -97,7 +134,7 @@ CONTROLLER_IDENTITY = {
     "device_name": "Michi Micro Server",
     "device_type": "server",
     "roles": ["music_server"],
-    "auth_strategy": "RECEIVER_BUTTON",
+    "auth_strategy": "HOME_MEMBERSHIP",
     "michi_id": "JXcHys3oHoK2xsmQqlWEKi-KH_s4TrxJGw3YbiKP9-U",
     "public_key": "j8oIHv906goIsvcANXl_SZX8-OPcZftDkTPwTYaQQ7E",
     "challenge_nonce": "CxIZICcuNTxDSlFYX2ZtdA",
@@ -119,7 +156,8 @@ def _receiver_config(service):
         "identity_scheme": "ed25519-blake3-v1",
         "michi_id": VECTOR_MICHI_ID,
         "public_key": VECTOR_PUBLIC_KEY,
-        "auth": {"required": True, "strategy": "RECEIVER_BUTTON", "token_refresh": False},
+        "michi_home_id": VECTOR_HOME_ID,
+        "auth": {"required": True, "strategy": "HOME_MEMBERSHIP", "token_refresh": False},
         "features": {
             "session": True,
             "heartbeat": True,
@@ -205,6 +243,15 @@ class SimulatorState:
         self.boot_mono = self.mono_clock()
         self.show_local_pin = show_local_pin
 
+        self.home_id = config.get("michi_home_id", VECTOR_HOME_ID)
+        self.active_challenges = {}
+        self.ram_sessions = {}
+        server_seed = blake3.blake3(b"michi-link contract vectors v1" + b"receiver").digest()
+        self.server_private_key = Ed25519PrivateKey.from_private_bytes(server_seed)
+        root_seed = blake3.blake3(b"michi-link contract vectors v1" + b"home-root").digest()
+        self.home_root_private_key = Ed25519PrivateKey.from_private_bytes(root_seed)
+        self.home_root_public_key = self.home_root_private_key.public_key()
+
         self.window_open = False
         self.window_expires_mono = 0.0
         self.pairing_sessions = {}
@@ -256,7 +303,169 @@ class SimulatorState:
     def info(self):
         return dict(self.config)
 
-    # ── Pairing ─────────────────────────────────────────────
+    # ── Home Membership Authentication ────────────────────────
+
+    def auth_challenge(self, payload):
+        err = validate_request("device-auth-challenge-request.schema.json", payload)
+        if err is not None:
+            return 400, error_body("INVALID_REQUEST", err.message, {"field": err.field})
+
+        if payload["home_id"] != self.home_id:
+            return 403, error_body("FORBIDDEN", "Home ID mismatch", {"field": "home_id"})
+
+        try:
+            pk_bytes = decode_base64url_strict(payload["client_public_key"])
+            if len(pk_bytes) != 32:
+                return 400, error_body("INVALID_REQUEST", "Invalid client_public_key length", {"field": "client_public_key"})
+            derived = derive_michi_id(pk_bytes)
+            if derived != payload["client_michi_id"]:
+                return 400, error_body("INVALID_REQUEST", "client_michi_id does not correspond to client_public_key", {"field": "client_michi_id"})
+        except Exception:
+            return 400, error_body("INVALID_REQUEST", "Invalid client_public_key encoding", {"field": "client_public_key"})
+
+        challenge_id = str(uuid.uuid4())
+        nonce_bytes = secrets.token_bytes(16)
+        challenge_nonce = base64.urlsafe_b64encode(nonce_bytes).decode("ascii").rstrip("=")
+        expires_in = 60
+
+        self.active_challenges[challenge_id] = {
+            "challenge_id": challenge_id,
+            "challenge_nonce": challenge_nonce,
+            "client_michi_id": payload["client_michi_id"],
+            "client_public_key": payload["client_public_key"],
+            "home_id": payload["home_id"],
+            "created_at": self._now(),
+            "expires_in": expires_in,
+        }
+
+        return 200, {
+            "challenge_id": challenge_id,
+            "challenge_nonce": challenge_nonce,
+            "server_michi_id": self.michi_id,
+            "server_public_key": self.public_key,
+            "expires_in": expires_in,
+        }
+
+    def auth_session(self, payload):
+        err = validate_request("device-auth-session-request.schema.json", payload)
+        if err is not None:
+            return 400, error_body("INVALID_REQUEST", err.message, {"field": err.field})
+
+        challenge_id = payload["challenge_id"]
+        challenge = self.active_challenges.pop(challenge_id, None)
+        if challenge is None:
+            return 404, error_body("NOT_FOUND", "Challenge not found or already consumed")
+
+        if self._now() - challenge["created_at"] > challenge["expires_in"]:
+            return 401, error_body("UNAUTHORIZED", "Challenge has expired")
+
+        client_michi_id = payload["client_michi_id"]
+        if client_michi_id != challenge["client_michi_id"]:
+            return 400, error_body("INVALID_REQUEST", "client_michi_id does not match challenge", {"field": "client_michi_id"})
+
+        # Validate membership certificate
+        membership = payload["membership"]
+        if membership.get("version") != 1:
+            return 401, error_body("UNAUTHORIZED", "Invalid membership certificate version")
+
+        if membership.get("home_id") != self.home_id:
+            return 401, error_body("UNAUTHORIZED", "Membership home_id mismatch")
+
+        if membership.get("device_michi_id") != client_michi_id:
+            return 401, error_body("UNAUTHORIZED", "Membership device_michi_id mismatch")
+
+        if membership.get("device_public_key") != challenge["client_public_key"]:
+            return 401, error_body("UNAUTHORIZED", "Membership device_public_key mismatch")
+
+        try:
+            sorted_roles = sorted(membership.get("roles", []))
+            canon_bytes = (
+                b"michi-link-membership-v1"
+                + membership["home_id"].encode("ascii")
+                + membership["device_michi_id"].encode("ascii")
+                + membership["device_public_key"].encode("ascii")
+                + membership["device_type"].encode("ascii")
+            )
+            for r in sorted_roles:
+                canon_bytes += b":" + r.encode("utf-8")
+            canon_bytes += b":" + membership["issued_at"].encode("ascii") + b":" + str(membership["serial"]).encode("ascii")
+
+            mem_sig_bytes = decode_base64url_strict(membership["signature"])
+            self.home_root_public_key.verify(mem_sig_bytes, canon_bytes)
+        except Exception:
+            return 401, error_body("UNAUTHORIZED", "Invalid membership signature")
+
+        try:
+            client_pk_bytes = decode_base64url_strict(challenge["client_public_key"])
+            client_ed_pk = Ed25519PublicKey.from_public_bytes(client_pk_bytes)
+
+            auth_payload = (
+                b"michi-link-device-auth-v1"
+                + self.home_id.encode("ascii")
+                + self.michi_id.encode("ascii")
+                + client_michi_id.encode("ascii")
+                + challenge_id.encode("ascii")
+                + challenge["challenge_nonce"].encode("ascii")
+            )
+            client_sig_bytes = decode_base64url_strict(payload["client_signature"])
+            client_ed_pk.verify(client_sig_bytes, auth_payload)
+        except Exception:
+            return 401, error_body("UNAUTHORIZED", "Invalid client device auth signature")
+
+        raw_token = secrets.token_bytes(TOKEN_BYTES)
+        session_token = base64.urlsafe_b64encode(raw_token).decode("ascii").rstrip("=")
+        digest = hashlib.sha256(raw_token).hexdigest()
+        expires_in = 3600
+
+        self.ram_sessions[digest] = {
+            "token": session_token,
+            "client_michi_id": client_michi_id,
+            "created_at": self._now(),
+            "expires_in": expires_in,
+        }
+
+        server_auth_payload = (
+            b"michi-link-server-auth-v1"
+            + self.home_id.encode("ascii")
+            + self.michi_id.encode("ascii")
+            + client_michi_id.encode("ascii")
+            + challenge_id.encode("ascii")
+            + session_token.encode("ascii")
+        )
+        server_sig_bytes = self.server_private_key.sign(server_auth_payload)
+        server_signature = base64.urlsafe_b64encode(server_sig_bytes).decode("ascii").rstrip("=")
+
+        return 200, {
+            "session_token": session_token,
+            "token_type": "Bearer",
+            "expires_in": expires_in,
+            "server_michi_id": self.michi_id,
+            "server_signature": server_signature,
+        }
+
+    def validate_session_token(self, token):
+        try:
+            token_raw = decode_base64url_strict(token)
+            if len(token_raw) != TOKEN_BYTES:
+                return False
+            digest = hashlib.sha256(token_raw).hexdigest()
+        except Exception:
+            return False
+
+        session = self.ram_sessions.get(digest)
+        if session is not None:
+            if self._now() - session["created_at"] > session["expires_in"]:
+                del self.ram_sessions[digest]
+                return False
+            return True
+
+        # Check fallback legacy controllers if any
+        return any(
+            hmac.compare_digest(digest, controller["token_sha256"])
+            for controller in self.controllers.values()
+        )
+
+    # ── Pairing (Legacy Compatibility) ──────────────────────
 
     def open_pairing_window(self):
         self.window_open = True
@@ -819,7 +1028,7 @@ def create_app(state: SimulatorState) -> Flask:
 
     def bearer_guard():
         token = bearer_token()
-        if token is None or not state.validate_pairing_token(token):
+        if token is None or not (state.validate_session_token(token) or state.validate_pairing_token(token)):
             log.warning("Auth FAILED (missing or invalid bearer token)")
             return jsonify(error_body("UNAUTHORIZED", "missing or invalid bearer token")), 401
         return None
@@ -847,58 +1056,20 @@ def create_app(state: SimulatorState) -> Flask:
     def server_info():
         return jsonify(state.info())
 
-    @app.route("/api/v1/pair/start", methods=["POST"])
-    def pair_start():
+    @app.route("/api/v1/auth/challenge", methods=["POST"])
+    def auth_challenge():
         payload = json_payload()
         if payload is None:
             return jsonify(error_body("INVALID_REQUEST", "request body must be a JSON object", {"field": "body"})), 400
-        err = validate_request("pair-start.schema.json", payload)
-        if err is not None:
-            return jsonify(error_body("INVALID_REQUEST", err.message, {"field": err.field})), 400
-        status, body = state.pairing_start(payload)
+        status, body = state.auth_challenge(payload)
         return jsonify(body), status
 
-    @app.route("/api/v1/pair/status", methods=["GET"])
-    def pair_status():
-        session_id = request.args.get("session_id")
-        if not session_id:
-            return jsonify(error_body("INVALID_REQUEST", "session_id query parameter is required", {"field": "session_id"})), 400
-        status, body = state.pairing_status(session_id)
-        return jsonify(body), status
-
-    @app.route("/api/v1/pair/confirm", methods=["POST"])
-    def pair_confirm():
+    @app.route("/api/v1/auth/session", methods=["POST"])
+    def auth_session():
         payload = json_payload()
         if payload is None:
             return jsonify(error_body("INVALID_REQUEST", "request body must be a JSON object", {"field": "body"})), 400
-        err = validate_request("pair-confirm.schema.json", payload)
-        if err is not None:
-            return jsonify(error_body("INVALID_REQUEST", err.message, {"field": err.field})), 400
-        status, body = state.pairing_confirm(
-            payload["session_id"], payload["pin"], payload["michi_id"], payload["public_key"]
-        )
-        return jsonify(body), status
-
-    @app.route("/api/v1/pair/recover/start", methods=["POST"])
-    def pair_recover_start():
-        payload = json_payload()
-        if payload is None:
-            return jsonify(error_body("INVALID_REQUEST", "request body must be a JSON object", {"field": "body"})), 400
-        err = validate_request("pair-recover-start.schema.json", payload)
-        if err is not None:
-            return jsonify(error_body("INVALID_REQUEST", err.message, {"field": err.field})), 400
-        status, body = state.pairing_recover_start(payload)
-        return jsonify(body), status
-
-    @app.route("/api/v1/pair/recover", methods=["POST"])
-    def pair_recover():
-        payload = json_payload()
-        if payload is None:
-            return jsonify(error_body("INVALID_REQUEST", "request body must be a JSON object", {"field": "body"})), 400
-        for f in ("michi_id", "public_key", "challenge_nonce", "challenge_signature"):
-            if f not in payload:
-                return jsonify(error_body("INVALID_REQUEST", f"missing required field: {f}", {"field": f})), 400
-        status, body = state.pairing_recover(payload)
+        status, body = state.auth_session(payload)
         return jsonify(body), status
 
     @app.route("/api/v1/receiver-lite/session", methods=["POST"])

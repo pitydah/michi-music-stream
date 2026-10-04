@@ -111,9 +111,10 @@ def test_02_server_info_canonical(sim, bundle):
     assert info["identity_scheme"] == "ed25519-blake3-v1"
     assert info["auth"] == {
         "required": True,
-        "strategy": "RECEIVER_BUTTON",
+        "strategy": "HOME_MEMBERSHIP",
         "token_refresh": False,
     }
+    assert info["michi_home_id"] == sim.state.home_id
     assert info["features"]["session"] is True
     assert info["features"]["heartbeat"] is True
     assert info["features"]["volume"] is True
@@ -137,9 +138,16 @@ def test_02_server_info_canonical(sim, bundle):
     assert bundle.validate("error.schema.json", err) == []
     assert err["error"]["code"] == "NOT_FOUND"
 
+    status, err = sim.client.request("POST", "/api/v1/pair/start", {})
+    assert status == 404
+    assert bundle.validate("error.schema.json", err) == []
+    assert err["error"]["code"] == "NOT_FOUND"
 
-def test_03_pairing_receiver_button_flow(sim, bundle):
-    """Full pairing: window hook, signed challenge, PIN, receiver-issued token."""
+
+def test_03_device_auth_flow(sim, bundle):
+    """Device authentication: challenge issuance + membership proof + mutual signature."""
+    from receiver_sim import make_membership_cert
+
     client = sim.client
     state = sim.state
 
@@ -149,129 +157,132 @@ def test_03_pairing_receiver_button_flow(sim, bundle):
     )
     michi_id = derive_michi_id(public_bytes)
     public_key = b64url_nopad(public_bytes)
-    nonce = secrets.token_bytes(16)
-    challenge = {
-        "device_name": "Michi Micro Server",
-        "device_type": "server",
-        "roles": ["music_server"],
-        "auth_strategy": "RECEIVER_BUTTON",
-        "michi_id": michi_id,
-        "public_key": public_key,
-        "challenge_nonce": b64url_nopad(nonce),
-        "challenge_signature": b64url_nopad(private_key.sign(nonce)),
+
+    challenge_req = {
+        "client_michi_id": michi_id,
+        "client_public_key": public_key,
+        "home_id": state.home_id,
     }
-    assert bundle.validate("pair-start.schema.json", challenge) == []
+    assert bundle.validate("device-auth-challenge-request.schema.json", challenge_req) == []
 
-    state.open_pairing_window()
-
-    status, started = client.request("POST", "/api/v1/pair/start", challenge)
-    assert status == 201
-    assert bundle.validate("pair-start-response.schema.json", started) == []
-    assert len(b64url_decode(started["server_public_key"])) == 32
-    assert started["server_michi_id"] == derive_michi_id(
-        b64url_decode(started["server_public_key"])
-    )
-    pairing_session_id = started["session_id"]
-
-    status, status_body = client.request(
-        "GET", f"/api/v1/pair/status?session_id={pairing_session_id}"
-    )
+    status, ch_resp = client.request("POST", "/api/v1/auth/challenge", challenge_req)
     assert status == 200
-    assert bundle.validate("pair-status.schema.json", status_body) == []
-    assert status_body["status"] == "pending"
+    assert bundle.validate("device-auth-challenge-response.schema.json", ch_resp) == []
+    assert ch_resp["server_michi_id"] == state.michi_id
+    assert ch_resp["expires_in"] == 60
+    challenge_id = ch_resp["challenge_id"]
+    challenge_nonce = ch_resp["challenge_nonce"]
 
-    pin = state.pairing_sessions[pairing_session_id]["pin"]
-    assert re.fullmatch(r"[0-9]{6}", pin) is not None
+    # Valid membership certificate issued by Home Root Authority
+    membership = make_membership_cert(
+        state.home_root_private_key,
+        state.home_id,
+        michi_id,
+        public_key,
+        dev_type="server",
+        roles=["music_server"],
+    )
+    assert bundle.validate("michi-membership.schema.json", membership) == []
 
-    confirm = {
-        "session_id": pairing_session_id,
-        "pin": pin,
-        "michi_id": michi_id,
-        "public_key": public_key,
+    # Client signs domain-separated proof
+    auth_payload = (
+        b"michi-link-device-auth-v1"
+        + state.home_id.encode("ascii")
+        + state.michi_id.encode("ascii")
+        + michi_id.encode("ascii")
+        + challenge_id.encode("ascii")
+        + challenge_nonce.encode("ascii")
+    )
+    client_sig = b64url_nopad(private_key.sign(auth_payload))
+
+    session_req = {
+        "challenge_id": challenge_id,
+        "client_michi_id": michi_id,
+        "membership": membership,
+        "client_signature": client_sig,
     }
-    assert bundle.validate("pair-confirm.schema.json", confirm) == []
+    assert bundle.validate("device-auth-session-request.schema.json", session_req) == []
 
-    status, confirmed = client.request("POST", "/api/v1/pair/confirm", confirm)
+    status, session_resp = client.request("POST", "/api/v1/auth/session", session_req)
     assert status == 200
-    assert bundle.validate("pair-confirm-response.schema.json", confirmed) == []
-    assert confirmed["expires_in"] == 0
-    assert confirmed["server_id"] == state.server_id
-    token = confirmed["token"]
+    assert bundle.validate("device-auth-session-response.schema.json", session_resp) == []
+    assert session_resp["token_type"] == "Bearer"
+    assert session_resp["expires_in"] == 3600
+    assert session_resp["server_michi_id"] == state.michi_id
+    token = session_resp["session_token"]
     assert len(b64url_decode(token)) == 32
 
-    controller = list(state.controllers.values())[0]
-    assert controller["token_sha256"] == hashlib.sha256(
-        b64url_decode(token)
-    ).hexdigest()
-    assert "token" not in controller and "pin" not in controller
-    assert controller["michi_id"] == michi_id
-    assert controller["public_key"] == public_key
-    assert controller["permissions"] == [
-        "receiver.status",
-        "receiver.session",
-        "receiver.volume",
-        "receiver.now_playing",
-    ]
-
-    status, status_body = client.request(
-        "GET", f"/api/v1/pair/status?session_id={pairing_session_id}"
+    # Mutual server confirmation signature verification
+    server_auth_payload = (
+        b"michi-link-server-auth-v1"
+        + state.home_id.encode("ascii")
+        + state.michi_id.encode("ascii")
+        + michi_id.encode("ascii")
+        + challenge_id.encode("ascii")
+        + token.encode("ascii")
     )
-    assert status == 200
-    assert status_body["status"] == "confirmed"
-
-    status, err = client.request("POST", "/api/v1/pair/confirm", confirm)
-    assert status == 409
-    assert bundle.validate("error.schema.json", err) == []
+    assert ed25519_verify(
+        state.public_key, session_resp["server_signature"], server_auth_payload
+    )
 
     sim.pairing_token = token
     sim.controller_private_key = private_key
     sim.controller_michi_id = michi_id
     sim.controller_public_key = public_key
+    sim.last_session_req = session_req
 
 
-def test_03b_pairing_recovery_flow(sim, bundle):
-    """Authenticated pairing recovery: 2-step challenge-response, rotation, replay resistance."""
+def test_03b_device_auth_anti_replay_and_rejection(sim, bundle):
+    """Anti-replay (challenge consumed) and rejection of invalid membership."""
+    from receiver_sim import make_membership_cert
+
     client = sim.client
     state = sim.state
 
-    start_req = {
-        "michi_id": sim.controller_michi_id,
-        "public_key": sim.controller_public_key,
-    }
-    assert bundle.validate("pair-recover-start.schema.json", start_req) == []
-    status, start_resp = client.request("POST", "/api/v1/pair/recover/start", start_req)
-    assert status == 200
-    assert bundle.validate("pair-recover-start-response.schema.json", start_resp) == []
-
-    nonce_b64 = start_resp["challenge_nonce"]
-    nonce_raw = b64url_decode(nonce_b64)
-    sig_b64 = b64url_nopad(sim.controller_private_key.sign(nonce_raw))
-
-    recover_req = {
-        "michi_id": sim.controller_michi_id,
-        "public_key": sim.controller_public_key,
-        "challenge_nonce": nonce_b64,
-        "challenge_signature": sig_b64,
-    }
-    assert bundle.validate("pair-recover.schema.json", recover_req) == []
-    status, recover_resp = client.request("POST", "/api/v1/pair/recover", recover_req)
-    assert status == 200
-    assert bundle.validate("pair-recover-response.schema.json", recover_resp) == []
-    assert recover_resp["expires_in"] == 0
-    assert recover_resp["server_id"] == state.server_id
-
-    # Single-use challenge: replay must be rejected with 400 INVALID_REQUEST
-    status, replay_err = client.request("POST", "/api/v1/pair/recover", recover_req)
-    assert status == 400
+    # 1. Anti-replay: reusing consumed challenge_id returns 404 NOT_FOUND
+    status, replay_err = client.request("POST", "/api/v1/auth/session", sim.last_session_req)
+    assert status == 404
     assert bundle.validate("error.schema.json", replay_err) == []
+    assert replay_err["error"]["code"] == "NOT_FOUND"
 
-    # Update pairing token to recovered token for subsequent session tests
-    old_token = sim.pairing_token
-    new_token = recover_resp["token"]
-    assert new_token != old_token
-    assert state.validate_pairing_token(old_token) is False
-    assert state.validate_pairing_token(new_token) is True
-    sim.pairing_token = new_token
+    # 2. Forged membership certificate with unapproved root signature
+    foreign_root = Ed25519PrivateKey.generate()
+    bad_mem = make_membership_cert(
+        foreign_root,
+        state.home_id,
+        sim.controller_michi_id,
+        sim.controller_public_key,
+        dev_type="server",
+        roles=["music_server"],
+    )
+    # Obtain a fresh challenge
+    status, ch_resp = client.request("POST", "/api/v1/auth/challenge", {
+        "client_michi_id": sim.controller_michi_id,
+        "client_public_key": sim.controller_public_key,
+        "home_id": state.home_id,
+    })
+    assert status == 200
+    cid = ch_resp["challenge_id"]
+    nonce = ch_resp["challenge_nonce"]
+    auth_payload = (
+        b"michi-link-device-auth-v1"
+        + state.home_id.encode("ascii")
+        + state.michi_id.encode("ascii")
+        + sim.controller_michi_id.encode("ascii")
+        + cid.encode("ascii")
+        + nonce.encode("ascii")
+    )
+    client_sig = b64url_nopad(sim.controller_private_key.sign(auth_payload))
+
+    status, forged_err = client.request("POST", "/api/v1/auth/session", {
+        "challenge_id": cid,
+        "client_michi_id": sim.controller_michi_id,
+        "membership": bad_mem,
+        "client_signature": client_sig,
+    })
+    assert status == 401
+    assert bundle.validate("error.schema.json", forged_err) == []
+    assert forged_err["error"]["code"] == "UNAUTHORIZED"
 
 
 def test_04_session_create_and_rtp_transport(sim, bundle):

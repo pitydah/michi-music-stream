@@ -11,6 +11,7 @@
 #include "michi_http.h"
 #include "michi_discovery.h"
 #include "michi_identity.h"
+#include "michi_home.h"
 
 #include "cJSON.h"
 
@@ -138,7 +139,7 @@ esp_err_t build_info_json_with_identity(cJSON *root, const michi_product_profile
     cJSON *auth = cJSON_AddObjectToObject(root, "auth");
     if (auth == NULL ||
         cJSON_AddBoolToObject(auth, "required", true) == NULL ||
-        cJSON_AddStringToObject(auth, "strategy", "RECEIVER_BUTTON") == NULL ||
+        cJSON_AddStringToObject(auth, "strategy", "HOME_MEMBERSHIP") == NULL ||
         cJSON_AddBoolToObject(auth, "token_refresh", false) == NULL) {
         return ESP_ERR_NO_MEM;
     }
@@ -223,5 +224,12 @@ esp_err_t build_info_json(cJSON *root, const michi_product_profile_t *p)
         pk = pk_b64;
     }
 
-    return build_info_json_with_identity(root, p, s_id, m_id, pk);
+    esp_err_t ret = build_info_json_with_identity(root, p, s_id, m_id, pk);
+    if (ret == ESP_OK && michi_home_is_provisioned()) {
+        char home_id[MICHI_HOME_ID_LEN] = {0};
+        if (michi_home_get_id(home_id, sizeof(home_id)) == ESP_OK) {
+            cJSON_AddStringToObject(root, "michi_home_id", home_id);
+        }
+    }
+    return ret;
 }

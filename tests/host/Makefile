@@ -16,8 +16,8 @@ CFLAGS  ?= -std=c11 -O2 -Wall -Wextra -Werror -D_DEFAULT_SOURCE
 CPPFLAGS = -Ishim -DMICHI_HOST_TEST \
            -I../../firmware/components/michi_ota \
            -I../../firmware/components/michi_ota/include \
-           -I../../firmware/components/michi_pairing \
-           -I../../firmware/components/michi_pairing/include \
+           -I../../firmware/components/michi_home \
+           -I../../firmware/components/michi_home/include \
            -I../../firmware/components/michi_identity/include \
            -I../../firmware/components/michi_discovery/include \
            -I../../firmware/components/michi_http/include \
@@ -63,12 +63,21 @@ IDENTITY_DEFS = -DMICHI_IDENTITY_TESTING \
 IDENTITY_INC = -I$(IDENTITY_DIR)/include -I$(IDENTITY_DIR)/monocypher \
                -I$(IDENTITY_DIR)/blake3
 
-TESTS := test_semver test_pairing_validators test_michi_identity \
-         test_michi_pairing test_michi_session test_rtp_guard test_rtp_clock test_rtp_jitter \
-         test_michi_button test_michi_button_debounce test_michi_ui \
-         test_spiffs_journal test_michi_jb test_michi_profile_logic test_michi_ota_logic \
-         test_michi_dac test_michi_display_dma test_michi_audio_buffer test_michi_audio_output \
-         $(if $(filter yes,$(HAS_CJSON)),test_json_helpers test_http_canonical test_michi_discovery test_michi_time test_capability_parity test_pairing_http test_session_http test_discovery_disc)
+# michi_home: compiles the REAL component (membership + auth + factory + validators)
+HOME_DIR = $(FIRMWARE)/michi_home
+HOME_SRC = $(HOME_DIR)/michi_home.c $(HOME_DIR)/michi_auth.c \
+           $(HOME_DIR)/factory_cfg.c $(HOME_DIR)/validators.c \
+           shim/esp_timer.c \
+           shim/freertos/task.c shim/freertos/queue.c \
+           $(IDENTITY_SRC)
+HOME_INC = -I$(HOME_DIR)/include -I$(HOME_DIR)
+
+TESTS := test_semver test_michi_identity test_michi_home \
+         test_michi_session test_rtp_guard test_rtp_clock test_rtp_jitter \
+         test_michi_ui test_spiffs_journal test_michi_jb test_michi_profile_logic \
+         test_michi_ota_logic test_michi_dac test_michi_display_dma \
+         test_michi_audio_buffer test_michi_audio_output \
+         $(if $(filter yes,$(HAS_CJSON)),test_json_helpers test_http_canonical test_michi_discovery test_michi_time test_capability_parity test_auth_http test_session_http test_discovery_disc)
 
 .PHONY: all test clean
 
@@ -76,14 +85,14 @@ all: $(TESTS)
 
 test: all
 	@set -e; \
-	for t in test_semver test_pairing_validators test_michi_identity test_michi_pairing test_michi_session test_rtp_guard test_rtp_clock test_rtp_jitter test_michi_button test_michi_button_debounce test_michi_ui test_spiffs_journal test_michi_jb test_michi_profile_logic test_michi_ota_logic test_michi_dac test_michi_display_dma test_michi_audio_buffer test_michi_audio_output; do ./$$t; done; \
+	for t in test_semver test_michi_identity test_michi_home test_michi_session test_rtp_guard test_rtp_clock test_rtp_jitter test_michi_ui test_spiffs_journal test_michi_jb test_michi_profile_logic test_michi_ota_logic test_michi_dac test_michi_display_dma test_michi_audio_buffer test_michi_audio_output; do ./$$t; done; \
 	if [ "$(HAS_CJSON)" = "yes" ]; then \
 	    ./test_json_helpers; \
 	    ./test_http_canonical; \
 	    ./test_michi_discovery; \
 	    ./test_michi_time; \
 	    ./test_capability_parity; \
-	    ./test_pairing_http; \
+	    ./test_auth_http; \
 	    ./test_session_http; \
 	    ./test_discovery_disc; \
 	else \
@@ -100,22 +109,25 @@ test_semver: test_semver.c $(FIRMWARE)/michi_ota/semver.c \
              $(FIRMWARE)/michi_ota/semver.h $(SHIMS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ test_semver.c $(FIRMWARE)/michi_ota/semver.c
 
-test_pairing_validators: test_pairing_validators.c $(FIRMWARE)/michi_pairing/validators.c \
-                         $(FIRMWARE)/michi_pairing/validators.h $(SHIMS)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ test_pairing_validators.c \
-	    $(FIRMWARE)/michi_pairing/validators.c
+test_michi_home: test_michi_home.c $(HOME_SRC) \
+                 $(HOME_DIR)/include/michi_home.h \
+                 $(HOME_DIR)/include/michi_auth.h \
+                 $(HOME_DIR)/include/validators.h \
+                 $(IDENTITY_DIR)/include/michi_identity.h $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(HOME_INC) $(IDENTITY_INC) \
+	    $(IDENTITY_DEFS) -DMICHI_HOME_TESTING $(CJSON_CFLAGS) -pthread -o $@ test_michi_home.c $(HOME_SRC) $(CJSON_LIBS)
 
 test_json_helpers: test_json_helpers.c $(FIRMWARE)/michi_http/json_helpers.c \
                    $(FIRMWARE)/michi_http/include/michi_http.h \
-                   $(FIRMWARE)/michi_pairing/validators.c \
-                   $(FIRMWARE)/michi_pairing/validators.h \
+                   $(HOME_DIR)/validators.c \
+                   $(HOME_DIR)/include/validators.h \
                    $(FIRMWARE)/michi_audio/michi_audio_buffer.c \
                    shim/esp_http_server_shim.c shim/esp_timer.c $(SHIMS)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(CJSON_CFLAGS) -I../../firmware/components/michi_pairing/include \
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CJSON_CFLAGS) $(HOME_INC) \
 	    -I../../firmware/components/michi_identity/include \
 	    -o $@ test_json_helpers.c \
 	    $(FIRMWARE)/michi_http/json_helpers.c \
-	    $(FIRMWARE)/michi_pairing/validators.c \
+	    $(HOME_DIR)/validators.c \
 	    $(FIRMWARE)/michi_audio/michi_audio_buffer.c \
 	    shim/esp_http_server_shim.c shim/esp_timer.c $(CJSON_LIBS)
 
@@ -126,80 +138,20 @@ test_http_canonical: test_http_canonical.c $(FIRMWARE)/michi_http/canonical_json
 	    $(FIRMWARE)/michi_http/canonical_json.c \
 	    $(FIRMWARE)/michi_product_profile/capabilities.c $(CJSON_LIBS)
 
-# Pairing HTTP body gates: the SAME json_helpers.c + validators.c the
-# firmware builds (cJSON-gated like the other HTTP tests).
-test_pairing_http: test_pairing_http.c $(FIRMWARE)/michi_http/json_helpers.c \
-                   $(FIRMWARE)/michi_http/include/michi_http.h \
-                   $(FIRMWARE)/michi_pairing/validators.c \
-                   $(FIRMWARE)/michi_pairing/validators.h \
-                   $(FIRMWARE)/michi_audio/michi_audio_buffer.c \
-                   shim/esp_http_server_shim.c shim/esp_timer.c $(SHIMS)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(CJSON_CFLAGS) -o $@ test_pairing_http.c \
+test_auth_http: test_auth_http.c $(FIRMWARE)/michi_http/json_helpers.c \
+                $(FIRMWARE)/michi_http/include/michi_http.h \
+                $(HOME_DIR)/validators.c \
+                $(HOME_DIR)/include/validators.h \
+                $(HOME_DIR)/include/michi_home.h \
+                $(HOME_DIR)/include/michi_auth.h \
+                $(FIRMWARE)/michi_audio/michi_audio_buffer.c \
+                shim/esp_http_server_shim.c shim/esp_timer.c $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CJSON_CFLAGS) $(HOME_INC) $(IDENTITY_INC) \
+	    -o $@ test_auth_http.c \
 	    $(FIRMWARE)/michi_http/json_helpers.c \
-	    $(FIRMWARE)/michi_pairing/validators.c \
+	    $(HOME_DIR)/validators.c \
 	    $(FIRMWARE)/michi_audio/michi_audio_buffer.c \
 	    shim/esp_http_server_shim.c shim/esp_timer.c $(CJSON_LIBS)
-
-# michi_pairing: compiles the REAL component (pairing core + validators +
-# identity for verify/derive/base64url) against the test shims. The host
-# SHA-256 test double stands in for mbedTLS (KAT-checked by the test).
-PAIRING_DIR = $(FIRMWARE)/michi_pairing
-PAIRING_SRC = $(PAIRING_DIR)/michi_pairing.c $(PAIRING_DIR)/validators.c \
-              shim/esp_timer.c shim/michi_state.c shim/mbedtls/sha256.c \
-              shim/nvs_fake.c \
-              shim/freertos/task.c shim/freertos/queue.c \
-              $(IDENTITY_DIR)/michi_identity.c $(IDENTITY_DIR)/identity_nvs.c \
-              $(IDENTITY_DIR)/monocypher/monocypher.c \
-              $(IDENTITY_DIR)/monocypher/monocypher-ed25519.c \
-              $(IDENTITY_DIR)/blake3/blake3.c \
-              $(IDENTITY_DIR)/blake3/blake3_dispatch.c \
-              $(IDENTITY_DIR)/blake3/blake3_portable.c
-PAIRING_INC = -I$(PAIRING_DIR)/include -I$(PAIRING_DIR)
-
-test_michi_pairing: test_michi_pairing.c $(PAIRING_SRC) \
-                    $(PAIRING_DIR)/include/michi_pairing.h \
-                    $(PAIRING_DIR)/validators.h \
-                    $(IDENTITY_DIR)/include/michi_identity.h $(SHIMS)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(PAIRING_INC) $(IDENTITY_INC) \
-	    $(IDENTITY_DEFS) -pthread -o $@ test_michi_pairing.c $(PAIRING_SRC)
-
-# michi_button: compiles the REAL gesture module (the exact classification
-# the debounce task runs + the factory-reset orchestration) and the REAL
-# identity sources (the corrupt-identity recovery path, end to end)
-# against the test shims. The pairing side is a call-counter test double
-# (the REAL pairing erase_all is already covered by test_michi_pairing),
-# so the reset wiring is asserted by call counts.
-BUTTON_DIR = $(FIRMWARE)/michi_button
-BUTTON_SRC = $(BUTTON_DIR)/michi_button_gesture.c \
-             shim/michi_pairing_fake.c shim/nvs_flash.c shim/esp_system.c \
-             shim/michi_state.c shim/michi_display_fake.c \
-             shim/michi_dac_fake.c \
-             $(IDENTITY_DIR)/michi_identity.c $(IDENTITY_DIR)/identity_nvs.c \
-             shim/nvs_fake.c \
-             $(IDENTITY_DIR)/monocypher/monocypher.c \
-             $(IDENTITY_DIR)/monocypher/monocypher-ed25519.c \
-             $(IDENTITY_DIR)/blake3/blake3.c \
-             $(IDENTITY_DIR)/blake3/blake3_dispatch.c \
-             $(IDENTITY_DIR)/blake3/blake3_portable.c
-
-test_michi_button: test_michi_button.c $(BUTTON_SRC) \
-                   $(BUTTON_DIR)/michi_button_gesture.h \
-                   $(PAIRING_DIR)/include/michi_pairing.h \
-                   $(IDENTITY_DIR)/include/michi_identity.h \
-                   $(IDENTITY_DIR)/identity_storage.h $(SHIMS)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(BUTTON_DIR) $(PAIRING_INC) \
-	    $(IDENTITY_INC) -I$(IDENTITY_DIR) $(IDENTITY_DEFS) \
-	    -o $@ test_michi_button.c $(BUTTON_SRC)
-
-# michi_button_debounce: compiles the PURE debouncer (the single-authority
-# state machine) with NO ESP/FreeRTOS/NVS/identity deps - only stdint, so it
-# links with no shim ESP headers. Proves the release-bounce P0 fix and the
-# single-PRESS/single-RELEASE-per-tap contract on the host, no hardware.
-test_michi_button_debounce: test_michi_button_debounce.c \
-                            $(BUTTON_DIR)/michi_button_debounce.c \
-                            $(BUTTON_DIR)/michi_button_debounce.h $(SHIMS)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(BUTTON_DIR) -o $@ \
-	    test_michi_button_debounce.c $(BUTTON_DIR)/michi_button_debounce.c
 
 test_michi_identity: test_michi_identity.c $(IDENTITY_SRC) \
                      $(IDENTITY_DIR)/include/michi_identity.h $(SHIMS)
@@ -321,13 +273,13 @@ test_michi_ota_logic: test_michi_ota_logic.c $(FIRMWARE)/michi_ota/semver.c \
 # firmware builds (cJSON-gated like the other HTTP tests).
 test_session_http: test_session_http.c $(FIRMWARE)/michi_http/json_helpers.c \
                    $(FIRMWARE)/michi_http/include/michi_http.h \
-                   $(FIRMWARE)/michi_pairing/validators.c \
-                   $(FIRMWARE)/michi_pairing/validators.h \
+                   $(HOME_DIR)/validators.c \
+                   $(HOME_DIR)/include/validators.h \
                    $(FIRMWARE)/michi_audio/michi_audio_buffer.c \
                    shim/esp_http_server_shim.c shim/esp_timer.c $(SHIMS)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(CJSON_CFLAGS) -o $@ test_session_http.c \
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CJSON_CFLAGS) $(HOME_INC) -o $@ test_session_http.c \
 	    $(FIRMWARE)/michi_http/json_helpers.c \
-	    $(FIRMWARE)/michi_pairing/validators.c \
+	    $(HOME_DIR)/validators.c \
 	    $(FIRMWARE)/michi_audio/michi_audio_buffer.c \
 	    shim/esp_http_server_shim.c shim/esp_timer.c $(CJSON_LIBS)
 
@@ -387,11 +339,12 @@ test_capability_parity: test_capability_parity.c \
                         $(FIRMWARE)/michi_http/include/michi_http.h \
                         $(DISCOVERY_DIR)/announce.c \
                         $(DISCOVERY_DIR)/include/michi_discovery.h \
-                        $(IDENTITY_SRC) $(SHIMS)
+                        $(IDENTITY_SRC) $(SHIMS) shim/michi_home_fake.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(DISCOVERY_INC) $(IDENTITY_INC) \
 	    $(IDENTITY_DEFS) $(CJSON_CFLAGS) -o $@ test_capability_parity.c \
 	    $(FIRMWARE)/michi_product_profile/capabilities.c \
 	    $(FIRMWARE)/michi_http/canonical_json.c \
+	    shim/michi_home_fake.c \
 	    $(DISCOVERY_DIR)/announce.c $(IDENTITY_SRC) $(CJSON_LIBS)
 
 # DISC suite (runtime discovery hardening): the FULL runtime path -
@@ -403,7 +356,8 @@ test_capability_parity: test_capability_parity.c \
 DISC_SRC = test_discovery_disc.c $(TIME_SRC) $(DISCOVERY_SRC) \
            $(DISCOVERY_DIR)/michi_discovery.c \
            $(FIRMWARE)/michi_product_profile/capabilities.c \
-           $(FIRMWARE)/michi_http/canonical_json.c
+           $(FIRMWARE)/michi_http/canonical_json.c \
+           shim/michi_home_fake.c
 
 test_discovery_disc: $(DISC_SRC) \
                      $(DISCOVERY_DIR)/include/michi_discovery.h \
@@ -449,12 +403,12 @@ test_michi_audio_output: test_michi_audio_output.c $(AUDIO_OUT_SRC) \
 	    test_michi_audio_output.c $(AUDIO_OUT_SRC)
 
 clean:
-	rm -f test_semver test_pairing_validators test_json_helpers \
+	rm -f test_semver test_michi_home test_json_helpers \
 	      test_http_canonical test_michi_identity test_michi_discovery \
-	      test_michi_time test_michi_pairing test_pairing_http \
+	      test_michi_time test_auth_http \
 	      test_michi_session test_rtp_guard test_session_http \
-	      test_capability_parity test_discovery_disc test_michi_button \
-	      test_michi_button_debounce test_michi_ui render_ui_previews \
+	      test_capability_parity test_discovery_disc \
+	      test_michi_ui render_ui_previews \
 	      test_michi_dac test_michi_display_dma test_spiffs_journal \
 	      test_michi_jb test_michi_profile_logic test_michi_ota_logic \
 	      test_rtp_clock test_rtp_jitter test_michi_audio_buffer test_michi_audio_output

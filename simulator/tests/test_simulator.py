@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import blake3
+from cryptography.hazmat.primitives import serialization as ser
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -97,6 +98,8 @@ def test_info_standard_canonical():
     assert info["features"]["now_playing"] is False
     assert info["features"]["diagnostics"] is False
     assert info["features"]["ota"] is False
+    assert info["auth"]["strategy"] == "HOME_MEMBERSHIP"
+    assert info["michi_home_id"] == "FU1FL-wFLfsfew3qpbR7XjDkmStWZY4g84MyW-zXPOs"
     assert info["audio"]["codecs"] == ["pcm_s16le"]
     assert info["audio"]["sample_rates"] == [48000]
     assert info["audio"]["payload_types"] == [97]
@@ -107,6 +110,7 @@ def test_info_hifi_service():
     s = SimulatorState(HIFI_CONFIG, mono_clock=FakeClock())
     assert s.info()["service"] == "michi-stream-hifi"
     assert s.info()["roles"] == ["audio_receiver"]
+    assert s.info()["auth"]["strategy"] == "HOME_MEMBERSHIP"
     assert s.info()["audio"]["codecs"] == ["pcm_s16le"]
     print("PASS info hifi service")
 
@@ -122,15 +126,140 @@ def test_identity_is_deterministic_fixture():
     print("PASS identity deterministic fixture")
 
 
-# ── pairing window ───────────────────────────────────────────
+# ── Home Membership Authentication ───────────────────────────
 
-def test_pairing_start_closed_window_403():
+def test_auth_challenge_positive():
     s = std_state()
-    code, body = s.pairing_start(CONTROLLER_IDENTITY)
+    client_sk = Ed25519PrivateKey.generate()
+    pk_bytes = client_sk.public_key().public_bytes(ser.Encoding.Raw, ser.PublicFormat.Raw)
+    client_pk = base64.urlsafe_b64encode(pk_bytes).decode("ascii").rstrip("=")
+    client_id = base64.urlsafe_b64encode(blake3.blake3(pk_bytes).digest()).decode("ascii").rstrip("=")
+
+    code, resp = s.auth_challenge({
+        "client_michi_id": client_id,
+        "client_public_key": client_pk,
+        "home_id": s.home_id,
+    })
+    assert code == 200
+    assert resp["server_michi_id"] == s.michi_id
+    assert resp["server_public_key"] == s.public_key
+    assert resp["expires_in"] == 60
+    assert resp["challenge_id"] in s.active_challenges
+
+
+def test_auth_challenge_wrong_home_403():
+    s = std_state()
+    code, resp = s.auth_challenge({
+        "client_michi_id": "a" * 43,
+        "client_public_key": "b" * 43,
+        "home_id": "wrong-home-id-43chars-base64url-nopad-12345",
+    })
     assert code == 403
-    assert body["error"]["code"] == "FORBIDDEN"
-    assert s.pairing_sessions == {}
-    print("PASS pairing start closed window 403")
+    assert resp["error"]["code"] == "FORBIDDEN"
+
+
+def test_auth_challenge_bad_michi_id_400():
+    s = std_state()
+    client_sk = Ed25519PrivateKey.generate()
+    pk_bytes = client_sk.public_key().public_bytes(ser.Encoding.Raw, ser.PublicFormat.Raw)
+    client_pk = base64.urlsafe_b64encode(pk_bytes).decode("ascii").rstrip("=")
+
+    code, resp = s.auth_challenge({
+        "client_michi_id": "wrong-michi-id-43chars-base64url-nopad-1234",
+        "client_public_key": client_pk,
+        "home_id": s.home_id,
+    })
+    assert code == 400
+    assert resp["error"]["code"] == "INVALID_REQUEST"
+
+
+def test_auth_session_positive_and_mutual_signature():
+    s = std_state()
+    client_sk = Ed25519PrivateKey.generate()
+    pk_bytes = client_sk.public_key().public_bytes(ser.Encoding.Raw, ser.PublicFormat.Raw)
+    client_pk = base64.urlsafe_b64encode(pk_bytes).decode("ascii").rstrip("=")
+    client_id = base64.urlsafe_b64encode(blake3.blake3(pk_bytes).digest()).decode("ascii").rstrip("=")
+
+    code, ch = s.auth_challenge({
+        "client_michi_id": client_id,
+        "client_public_key": client_pk,
+        "home_id": s.home_id,
+    })
+    assert code == 200
+    cid = ch["challenge_id"]
+    nonce = ch["challenge_nonce"]
+
+    from receiver_sim import make_membership_cert
+    mem = make_membership_cert(s.home_root_private_key, s.home_id, client_id, client_pk)
+
+    auth_payload = (
+        b"michi-link-device-auth-v1"
+        + s.home_id.encode("ascii")
+        + s.michi_id.encode("ascii")
+        + client_id.encode("ascii")
+        + cid.encode("ascii")
+        + nonce.encode("ascii")
+    )
+    sig = base64.urlsafe_b64encode(client_sk.sign(auth_payload)).decode("ascii").rstrip("=")
+
+    code, sess = s.auth_session({
+        "challenge_id": cid,
+        "client_michi_id": client_id,
+        "membership": mem,
+        "client_signature": sig,
+    })
+    assert code == 200
+    assert sess["token_type"] == "Bearer"
+    assert sess["expires_in"] == 3600
+    assert sess["server_michi_id"] == s.michi_id
+    assert s.validate_session_token(sess["session_token"])
+
+    # Challenge consumed on first use (anti-replay)
+    code2, _ = s.auth_session({
+        "challenge_id": cid,
+        "client_michi_id": client_id,
+        "membership": mem,
+        "client_signature": sig,
+    })
+    assert code2 == 404
+
+
+def test_auth_session_expired_challenge_401():
+    clock = FakeClock()
+    s = std_state(clock)
+    client_sk = Ed25519PrivateKey.generate()
+    pk_bytes = client_sk.public_key().public_bytes(ser.Encoding.Raw, ser.PublicFormat.Raw)
+    client_pk = base64.urlsafe_b64encode(pk_bytes).decode("ascii").rstrip("=")
+    client_id = base64.urlsafe_b64encode(blake3.blake3(pk_bytes).digest()).decode("ascii").rstrip("=")
+
+    _, ch = s.auth_challenge({
+        "client_michi_id": client_id,
+        "client_public_key": client_pk,
+        "home_id": s.home_id,
+    })
+    cid = ch["challenge_id"]
+    nonce = ch["challenge_nonce"]
+    from receiver_sim import make_membership_cert
+    mem = make_membership_cert(s.home_root_private_key, s.home_id, client_id, client_pk)
+    auth_payload = (
+        b"michi-link-device-auth-v1"
+        + s.home_id.encode("ascii")
+        + s.michi_id.encode("ascii")
+        + client_id.encode("ascii")
+        + cid.encode("ascii")
+        + nonce.encode("ascii")
+    )
+    sig = base64.urlsafe_b64encode(client_sk.sign(auth_payload)).decode("ascii").rstrip("=")
+
+    clock.advance(61)
+    code, err = s.auth_session({
+        "challenge_id": cid,
+        "client_michi_id": client_id,
+        "membership": mem,
+        "client_signature": sig,
+    })
+    assert code == 401
+    assert err["error"]["code"] == "UNAUTHORIZED"
 
 
 def test_michi_id_derivation_matches_bundle_identity_vectors():
@@ -580,7 +709,11 @@ def run():
         test_info_standard_canonical,
         test_info_hifi_service,
         test_identity_is_deterministic_fixture,
-        test_pairing_start_closed_window_403,
+        test_auth_challenge_positive,
+        test_auth_challenge_wrong_home_403,
+        test_auth_challenge_bad_michi_id_400,
+        test_auth_session_positive_and_mutual_signature,
+        test_auth_session_expired_challenge_401,
         test_michi_id_derivation_matches_bundle_identity_vectors,
         test_pairing_start_bundle_vector_valid_201,
         test_pairing_start_nonce_altered_400_no_session,
@@ -596,6 +729,7 @@ def run():
         test_pairing_double_confirm_409,
         test_pairing_identity_mismatch_400,
         test_validate_pairing_token_sha256_digest,
+        test_pairing_recover_success_and_invalidation,
         test_session_create_201_port_in_range_socket_bound,
         test_session_create_duplicate_409,
         test_session_state_body,

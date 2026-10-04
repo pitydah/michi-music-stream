@@ -59,6 +59,21 @@
           "md5": { "type": "string", "pattern": "^[a-fA-F0-9]{32}$" }
         }
       }
+    },
+    "home": {
+      "$ref": "michi-home.schema.json",
+      "description": "Michi Home identity state (optional in full library manifest)"
+    },
+    "devices": {
+      "$ref": "home-device-roster.schema.json",
+      "description": "Device roster in the Michi Home"
+    },
+    "revocations": {
+      "type": "array",
+      "description": "Device revocations in the Michi Home",
+      "items": {
+        "$ref": "home-device-revocation.schema.json"
+      }
     }
   }
 }

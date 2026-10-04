@@ -10,10 +10,17 @@ import secrets
 import sys
 
 import blake3
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives import serialization as ser
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from receiver_sim import SimulatorState, STANDARD_CONFIG, CONTROLLER_IDENTITY, create_app
+from receiver_sim import (
+    SimulatorState,
+    STANDARD_CONFIG,
+    CONTROLLER_IDENTITY,
+    create_app,
+    make_membership_cert,
+)
 
 import pytest
 
@@ -40,20 +47,44 @@ def app_std():
     return app, state
 
 
-def pair_via_http(client, state):
-    state.open_pairing_window()
-    r = client.post("/api/v1/pair/start", json=CONTROLLER_IDENTITY)
-    assert r.status_code == 201
-    sid = r.get_json()["session_id"]
-    pin = state.pairing_sessions[sid]["pin"]
-    r = client.post("/api/v1/pair/confirm", json={
-        "session_id": sid,
-        "pin": pin,
-        "michi_id": CONTROLLER_IDENTITY["michi_id"],
-        "public_key": CONTROLLER_IDENTITY["public_key"],
+def authenticate_client(client, state):
+    client_sk = Ed25519PrivateKey.generate()
+    pk_bytes = client_sk.public_key().public_bytes(ser.Encoding.Raw, ser.PublicFormat.Raw)
+    client_pk = base64.urlsafe_b64encode(pk_bytes).decode("ascii").rstrip("=")
+    client_id = base64.urlsafe_b64encode(blake3.blake3(pk_bytes).digest()).decode("ascii").rstrip("=")
+
+    r = client.post("/api/v1/auth/challenge", json={
+        "client_michi_id": client_id,
+        "client_public_key": client_pk,
+        "home_id": state.home_id,
     })
-    assert r.status_code == 200
-    return r.get_json()["token"]
+    assert r.status_code == 200, r.get_data(as_text=True)
+    ch = r.get_json()
+    cid = ch["challenge_id"]
+    nonce = ch["challenge_nonce"]
+
+    mem = make_membership_cert(state.home_root_private_key, state.home_id, client_id, client_pk)
+    auth_payload = (
+        b"michi-link-device-auth-v1"
+        + state.home_id.encode("ascii")
+        + state.michi_id.encode("ascii")
+        + client_id.encode("ascii")
+        + cid.encode("ascii")
+        + nonce.encode("ascii")
+    )
+    sig = base64.urlsafe_b64encode(client_sk.sign(auth_payload)).decode("ascii").rstrip("=")
+
+    r = client.post("/api/v1/auth/session", json={
+        "challenge_id": cid,
+        "client_michi_id": client_id,
+        "membership": mem,
+        "client_signature": sig,
+    })
+    assert r.status_code == 200, r.get_data(as_text=True)
+    return r.get_json()["session_token"]
+
+
+pair_via_http = authenticate_client
 
 
 def start_session(client, state, token):
@@ -76,6 +107,8 @@ class TestServerInfo:
             assert d["service"] == "michi-stream-standard"
             assert d["api_version"] == "v1-lite"
             assert d["roles"] == ["audio_receiver"]
+            assert d["auth"]["strategy"] == "HOME_MEMBERSHIP"
+            assert "michi_home_id" in d
 
 
 class TestLegacyRoutes:
@@ -89,6 +122,11 @@ class TestLegacyRoutes:
         ("GET", "/api/v1/receiver-lite/info"),
         ("POST", "/api/v1/receiver-lite/volume"),
         ("GET", "/api/v1/receiver-lite/config"),
+        ("POST", "/api/v1/pair/start"),
+        ("GET", "/api/v1/pair/status"),
+        ("POST", "/api/v1/pair/confirm"),
+        ("POST", "/api/v1/pair/recover/start"),
+        ("POST", "/api/v1/pair/recover"),
     ]
 
     def test_legacy_routes_404(self, app_std):
@@ -100,141 +138,147 @@ class TestLegacyRoutes:
                 assert r.get_json()["error"]["code"] == "NOT_FOUND", path
 
 
-class TestPairing:
-    def test_pair_start_403_window_closed(self, app_std):
-        app, _ = app_std
+class TestAuth:
+    def test_auth_challenge_success(self, app_std):
+        app, state = app_std
+        client_sk = Ed25519PrivateKey.generate()
+        pk_bytes = client_sk.public_key().public_bytes(ser.Encoding.Raw, ser.PublicFormat.Raw)
+        client_pk = base64.urlsafe_b64encode(pk_bytes).decode("ascii").rstrip("=")
+        client_id = base64.urlsafe_b64encode(blake3.blake3(pk_bytes).digest()).decode("ascii").rstrip("=")
+
         with app.test_client() as c:
-            r = c.post("/api/v1/pair/start", json=CONTROLLER_IDENTITY)
+            r = c.post("/api/v1/auth/challenge", json={
+                "client_michi_id": client_id,
+                "client_public_key": client_pk,
+                "home_id": state.home_id,
+            })
+            assert r.status_code == 200
+            d = r.get_json()
+            assert "challenge_id" in d
+            assert "challenge_nonce" in d
+            assert d["server_michi_id"] == state.michi_id
+            assert d["expires_in"] == 60
+
+    def test_auth_challenge_wrong_home_id_403(self, app_std):
+        app, state = app_std
+        client_sk = Ed25519PrivateKey.generate()
+        pk_bytes = client_sk.public_key().public_bytes(ser.Encoding.Raw, ser.PublicFormat.Raw)
+        client_pk = base64.urlsafe_b64encode(pk_bytes).decode("ascii").rstrip("=")
+        client_id = base64.urlsafe_b64encode(blake3.blake3(pk_bytes).digest()).decode("ascii").rstrip("=")
+
+        with app.test_client() as c:
+            r = c.post("/api/v1/auth/challenge", json={
+                "client_michi_id": client_id,
+                "client_public_key": client_pk,
+                "home_id": "X" * 43,
+            })
             assert r.status_code == 403
             assert r.get_json()["error"]["code"] == "FORBIDDEN"
 
-    def test_pair_start_201_window_open(self, app_std):
+    def test_auth_session_success_and_mutual_sig(self, app_std):
         app, state = app_std
-        state.open_pairing_window()
-        with app.test_client() as c:
-            r = c.post("/api/v1/pair/start", json=CONTROLLER_IDENTITY)
-            assert r.status_code == 201
-            d = r.get_json()
-            assert d["attempts_remaining"] == 5
-            assert "pin" not in d
-
-    def test_pair_status_and_confirm_flow(self, app_std):
-        app, state = app_std
-        state.open_pairing_window()
-        with app.test_client() as c:
-            r = c.post("/api/v1/pair/start", json=CONTROLLER_IDENTITY)
-            sid = r.get_json()["session_id"]
-            pin = state.pairing_sessions[sid]["pin"]
-            r = c.get(f"/api/v1/pair/status?session_id={sid}")
-            assert r.status_code == 200
-            assert r.get_json()["status"] == "pending"
-            r = c.post("/api/v1/pair/confirm", json={
-                "session_id": sid,
-                "pin": pin,
-                "michi_id": CONTROLLER_IDENTITY["michi_id"],
-                "public_key": CONTROLLER_IDENTITY["public_key"],
-            })
-            assert r.status_code == 200
-            assert r.get_json()["expires_in"] == 0
-            r = c.post("/api/v1/pair/confirm", json={
-                "session_id": sid,
-                "pin": pin,
-                "michi_id": CONTROLLER_IDENTITY["michi_id"],
-                "public_key": CONTROLLER_IDENTITY["public_key"],
-            })
-            assert r.status_code == 409
-            assert r.get_json()["error"]["code"] == "CONFLICT"
-
-    def test_pair_start_invalid_body_400(self, app_std):
-        app, state = app_std
-        state.open_pairing_window()
-        with app.test_client() as c:
-            body = dict(CONTROLLER_IDENTITY)
-            body["deviceId"] = "camel"
-            r = c.post("/api/v1/pair/start", json=body)
-            assert r.status_code == 400
-            assert r.get_json()["error"]["code"] == "INVALID_REQUEST"
-
-    def test_pair_recover_http_flow(self, app_std):
-        app, state = app_std
-        priv = Ed25519PrivateKey.generate()
-        pub = priv.public_key()
-        pub_bytes = pub.public_bytes_raw()
-        pub_b64 = base64.urlsafe_b64encode(pub_bytes).decode("ascii").rstrip("=")
-        michi_id = base64.urlsafe_b64encode(blake3.blake3(pub_bytes).digest()).decode("ascii").rstrip("=")
-        start_nonce = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii").rstrip("=")
-        start_sig = base64.urlsafe_b64encode(priv.sign(base64.urlsafe_b64decode(start_nonce + "=="))).decode("ascii").rstrip("=")
-        ctrl_id = {
-            "device_name": "Test Controller",
-            "device_type": "server",
-            "roles": ["music_server"],
-            "auth_strategy": "RECEIVER_BUTTON",
-            "michi_id": michi_id,
-            "public_key": pub_b64,
-            "challenge_nonce": start_nonce,
-            "challenge_signature": start_sig,
-        }
+        client_sk = Ed25519PrivateKey.generate()
+        pk_bytes = client_sk.public_key().public_bytes(ser.Encoding.Raw, ser.PublicFormat.Raw)
+        client_pk = base64.urlsafe_b64encode(pk_bytes).decode("ascii").rstrip("=")
+        client_id = base64.urlsafe_b64encode(blake3.blake3(pk_bytes).digest()).decode("ascii").rstrip("=")
 
         with app.test_client() as c:
-            # 1. Recover start before pairing -> 404
-            r = c.post("/api/v1/pair/recover/start", json={
-                "michi_id": ctrl_id["michi_id"],
-                "public_key": ctrl_id["public_key"],
-            })
-            assert r.status_code == 404
-            assert r.get_json()["error"]["code"] == "NOT_FOUND"
-
-            # Recover without active challenge -> 400
-            r = c.post("/api/v1/pair/recover", json=ctrl_id)
-            assert r.status_code == 400
-            assert r.get_json()["error"]["code"] == "INVALID_REQUEST"
-
-            # 2. Pair normally
-            state.open_pairing_window()
-            r = c.post("/api/v1/pair/start", json=ctrl_id)
-            assert r.status_code == 201
-            sid = r.get_json()["session_id"]
-            pin = state.pairing_sessions[sid]["pin"]
-            r = c.post("/api/v1/pair/confirm", json={
-                "session_id": sid,
-                "pin": pin,
-                "michi_id": ctrl_id["michi_id"],
-                "public_key": ctrl_id["public_key"],
+            r = c.post("/api/v1/auth/challenge", json={
+                "client_michi_id": client_id,
+                "client_public_key": client_pk,
+                "home_id": state.home_id,
             })
             assert r.status_code == 200
-            token1 = r.get_json()["token"]
+            ch = r.get_json()
+            cid = ch["challenge_id"]
+            nonce = ch["challenge_nonce"]
 
-            # 3. Recover start returns challenge_nonce
-            r = c.post("/api/v1/pair/recover/start", json={
-                "michi_id": ctrl_id["michi_id"],
-                "public_key": ctrl_id["public_key"],
+            mem = make_membership_cert(state.home_root_private_key, state.home_id, client_id, client_pk)
+            auth_payload = (
+                b"michi-link-device-auth-v1"
+                + state.home_id.encode("ascii")
+                + state.michi_id.encode("ascii")
+                + client_id.encode("ascii")
+                + cid.encode("ascii")
+                + nonce.encode("ascii")
+            )
+            sig = base64.urlsafe_b64encode(client_sk.sign(auth_payload)).decode("ascii").rstrip("=")
+
+            r = c.post("/api/v1/auth/session", json={
+                "challenge_id": cid,
+                "client_michi_id": client_id,
+                "membership": mem,
+                "client_signature": sig,
             })
             assert r.status_code == 200
-            rec_nonce = r.get_json()["challenge_nonce"]
-            rec_sig = base64.urlsafe_b64encode(priv.sign(base64.urlsafe_b64decode(rec_nonce + "=="))).decode("ascii").rstrip("=")
+            sess = r.get_json()
+            assert sess["token_type"] == "Bearer"
+            assert "session_token" in sess
+            assert sess["expires_in"] == 3600
+            assert sess["server_michi_id"] == state.michi_id
 
-            # 4. Recover rotates token
-            recover_payload = {
-                "michi_id": ctrl_id["michi_id"],
-                "public_key": ctrl_id["public_key"],
-                "challenge_nonce": rec_nonce,
-                "challenge_signature": rec_sig,
-            }
-            r = c.post("/api/v1/pair/recover", json=recover_payload)
-            assert r.status_code == 200
-            token2 = r.get_json()["token"]
-            assert token2 != token1
+            # Verify mutual server confirmation signature
+            server_pub_raw = state.server_private_key.public_key().public_bytes(ser.Encoding.Raw, ser.PublicFormat.Raw)
+            server_pub = Ed25519PublicKey.from_public_bytes(server_pub_raw)
+            server_expected = (
+                b"michi-link-server-auth-v1"
+                + state.home_id.encode("ascii")
+                + state.michi_id.encode("ascii")
+                + client_id.encode("ascii")
+                + cid.encode("ascii")
+                + sess["session_token"].encode("ascii")
+            )
+            server_sig = base64.urlsafe_b64decode(sess["server_signature"] + "==")
+            server_pub.verify(server_sig, server_expected)
 
-            # 5. Replay attack: single-use consumption rejects replaying exact same recovery payload
-            r = c.post("/api/v1/pair/recover", json=recover_payload)
-            assert r.status_code == 400
-            assert r.get_json()["error"]["code"] == "INVALID_REQUEST"
+            # Replay of challenge -> 404
+            r2 = c.post("/api/v1/auth/session", json={
+                "challenge_id": cid,
+                "client_michi_id": client_id,
+                "membership": mem,
+                "client_signature": sig,
+            })
+            assert r2.status_code == 404
+            assert r2.get_json()["error"]["code"] == "NOT_FOUND"
 
-            # 6. Old token fails session create, new token succeeds
-            r = c.post("/api/v1/receiver-lite/session", json=SESSION_BODY, headers={"Authorization": f"Bearer {token1}"})
+    def test_auth_session_tampered_membership_401(self, app_std):
+        app, state = app_std
+        client_sk = Ed25519PrivateKey.generate()
+        pk_bytes = client_sk.public_key().public_bytes(ser.Encoding.Raw, ser.PublicFormat.Raw)
+        client_pk = base64.urlsafe_b64encode(pk_bytes).decode("ascii").rstrip("=")
+        client_id = base64.urlsafe_b64encode(blake3.blake3(pk_bytes).digest()).decode("ascii").rstrip("=")
+
+        with app.test_client() as c:
+            r = c.post("/api/v1/auth/challenge", json={
+                "client_michi_id": client_id,
+                "client_public_key": client_pk,
+                "home_id": state.home_id,
+            })
+            ch = r.get_json()
+            cid = ch["challenge_id"]
+            nonce = ch["challenge_nonce"]
+
+            mem = make_membership_cert(state.home_root_private_key, state.home_id, client_id, client_pk)
+            # Tamper membership roles (valid enum roles, but alters signed payload)
+            mem["roles"] = ["music_server", "playback_host"]
+            auth_payload = (
+                b"michi-link-device-auth-v1"
+                + state.home_id.encode("ascii")
+                + state.michi_id.encode("ascii")
+                + client_id.encode("ascii")
+                + cid.encode("ascii")
+                + nonce.encode("ascii")
+            )
+            sig = base64.urlsafe_b64encode(client_sk.sign(auth_payload)).decode("ascii").rstrip("=")
+
+            r = c.post("/api/v1/auth/session", json={
+                "challenge_id": cid,
+                "client_michi_id": client_id,
+                "membership": mem,
+                "client_signature": sig,
+            })
             assert r.status_code == 401
-            r = c.post("/api/v1/receiver-lite/session", json=SESSION_BODY, headers={"Authorization": f"Bearer {token2}"})
-            assert r.status_code == 201
+            assert r.get_json()["error"]["code"] == "UNAUTHORIZED"
 
 
 class TestSessionAuth:

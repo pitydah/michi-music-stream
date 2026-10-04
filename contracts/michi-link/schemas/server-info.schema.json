@@ -133,6 +133,11 @@
       "pattern": "^[A-Za-z0-9_-]{43}$",
       "description": "Ed25519 public key in base64url, exactly 43 chars. Mandatory for michi-stream-*."
     },
+    "michi_home_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{43}$",
+      "description": "Unique non-secret identifier of the Michi Home (43 chars base64url)."
+    },
     "auth": {
       "type": "object",
       "description": "Authentication configuration. REQUIRED for all servers.",
@@ -158,6 +163,7 @@
             "SERVER_CODE",
             "RECEIVER_BUTTON",
             "ED25519_CHALLENGE",
+            "HOME_MEMBERSHIP",
             "LEGACY"
           ]
         },
@@ -244,6 +250,9 @@
         "public_key": {
           "$ref": "#/properties/public_key"
         },
+        "michi_home_id": {
+          "$ref": "#/properties/michi_home_id"
+        },
         "audio": {
           "$ref": "#/properties/audio"
         },
@@ -269,7 +278,7 @@
               "const": true
             },
             "strategy": {
-              "const": "RECEIVER_BUTTON"
+              "const": "HOME_MEMBERSHIP"
             },
             "token_refresh": {
               "const": false
@@ -341,6 +350,9 @@
         "public_key": {
           "$ref": "#/properties/public_key"
         },
+        "michi_home_id": {
+          "$ref": "#/properties/michi_home_id"
+        },
         "audio": {
           "$ref": "#/properties/audio"
         },
@@ -366,7 +378,7 @@
               "const": true
             },
             "strategy": {
-              "const": "RECEIVER_BUTTON"
+              "const": "HOME_MEMBERSHIP"
             },
             "token_refresh": {
               "const": false
@@ -479,7 +491,8 @@
             "strategy": {
               "enum": [
                 "SERVER_CODE",
-                "ED25519_CHALLENGE"
+                "ED25519_CHALLENGE",
+                "HOME_MEMBERSHIP"
               ]
             }
           }

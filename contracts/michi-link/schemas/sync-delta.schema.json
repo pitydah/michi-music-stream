@@ -21,7 +21,7 @@
         "required": ["type", "id", "data"],
         "additionalProperties": false,
         "properties": {
-          "type": { "type": "string", "enum": ["track", "album", "artist", "playlist"] },
+          "type": { "type": "string", "enum": ["track", "album", "artist", "playlist", "home", "device", "home_roster", "home_revocation"] },
           "id": { "type": "string", "minLength": 1, "description": "Entity ID" },
           "data": { "type": "object", "description": "Full entity data (free-form map)" }
         }
@@ -35,7 +35,7 @@
         "required": ["type", "id", "data"],
         "additionalProperties": false,
         "properties": {
-          "type": { "type": "string", "enum": ["track", "album", "artist", "playlist"] },
+          "type": { "type": "string", "enum": ["track", "album", "artist", "playlist", "home", "device", "home_roster", "home_revocation"] },
           "id": { "type": "string", "minLength": 1, "description": "Entity ID" },
           "data": { "type": "object", "description": "Updated entity data (free-form map)" }
         }
@@ -49,7 +49,7 @@
         "required": ["type", "id"],
         "additionalProperties": false,
         "properties": {
-          "type": { "type": "string", "enum": ["track", "album", "artist", "playlist"] },
+          "type": { "type": "string", "enum": ["track", "album", "artist", "playlist", "home", "device", "home_roster", "home_revocation"] },
           "id": { "type": "string", "minLength": 1, "description": "Removed entity ID" }
         }
       }

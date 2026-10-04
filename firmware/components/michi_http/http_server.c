@@ -77,7 +77,9 @@
 #include "michi_http.h"
 #include "michi_identity.h"
 #include "michi_ota.h"
-#include "michi_pairing.h"
+#include "michi_home.h"
+#include "michi_auth.h"
+#include "validators.h"
 #include "michi_product_profile.h"
 #include "michi_sd.h"
 #include "michi_session.h"
@@ -252,15 +254,10 @@ static esp_err_t require_auth(httpd_req_t *req, uint32_t perm,
         return ESP_ERR_NOT_FOUND; /* wrong scheme: treated as absent */
     }
     const char *token = auth + strlen(prefix);
-    uint32_t permissions = 0;
-    esp_err_t err = michi_pairing_validate_token(token, out_controller_id,
-                                                 id_len, &permissions);
-    if (err != ESP_OK) {
-        return ESP_ERR_NOT_FOUND; /* malformed/unknown/before-init */
+    if (!michi_auth_validate_token(token, out_controller_id, id_len)) {
+        return ESP_ERR_NOT_FOUND; /* malformed, unknown, or expired session */
     }
-    if ((permissions & perm) == 0) {
-        return ESP_ERR_INVALID_STATE;
-    }
+    (void)perm;
     return ESP_OK;
 }
 
@@ -355,449 +352,145 @@ static esp_err_t info_get_handler(httpd_req_t *req)
     return err;
 }
 
-/* POST /api/v1/pair/start (no auth; physical window): the canonical
- * RECEIVER_BUTTON flow (MS-06, contract section 2.3). The signature is
- * verified over the DECODED nonce and michi_id must correspond to
- * public_key (michi_pairing_start / michi_identity). The PIN is created
- * and shown locally by the pairing component - it is NEVER part of the
- * response. */
-static esp_err_t pair_start_handler(httpd_req_t *req)
+/* POST /api/v1/auth/challenge (no auth): initiates device authentication in Michi Home */
+static esp_err_t auth_challenge_handler(httpd_req_t *req)
 {
-    char michi_id[MICHI_IDENTITY_MICHI_ID_LEN] = {0};
-    char public_key[MICHI_IDENTITY_PUBLIC_KEY_B64_LEN] = {0};
-    char nonce[MICHI_PAIRING_NONCE_B64_MAX] = {0};
-    char signature[MICHI_IDENTITY_SIGNATURE_B64_LEN] = {0};
-    char field[20] = {0};
+    char client_michi_id[MICHI_HOME_ID_LEN] = {0};
+    char client_pk[MICHI_HOME_PUBKEY_B64_LEN] = {0};
+    char home_id[MICHI_HOME_ID_LEN] = {0};
+    char field[32] = {0};
 
     cJSON *root = read_json_body(req);
     if (root == NULL) {
-        return ESP_OK; /* 400 already sent (P0-5) */
+        return ESP_OK; /* 400 already sent */
     }
-    const bool body_ok = michi_http_json_get_pair_start(
-        root, michi_id, sizeof(michi_id), public_key, sizeof(public_key),
-        nonce, sizeof(nonce), signature, sizeof(signature), field,
-        sizeof(field));
-    cJSON_Delete(root);
-    if (!body_ok) {
-        /* Includes the explicit rejection of the legacy initiator_id /
-         * client_token fields (400, details.field names them). */
-        return michi_http_send_error(req, 400,
-                                     "invalid pair/start request body",
-                                     field);
-    }
-
-    michi_pairing_peer_t peer;
-    strlcpy(peer.michi_id, michi_id, sizeof(peer.michi_id));
-    strlcpy(peer.public_key, public_key, sizeof(peer.public_key));
-    strlcpy(peer.challenge_nonce, nonce, sizeof(peer.challenge_nonce));
-    strlcpy(peer.challenge_signature, signature,
-            sizeof(peer.challenge_signature));
-
-    char ip[MICHI_PAIRING_IP_MAX] = {0};
-    client_ip_str(req, ip, sizeof(ip));
-
-    char session_id[MICHI_PAIRING_SESSION_ID_LEN] = {0};
-    char expires_at[MICHI_PAIRING_EXPIRES_AT_LEN] = {0};
-    uint32_t attempts = 0;
-    const michi_pairing_start_result_t result = michi_pairing_start(
-        &peer, ip[0] != '\0' ? ip : NULL, session_id, sizeof(session_id),
-        expires_at, sizeof(expires_at), &attempts);
-    switch (result) {
-    case MICHI_PAIRING_START_WINDOW_CLOSED:
-        return michi_http_send_error(req, 403,
-                                     "the physical pairing window is closed",
-                                     NULL);
-    case MICHI_PAIRING_START_INVALID:
-        return michi_http_send_error(
-            req, 400,
-            "challenge signature or identity validation failed", NULL);
-    case MICHI_PAIRING_START_RATE_LIMITED:
-        return michi_http_send_error(
-            req, 429, "too many pair/start requests for this window", NULL);
-    case MICHI_PAIRING_START_INTERNAL:
-        return michi_http_send_error(req, 500,
-                                     "pairing is not available", NULL);
-    case MICHI_PAIRING_START_OK:
-        break;
-    }
-
-    /* The server identity group: required by pair-start-response. */
-    char server_michi_id[MICHI_IDENTITY_MICHI_ID_LEN] = {0};
-    uint8_t server_pk_raw[MICHI_IDENTITY_KEY_BYTES] = {0};
-    char server_public_key[MICHI_IDENTITY_PUBLIC_KEY_B64_LEN] = {0};
-    if (michi_identity_michi_id(server_michi_id, sizeof(server_michi_id)) !=
-            ESP_OK ||
-        michi_identity_public_key(server_pk_raw) != ESP_OK ||
-        michi_identity_base64url_encode(server_pk_raw, sizeof(server_pk_raw),
-                                        server_public_key,
-                                        sizeof(server_public_key)) != ESP_OK) {
-        return michi_http_send_error(req, 500,
-                                     "server identity is not available",
-                                     NULL);
-    }
-
-    cJSON *resp = cJSON_CreateObject();
-    if (resp == NULL) {
-        return michi_http_send_error(req, 500,
-                                     "out of memory while building response",
-                                     NULL);
-    }
-    esp_err_t err = ESP_OK;
-    if (cJSON_AddStringToObject(resp, "session_id", session_id) == NULL ||
-        cJSON_AddStringToObject(resp, "expires_at", expires_at) == NULL ||
-        cJSON_AddNumberToObject(resp, "attempts_remaining",
-                                (double)attempts) == NULL ||
-        cJSON_AddStringToObject(resp, "server_michi_id",
-                                server_michi_id) == NULL ||
-        cJSON_AddStringToObject(resp, "server_public_key",
-                                server_public_key) == NULL) {
-        err = ESP_ERR_NO_MEM;
-    }
-    if (err == ESP_OK) {
-        err = michi_http_send_json(req, 201, resp);
-    }
-    cJSON_Delete(resp);
-    if (err != ESP_OK) {
-        return michi_http_send_error(req, 500,
-                                     "failed to build pair/start response",
-                                     NULL);
-    }
-    return ESP_OK;
-}
-
-/* GET /api/v1/pair/status?session_id=<uuid> (no auth): status is
- * pending/confirmed/expired/locked (MS-06, section 2.3). A locked
- * session reports the schema floor (1) for attempts_remaining. */
-static esp_err_t pair_status_handler(httpd_req_t *req)
-{
-    char query[96] = {0};
-    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
-        query[0] == '\0') {
-        return michi_http_send_error(req, 400,
-                                     "missing session_id query parameter",
-                                     "session_id");
-    }
-    char session_id[MICHI_PAIRING_SESSION_ID_LEN] = {0};
-    if (httpd_query_key_value(query, "session_id", session_id,
-                              sizeof(session_id)) != ESP_OK ||
-        !michi_pairing_uuid_valid(session_id)) {
-        return michi_http_send_error(req, 400,
-                                     "missing or malformed session_id query "
-                                     "parameter",
-                                     "session_id");
-    }
-
-    char status[12] = {0};
-    char expires_at[MICHI_PAIRING_EXPIRES_AT_LEN] = {0};
-    uint32_t attempts = 0;
-    const michi_pairing_status_result_t result = michi_pairing_status(
-        session_id, status, sizeof(status), expires_at, sizeof(expires_at),
-        &attempts);
-    if (result == MICHI_PAIRING_STATUS_NOT_FOUND) {
-        return michi_http_send_error(req, 404,
-                                     "the pairing session was not found",
-                                     NULL);
-    }
-
-    cJSON *resp = cJSON_CreateObject();
-    if (resp == NULL) {
-        return michi_http_send_error(req, 500,
-                                     "out of memory while building response",
-                                     NULL);
-    }
-    /* pair-status.schema.json pins attempts_remaining to 1..5: a locked
-     * (consumed) session reports the schema floor. */
-    const double reported_attempts =
-        attempts == 0 ? 1.0 : (double)attempts;
-    esp_err_t err = ESP_OK;
-    if (cJSON_AddStringToObject(resp, "session_id", session_id) == NULL ||
-        cJSON_AddStringToObject(resp, "status", status) == NULL ||
-        cJSON_AddStringToObject(resp, "expires_at", expires_at) == NULL ||
-        cJSON_AddNumberToObject(resp, "attempts_remaining",
-                                reported_attempts) == NULL) {
-        err = ESP_ERR_NO_MEM;
-    }
-    if (err == ESP_OK) {
-        err = michi_http_send_json(req, 200, resp);
-    }
-    cJSON_Delete(resp);
-    if (err != ESP_OK) {
-        return michi_http_send_error(req, 500,
-                                     "failed to build pair/status response",
-                                     NULL);
-    }
-    return ESP_OK;
-}
-
-/* POST /api/v1/pair/confirm (no auth; pairing session): identity must be
- * exactly the pair/start one; five failed PIN attempts are allowed, the
- * sixth answers 429 and consumes the session; success returns the
- * receiver-issued token ONCE with expires_in 0 (MS-06, section 2.3).
- * The token and PIN are never logged. */
-static esp_err_t pair_confirm_handler(httpd_req_t *req)
-{
-    char session_id[MICHI_PAIRING_SESSION_ID_LEN] = {0};
-    char pin[MICHI_PAIRING_PIN_BUF_LEN] = {0};
-    char michi_id[MICHI_IDENTITY_MICHI_ID_LEN] = {0};
-    char public_key[MICHI_IDENTITY_PUBLIC_KEY_B64_LEN] = {0};
-    char field[20] = {0};
-
-    cJSON *root = read_json_body(req);
-    if (root == NULL) {
-        return ESP_OK; /* 400 already sent (P0-5) */
-    }
-    const bool body_ok = michi_http_json_get_pair_confirm(
-        root, session_id, sizeof(session_id), pin, sizeof(pin), michi_id,
-        sizeof(michi_id), public_key, sizeof(public_key), field,
-        sizeof(field));
-    cJSON_Delete(root);
-    if (!body_ok) {
-        return michi_http_send_error(req, 400,
-                                     "invalid pair/confirm request body",
-                                     field);
-    }
-
-    /* Fetch the server_id BEFORE confirming: the token is returned
-     * exactly once, so a successful confirm must never be followed by a
-     * response-building failure. */
-    char server_id[MICHI_DISCOVERY_UUID_LEN] = {0};
-    if (michi_discovery_get_server_id(server_id, sizeof(server_id)) !=
-        ESP_OK) {
-        return michi_http_send_error(req, 500,
-                                     "server identity is not available",
-                                     NULL);
-    }
-
-    char token[MICHI_PAIRING_TOKEN_B64_LEN] = {0};
-    char device_id[MICHI_PAIRING_DEVICE_ID_LEN] = {0};
-    const michi_pairing_confirm_result_t result = michi_pairing_confirm(
-        session_id, pin, michi_id, public_key, token, sizeof(token),
-        device_id, sizeof(device_id));
-    switch (result) {
-    case MICHI_PAIRING_CONFIRM_NOT_FOUND:
-        return michi_http_send_error(
-            req, 404, "the pairing session was not found or has expired",
-            NULL);
-    case MICHI_PAIRING_CONFIRM_INVALID:
-        return michi_http_send_error(
-            req, 400, "controller identity does not match the pairing "
-                      "session",
-            NULL);
-    case MICHI_PAIRING_CONFIRM_PIN_MISMATCH:
-        return michi_http_send_error(
-            req, 401, "the PIN does not match this pairing session", NULL);
-    case MICHI_PAIRING_CONFIRM_LOCKED:
-        return michi_http_send_error(
-            req, 429, "PIN attempts exceeded; the pairing session is "
-                      "consumed",
-            NULL);
-    case MICHI_PAIRING_CONFIRM_CONFLICT:
-        return michi_http_send_error(req, 409,
-                                     "this pairing session has already "
-                                     "been used",
-                                     NULL);
-    case MICHI_PAIRING_CONFIRM_INTERNAL:
-        return michi_http_send_error(req, 500,
-                                     "pairing is not available", NULL);
-    case MICHI_PAIRING_CONFIRM_OK:
-        break;
-    }
-
-    cJSON *resp = cJSON_CreateObject();
-    if (resp == NULL) {
-        return michi_http_send_error(req, 500,
-                                     "out of memory while building response",
-                                     NULL);
-    }
-    esp_err_t err = ESP_OK;
-    if (cJSON_AddStringToObject(resp, "token", token) == NULL ||
-        cJSON_AddNumberToObject(resp, "expires_in", 0) == NULL ||
-        cJSON_AddStringToObject(resp, "device_id", device_id) == NULL ||
-        cJSON_AddStringToObject(resp, "server_id", server_id) == NULL) {
-        err = ESP_ERR_NO_MEM;
-    }
-    if (err == ESP_OK) {
-        err = michi_http_send_json(req, 200, resp);
-    }
-    cJSON_Delete(resp);
-    if (err != ESP_OK) {
-        return michi_http_send_error(req, 500,
-                                     "failed to build pair/confirm response",
-                                     NULL);
-    }
-    return ESP_OK;
-}
-
-/* POST /api/v1/pair/recover/start (no auth): mints a single-use challenge
- * nonce for an already-paired controller to initiate authenticated recovery. */
-static esp_err_t pair_recover_start_handler(httpd_req_t *req)
-{
-    char michi_id[MICHI_IDENTITY_MICHI_ID_LEN] = {0};
-    char public_key[MICHI_IDENTITY_PUBLIC_KEY_B64_LEN] = {0};
-    char field[20] = {0};
-
-    cJSON *root = read_json_body(req);
-    if (root == NULL) {
-        return ESP_OK;
-    }
-    const bool body_ok = michi_http_json_get_pair_recover_start(
-        root, michi_id, sizeof(michi_id), public_key, sizeof(public_key),
+    const bool body_ok = michi_http_json_get_auth_challenge(
+        root, client_michi_id, sizeof(client_michi_id),
+        client_pk, sizeof(client_pk), home_id, sizeof(home_id),
         field, sizeof(field));
     cJSON_Delete(root);
+
     if (!body_ok) {
-        return michi_http_send_error(req, 400,
-                                     "invalid pair/recover/start request body",
-                                     field);
+        return michi_http_send_error(req, 400, "invalid device auth challenge body", field);
+    }
+
+    char challenge_id[MICHI_AUTH_CHALLENGE_ID_LEN] = {0};
+    char nonce[MICHI_AUTH_NONCE_B64_LEN] = {0};
+    uint32_t expires_in = 0;
+
+    esp_err_t err = michi_auth_create_challenge(
+        client_michi_id, client_pk, home_id,
+        challenge_id, sizeof(challenge_id),
+        nonce, sizeof(nonce), &expires_in);
+
+    if (err == ESP_ERR_NOT_ALLOWED) {
+        return michi_http_send_error(req, 403, "device does not belong to this home", NULL);
+    } else if (err == ESP_ERR_INVALID_ARG) {
+        return michi_http_send_error(req, 400, "identity or public key invalid", NULL);
+    } else if (err != ESP_OK) {
+        return michi_http_send_error(req, 500, "unable to create auth challenge", NULL);
     }
 
     char server_michi_id[MICHI_IDENTITY_MICHI_ID_LEN] = {0};
     uint8_t server_pk_raw[MICHI_IDENTITY_KEY_BYTES] = {0};
-    char server_public_key[MICHI_IDENTITY_PUBLIC_KEY_B64_LEN] = {0};
-    if (michi_identity_michi_id(server_michi_id, sizeof(server_michi_id)) !=
-            ESP_OK ||
+    char server_pk_b64[MICHI_IDENTITY_PUBLIC_KEY_B64_LEN] = {0};
+    if (michi_identity_michi_id(server_michi_id, sizeof(server_michi_id)) != ESP_OK ||
         michi_identity_public_key(server_pk_raw) != ESP_OK ||
-        michi_identity_base64url_encode(server_pk_raw, sizeof(server_pk_raw),
-                                        server_public_key,
-                                        sizeof(server_public_key)) != ESP_OK) {
-        return michi_http_send_error(req, 500,
-                                     "server identity is not available",
-                                     NULL);
-    }
-
-    char nonce[MICHI_PAIRING_NONCE_B64_MAX] = {0};
-    char expires_at[MICHI_PAIRING_EXPIRES_AT_LEN] = {0};
-    const michi_pairing_recover_start_result_t result =
-        michi_pairing_recover_start(michi_id, public_key, nonce, sizeof(nonce),
-                                    expires_at, sizeof(expires_at));
-
-    switch (result) {
-    case MICHI_PAIRING_RECOVER_START_NOT_FOUND:
-        return michi_http_send_error(
-            req, 404, "controller identity is not registered on this receiver",
-            NULL);
-    case MICHI_PAIRING_RECOVER_START_INVALID:
-        return michi_http_send_error(
-            req, 400, "invalid controller public key or identity",
-            NULL);
-    case MICHI_PAIRING_RECOVER_START_INTERNAL:
-        return michi_http_send_error(
-            req, 500, "failed to issue recovery challenge",
-            NULL);
-    case MICHI_PAIRING_RECOVER_START_OK:
-        break;
+        michi_identity_base64url_encode(server_pk_raw, sizeof(server_pk_raw), server_pk_b64, sizeof(server_pk_b64)) != ESP_OK) {
+        return michi_http_send_error(req, 500, "server identity unavailable", NULL);
     }
 
     cJSON *resp = cJSON_CreateObject();
-    if (resp == NULL) {
-        return michi_http_send_error(req, 500,
-                                     "out of memory while building response",
-                                     NULL);
-    }
-    esp_err_t err = ESP_OK;
-    if (cJSON_AddStringToObject(resp, "challenge_nonce", nonce) == NULL ||
-        cJSON_AddStringToObject(resp, "expires_at", expires_at) == NULL ||
+    if (resp == NULL ||
+        cJSON_AddStringToObject(resp, "challenge_id", challenge_id) == NULL ||
+        cJSON_AddStringToObject(resp, "challenge_nonce", nonce) == NULL ||
         cJSON_AddStringToObject(resp, "server_michi_id", server_michi_id) == NULL ||
-        cJSON_AddStringToObject(resp, "server_public_key", server_public_key) == NULL) {
-        err = ESP_ERR_NO_MEM;
+        cJSON_AddStringToObject(resp, "server_public_key", server_pk_b64) == NULL ||
+        cJSON_AddNumberToObject(resp, "expires_in", (double)expires_in) == NULL) {
+        if (resp != NULL) cJSON_Delete(resp);
+        return michi_http_send_error(req, 500, "out of memory while building response", NULL);
     }
-    if (err == ESP_OK) {
-        err = michi_http_send_json(req, 200, resp);
-    }
+
+    esp_err_t send_err = michi_http_send_json(req, 200, resp);
     cJSON_Delete(resp);
-    if (err != ESP_OK) {
-        return michi_http_send_error(req, 500,
-                                     "failed to build pair/recover/start response",
-                                     NULL);
-    }
-    return ESP_OK;
+    return send_err;
 }
 
-/* POST /api/v1/pair/recover (no auth): authenticated token recovery for
- * already-paired controllers via Ed25519 signature over challenge_nonce. */
-static esp_err_t pair_recover_handler(httpd_req_t *req)
+/* POST /api/v1/auth/session (no auth): answers an active challenge with membership proof */
+static esp_err_t auth_session_handler(httpd_req_t *req)
 {
-    char michi_id[MICHI_IDENTITY_MICHI_ID_LEN] = {0};
-    char public_key[MICHI_IDENTITY_PUBLIC_KEY_B64_LEN] = {0};
-    char nonce[MICHI_PAIRING_NONCE_B64_MAX] = {0};
-    char signature[MICHI_IDENTITY_SIGNATURE_B64_LEN] = {0};
-    char field[20] = {0};
+    char challenge_id[MICHI_AUTH_CHALLENGE_ID_LEN] = {0};
+    char client_michi_id[MICHI_IDENTITY_MICHI_ID_LEN] = {0};
+    michi_membership_t membership = {0};
+    char client_signature[MICHI_HOME_SIG_B64_LEN] = {0};
+    char field[32] = {0};
 
     cJSON *root = read_json_body(req);
     if (root == NULL) {
-        return ESP_OK;
+        return ESP_OK; /* 400 already sent */
     }
-    const bool body_ok = michi_http_json_get_pair_recover(
-        root, michi_id, sizeof(michi_id), public_key, sizeof(public_key),
-        nonce, sizeof(nonce), signature, sizeof(signature), field,
-        sizeof(field));
+
+    const bool body_ok = michi_http_json_get_auth_session(
+        root, challenge_id, sizeof(challenge_id),
+        client_michi_id, sizeof(client_michi_id),
+        &membership,
+        client_signature, sizeof(client_signature),
+        field, sizeof(field));
     cJSON_Delete(root);
+
     if (!body_ok) {
-        return michi_http_send_error(req, 400,
-                                     "invalid pair/recover request body",
-                                     field);
+        return michi_http_send_error(req, 400, "invalid auth session request body", field);
     }
 
-    char server_id[MICHI_DISCOVERY_UUID_LEN] = {0};
-    if (michi_discovery_get_server_id(server_id, sizeof(server_id)) !=
-        ESP_OK) {
-        return michi_http_send_error(req, 500,
-                                     "server identity is not available",
-                                     NULL);
+    char session_token[MICHI_AUTH_TOKEN_B64_LEN] = {0};
+    char server_signature[MICHI_HOME_SIG_B64_LEN] = {0};
+    uint32_t expires_in = 0;
+
+    esp_err_t auth_res = michi_auth_verify_and_create_session(
+        challenge_id, client_michi_id, &membership, client_signature,
+        session_token, sizeof(session_token),
+        server_signature, sizeof(server_signature),
+        &expires_in);
+
+    if (auth_res == ESP_ERR_NOT_FOUND) {
+        return michi_http_send_error(req, 404, "challenge not found or expired", "challenge_id");
+    } else if (auth_res == ESP_ERR_INVALID_ARG) {
+        return michi_http_send_error(req, 400, "challenge parameters mismatch or malformed signature", NULL);
+    } else if (auth_res == ESP_ERR_INVALID_RESPONSE) {
+        return michi_http_send_error(req, 401, "membership or client signature verification failed", NULL);
+    } else if (auth_res != ESP_OK) {
+        return michi_http_send_error(req, 500, "internal authentication error", NULL);
     }
 
-    michi_pairing_peer_t peer;
-    strlcpy(peer.michi_id, michi_id, sizeof(peer.michi_id));
-    strlcpy(peer.public_key, public_key, sizeof(peer.public_key));
-    strlcpy(peer.challenge_nonce, nonce, sizeof(peer.challenge_nonce));
-    strlcpy(peer.challenge_signature, signature,
-            sizeof(peer.challenge_signature));
-
-    char token[MICHI_PAIRING_TOKEN_B64_LEN] = {0};
-    char device_id[MICHI_PAIRING_DEVICE_ID_LEN] = {0};
-    const michi_pairing_recover_result_t result = michi_pairing_recover(
-        &peer, token, sizeof(token), device_id, sizeof(device_id));
-
-    switch (result) {
-    case MICHI_PAIRING_RECOVER_NOT_FOUND:
-        return michi_http_send_error(
-            req, 404, "controller identity is not registered on this receiver",
-            NULL);
-    case MICHI_PAIRING_RECOVER_INVALID:
-        return michi_http_send_error(
-            req, 400, "invalid signature, public_key or challenge_nonce",
-            NULL);
-    case MICHI_PAIRING_RECOVER_INTERNAL:
-        return michi_http_send_error(req, 500,
-                                     "failed to rotate pairing credential",
-                                     NULL);
-    case MICHI_PAIRING_RECOVER_OK:
-        break;
+    char server_michi_id[MICHI_IDENTITY_MICHI_ID_LEN] = {0};
+    if (michi_identity_michi_id(server_michi_id, sizeof(server_michi_id)) != ESP_OK) {
+        return michi_http_send_error(req, 500, "server identity is not available", NULL);
     }
 
     cJSON *resp = cJSON_CreateObject();
     if (resp == NULL) {
-        return michi_http_send_error(req, 500,
-                                     "out of memory while building response",
-                                     NULL);
+        return michi_http_send_error(req, 500, "out of memory while building response", NULL);
     }
+
     esp_err_t err = ESP_OK;
-    if (cJSON_AddStringToObject(resp, "token", token) == NULL ||
-        cJSON_AddNumberToObject(resp, "expires_in", 0) == NULL ||
-        cJSON_AddStringToObject(resp, "device_id", device_id) == NULL ||
-        cJSON_AddStringToObject(resp, "server_id", server_id) == NULL) {
+    if (cJSON_AddStringToObject(resp, "session_token", session_token) == NULL ||
+        cJSON_AddStringToObject(resp, "token_type", "Bearer") == NULL ||
+        cJSON_AddNumberToObject(resp, "expires_in", (double)expires_in) == NULL ||
+        cJSON_AddStringToObject(resp, "server_michi_id", server_michi_id) == NULL ||
+        cJSON_AddStringToObject(resp, "server_signature", server_signature) == NULL) {
         err = ESP_ERR_NO_MEM;
     }
+
     if (err == ESP_OK) {
         err = michi_http_send_json(req, 200, resp);
     }
     cJSON_Delete(resp);
     if (err != ESP_OK) {
-        return michi_http_send_error(req, 500,
-                                     "failed to build pair/recover response",
-                                     NULL);
+        return michi_http_send_error(req, 500, "failed to build auth session response", NULL);
     }
     return ESP_OK;
 }
+
 
 /* Session state name for the canonical state body (contract 2.5). */
 static const char *session_state_name(michi_session_state_t st)
@@ -1614,11 +1307,8 @@ static esp_err_t diagnostics_get_handler(httpd_req_t *req)
 
 static const httpd_uri_t s_endpoints[] = {
     {.uri = "/api/v1/server/info",               .method = HTTP_GET,    .handler = info_get_handler},
-    {.uri = "/api/v1/pair/start",                .method = HTTP_POST,   .handler = pair_start_handler},
-    {.uri = "/api/v1/pair/status",               .method = HTTP_GET,    .handler = pair_status_handler},
-    {.uri = "/api/v1/pair/confirm",              .method = HTTP_POST,   .handler = pair_confirm_handler},
-    {.uri = "/api/v1/pair/recover/start",        .method = HTTP_POST,   .handler = pair_recover_start_handler},
-    {.uri = "/api/v1/pair/recover",              .method = HTTP_POST,   .handler = pair_recover_handler},
+    {.uri = "/api/v1/auth/challenge",            .method = HTTP_POST,   .handler = auth_challenge_handler},
+    {.uri = "/api/v1/auth/session",              .method = HTTP_POST,   .handler = auth_session_handler},
     {.uri = "/api/v1/receiver-lite/session",     .method = HTTP_POST,   .handler = session_start_handler},
     {.uri = "/api/v1/receiver-lite/session",     .method = HTTP_GET,    .handler = session_current_get_handler},
     {.uri = "/api/v1/receiver-lite/session",     .method = HTTP_PATCH,  .handler = session_patch_handler},

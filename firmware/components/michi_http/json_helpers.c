@@ -14,8 +14,8 @@
 #include "esp_http_server.h"
 #include "esp_timer.h"
 
-#include "cJSON.h"
-#include "michi_pairing.h"
+#include "validators.h"
+#include "michi_home.h"
 
 bool michi_http_json_get_string(const cJSON *obj, const char *key,
                                 char *out, size_t out_len)
@@ -69,22 +69,6 @@ bool michi_http_json_get_bool(const cJSON *obj, const char *key, bool *out)
     return true;
 }
 
-/* --- pairing body gates (MS-06) ---------------------------------------- */
-
-/* The legacy fields initiator_id and client_token are REJECTED with 400:
- * they are not part of the canonical receiver-button flow (spec 2.3 +
- * MS-06). Returns the offending field name (NULL when absent). */
-static const char *pairing_rejected_field(const cJSON *obj)
-{
-    if (cJSON_GetObjectItem(obj, "initiator_id") != NULL) {
-        return "initiator_id";
-    }
-    if (cJSON_GetObjectItem(obj, "client_token") != NULL) {
-        return "client_token";
-    }
-    return NULL;
-}
-
 /* Strict base64url-nopad string of an EXACT length (the canonical wire
  * alphabet: A-Za-z0-9-_). */
 static bool b64url_exact(const char *s, size_t exact_len)
@@ -103,268 +87,162 @@ static bool b64url_exact(const char *s, size_t exact_len)
     return true;
 }
 
-/* The pair/start schema also requires these well-formed fields (they are
- * validated and then discarded: the receiver flow does not persist the
- * controller's display metadata). */
-static bool pair_start_metadata_valid(const cJSON *obj)
+bool michi_http_json_get_auth_challenge(
+    const cJSON *obj,
+    char *client_michi_id, size_t client_id_len,
+    char *client_pk, size_t pk_len,
+    char *home_id, size_t home_id_len,
+    char *err_field, size_t err_field_len)
 {
-    const cJSON *name = cJSON_GetObjectItem(obj, "device_name");
-    if (name == NULL || !cJSON_IsString(name) || name->valuestring == NULL ||
-        name->valuestring[0] == '\0' ||
-        strlen(name->valuestring) > 128) {
+    if (obj == NULL || client_michi_id == NULL || client_pk == NULL ||
+        home_id == NULL || err_field == NULL || err_field_len == 0) {
         return false;
     }
-    const cJSON *type = cJSON_GetObjectItem(obj, "device_type");
-    if (type == NULL || !cJSON_IsString(type) || type->valuestring == NULL) {
+    const cJSON *c_id = cJSON_GetObjectItem(obj, "client_michi_id");
+    const cJSON *c_pk = cJSON_GetObjectItem(obj, "client_public_key");
+    const cJSON *h_id = cJSON_GetObjectItem(obj, "home_id");
+
+    if (c_id == NULL || !cJSON_IsString(c_id) || c_id->valuestring == NULL ||
+        !b64url_exact(c_id->valuestring, 43)) {
+        snprintf(err_field, err_field_len, "client_michi_id");
         return false;
     }
-    static const char *const k_types[] = {
-        "mobile", "desktop", "receiver", "server",
-    };
-    bool type_ok = false;
-    for (size_t i = 0; i < sizeof(k_types) / sizeof(k_types[0]); i++) {
-        if (strcmp(type->valuestring, k_types[i]) == 0) {
-            type_ok = true;
-            break;
-        }
-    }
-    if (!type_ok) {
+    if (c_pk == NULL || !cJSON_IsString(c_pk) || c_pk->valuestring == NULL ||
+        !b64url_exact(c_pk->valuestring, 43)) {
+        snprintf(err_field, err_field_len, "client_public_key");
         return false;
     }
-    const cJSON *roles = cJSON_GetObjectItem(obj, "roles");
-    if (roles == NULL || !cJSON_IsArray(roles) ||
-        cJSON_GetArraySize(roles) == 0) {
+    if (h_id == NULL || !cJSON_IsString(h_id) || h_id->valuestring == NULL ||
+        !b64url_exact(h_id->valuestring, 43)) {
+        snprintf(err_field, err_field_len, "home_id");
         return false;
     }
-    const cJSON *item = NULL;
-    cJSON_ArrayForEach(item, roles)
-    {
-        if (!cJSON_IsString(item) || item->valuestring == NULL ||
-            item->valuestring[0] == '\0') {
+    if (client_id_len < 44 || pk_len < 44 || home_id_len < 44) {
+        snprintf(err_field, err_field_len, "body");
+        return false;
+    }
+    memcpy(client_michi_id, c_id->valuestring, 44);
+    memcpy(client_pk, c_pk->valuestring, 44);
+    memcpy(home_id, h_id->valuestring, 44);
+    return true;
+}
+
+bool michi_http_json_get_auth_session(
+    const cJSON *obj,
+    char *challenge_id, size_t challenge_id_len,
+    char *client_michi_id, size_t client_id_len,
+    michi_membership_t *out_membership,
+    char *client_signature, size_t sig_len,
+    char *err_field, size_t err_field_len)
+{
+    if (obj == NULL || challenge_id == NULL || client_michi_id == NULL ||
+        out_membership == NULL || client_signature == NULL ||
+        err_field == NULL || err_field_len == 0) {
+        return false;
+    }
+    const cJSON *cid = cJSON_GetObjectItem(obj, "challenge_id");
+    const cJSON *c_id = cJSON_GetObjectItem(obj, "client_michi_id");
+    const cJSON *mem = cJSON_GetObjectItem(obj, "membership");
+    const cJSON *sig = cJSON_GetObjectItem(obj, "client_signature");
+
+    if (cid == NULL || !cJSON_IsString(cid) || cid->valuestring == NULL ||
+        !michi_uuid_valid(cid->valuestring) || strlen(cid->valuestring) >= challenge_id_len) {
+        snprintf(err_field, err_field_len, "challenge_id");
+        return false;
+    }
+    if (c_id == NULL || !cJSON_IsString(c_id) || c_id->valuestring == NULL ||
+        !b64url_exact(c_id->valuestring, 43) || client_id_len < 44) {
+        snprintf(err_field, err_field_len, "client_michi_id");
+        return false;
+    }
+    if (sig == NULL || !cJSON_IsString(sig) || sig->valuestring == NULL ||
+        !b64url_exact(sig->valuestring, 86) || sig_len < 87) {
+        snprintf(err_field, err_field_len, "client_signature");
+        return false;
+    }
+
+    if (mem == NULL || !cJSON_IsObject(mem)) {
+        snprintf(err_field, err_field_len, "membership");
+        return false;
+    }
+
+    /* Parse membership fields */
+    const cJSON *ver = cJSON_GetObjectItem(mem, "version");
+    if (ver == NULL || !cJSON_IsNumber(ver) || ver->valueint != 1) {
+        snprintf(err_field, err_field_len, "membership.version");
+        return false;
+    }
+    out_membership->version = 1;
+
+    const cJSON *m_hid = cJSON_GetObjectItem(mem, "home_id");
+    if (m_hid == NULL || !cJSON_IsString(m_hid) || !b64url_exact(m_hid->valuestring, 43)) {
+        snprintf(err_field, err_field_len, "membership.home_id");
+        return false;
+    }
+    memcpy(out_membership->home_id, m_hid->valuestring, 44);
+
+    const cJSON *m_did = cJSON_GetObjectItem(mem, "device_michi_id");
+    if (m_did == NULL || !cJSON_IsString(m_did) || !b64url_exact(m_did->valuestring, 43)) {
+        snprintf(err_field, err_field_len, "membership.device_michi_id");
+        return false;
+    }
+    memcpy(out_membership->device_michi_id, m_did->valuestring, 44);
+
+    const cJSON *m_dpk = cJSON_GetObjectItem(mem, "device_public_key");
+    if (m_dpk == NULL || !cJSON_IsString(m_dpk) || !b64url_exact(m_dpk->valuestring, 43)) {
+        snprintf(err_field, err_field_len, "membership.device_public_key");
+        return false;
+    }
+    memcpy(out_membership->device_public_key, m_dpk->valuestring, 44);
+
+    const cJSON *m_dtype = cJSON_GetObjectItem(mem, "device_type");
+    if (m_dtype == NULL || !cJSON_IsString(m_dtype) || m_dtype->valuestring == NULL) {
+        snprintf(err_field, err_field_len, "membership.device_type");
+        return false;
+    }
+    snprintf(out_membership->device_type, sizeof(out_membership->device_type), "%s", m_dtype->valuestring);
+
+    const cJSON *m_roles = cJSON_GetObjectItem(mem, "roles");
+    if (m_roles == NULL || !cJSON_IsArray(m_roles) || cJSON_GetArraySize(m_roles) == 0) {
+        snprintf(err_field, err_field_len, "membership.roles");
+        return false;
+    }
+    out_membership->role_count = 0;
+    const cJSON *role_item = NULL;
+    cJSON_ArrayForEach(role_item, m_roles) {
+        if (!cJSON_IsString(role_item) || role_item->valuestring == NULL ||
+            out_membership->role_count >= MICHI_MAX_MEMBERSHIP_ROLES) {
+            snprintf(err_field, err_field_len, "membership.roles");
             return false;
         }
+        snprintf(out_membership->roles[out_membership->role_count++],
+                 MICHI_MAX_ROLE_NAME_LEN, "%s", role_item->valuestring);
     }
-    const cJSON *strategy = cJSON_GetObjectItem(obj, "auth_strategy");
-    if (strategy == NULL || !cJSON_IsString(strategy) ||
-        strategy->valuestring == NULL) {
-        return false;
-    }
-    static const char *const k_strategies[] = {
-        "PLAYER_PASSWORD", "SERVER_CODE", "ED25519_CHALLENGE",
-        "RECEIVER_BUTTON", "LEGACY",
-    };
-    for (size_t i = 0; i < sizeof(k_strategies) / sizeof(k_strategies[0]);
-         i++) {
-        if (strcmp(strategy->valuestring, k_strategies[i]) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
 
-bool michi_http_json_get_pair_start(const cJSON *obj,
-                                    char *michi_id, size_t michi_id_len,
-                                    char *public_key, size_t public_key_len,
-                                    char *challenge_nonce, size_t nonce_len,
-                                    char *challenge_signature,
-                                    size_t signature_len,
-                                    char *err_field, size_t err_field_len)
-{
-    if (obj == NULL || michi_id == NULL || public_key == NULL ||
-        challenge_nonce == NULL || challenge_signature == NULL ||
-        err_field == NULL || err_field_len == 0) {
+    const cJSON *m_issued = cJSON_GetObjectItem(mem, "issued_at");
+    if (m_issued == NULL || !cJSON_IsString(m_issued) || m_issued->valuestring == NULL) {
+        snprintf(err_field, err_field_len, "membership.issued_at");
         return false;
     }
-    /* Parse -> copy -> delete: only copies leave this helper. */
-    const char *rejected = pairing_rejected_field(obj);
-    if (rejected != NULL) {
-        snprintf(err_field, err_field_len, "%s", rejected);
-        return false;
-    }
-    const cJSON *mi = cJSON_GetObjectItem(obj, "michi_id");
-    const cJSON *pk = cJSON_GetObjectItem(obj, "public_key");
-    const cJSON *nonce = cJSON_GetObjectItem(obj, "challenge_nonce");
-    const cJSON *sig = cJSON_GetObjectItem(obj, "challenge_signature");
-    if (!pair_start_metadata_valid(obj)) {
-        snprintf(err_field, err_field_len, "%s", "body");
-        return false;
-    }
-    if (mi == NULL || !cJSON_IsString(mi) || mi->valuestring == NULL ||
-        !b64url_exact(mi->valuestring, 43)) {
-        snprintf(err_field, err_field_len, "%s", "michi_id");
-        return false;
-    }
-    if (pk == NULL || !cJSON_IsString(pk) || pk->valuestring == NULL ||
-        !b64url_exact(pk->valuestring, 43)) {
-        snprintf(err_field, err_field_len, "%s", "public_key");
-        return false;
-    }
-    if (nonce == NULL || !cJSON_IsString(nonce) ||
-        nonce->valuestring == NULL || strlen(nonce->valuestring) < 22 ||
-        strlen(nonce->valuestring) >= nonce_len ||
-        !b64url_exact(nonce->valuestring, strlen(nonce->valuestring))) {
-        snprintf(err_field, err_field_len, "%s", "challenge_nonce");
-        return false;
-    }
-    if (sig == NULL || !cJSON_IsString(sig) || sig->valuestring == NULL ||
-        !b64url_exact(sig->valuestring, 86)) {
-        snprintf(err_field, err_field_len, "%s", "challenge_signature");
-        return false;
-    }
-    if (michi_id_len < 44 || public_key_len < 44 ||
-        signature_len < 87) {
-        snprintf(err_field, err_field_len, "%s", "body");
-        return false;
-    }
-    memcpy(michi_id, mi->valuestring, 44);
-    memcpy(public_key, pk->valuestring, 44);
-    memcpy(challenge_nonce, nonce->valuestring, strlen(nonce->valuestring) + 1);
-    memcpy(challenge_signature, sig->valuestring, 87);
-    return true;
-}
+    snprintf(out_membership->issued_at, sizeof(out_membership->issued_at), "%s", m_issued->valuestring);
 
-bool michi_http_json_get_pair_recover_start(const cJSON *obj,
-                                            char *michi_id, size_t michi_id_len,
-                                            char *public_key, size_t public_key_len,
-                                            char *err_field, size_t err_field_len)
-{
-    if (obj == NULL || michi_id == NULL || public_key == NULL ||
-        err_field == NULL || err_field_len == 0) {
+    const cJSON *m_ser = cJSON_GetObjectItem(mem, "serial");
+    if (m_ser == NULL || !cJSON_IsNumber(m_ser) || m_ser->valuedouble < 1.0) {
+        snprintf(err_field, err_field_len, "membership.serial");
         return false;
     }
-    const char *rejected = pairing_rejected_field(obj);
-    if (rejected != NULL) {
-        snprintf(err_field, err_field_len, "%s", rejected);
-        return false;
-    }
-    const cJSON *mi = cJSON_GetObjectItem(obj, "michi_id");
-    const cJSON *pk = cJSON_GetObjectItem(obj, "public_key");
-    if (mi == NULL || !cJSON_IsString(mi) || mi->valuestring == NULL ||
-        !b64url_exact(mi->valuestring, 43)) {
-        snprintf(err_field, err_field_len, "%s", "michi_id");
-        return false;
-    }
-    if (pk == NULL || !cJSON_IsString(pk) || pk->valuestring == NULL ||
-        !b64url_exact(pk->valuestring, 43)) {
-        snprintf(err_field, err_field_len, "%s", "public_key");
-        return false;
-    }
-    if (michi_id_len < 44 || public_key_len < 44) {
-        snprintf(err_field, err_field_len, "%s", "body");
-        return false;
-    }
-    memcpy(michi_id, mi->valuestring, 44);
-    memcpy(public_key, pk->valuestring, 44);
-    return true;
-}
+    out_membership->serial = (uint64_t)m_ser->valuedouble;
 
-bool michi_http_json_get_pair_recover(const cJSON *obj,
-                                      char *michi_id, size_t michi_id_len,
-                                      char *public_key, size_t public_key_len,
-                                      char *challenge_nonce, size_t nonce_len,
-                                      char *challenge_signature,
-                                      size_t signature_len,
-                                      char *err_field, size_t err_field_len)
-{
-    if (obj == NULL || michi_id == NULL || public_key == NULL ||
-        challenge_nonce == NULL || challenge_signature == NULL ||
-        err_field == NULL || err_field_len == 0) {
+    const cJSON *m_sig = cJSON_GetObjectItem(mem, "signature");
+    if (m_sig == NULL || !cJSON_IsString(m_sig) || !b64url_exact(m_sig->valuestring, 86)) {
+        snprintf(err_field, err_field_len, "membership.signature");
         return false;
     }
-    const char *rejected = pairing_rejected_field(obj);
-    if (rejected != NULL) {
-        snprintf(err_field, err_field_len, "%s", rejected);
-        return false;
-    }
-    const cJSON *mi = cJSON_GetObjectItem(obj, "michi_id");
-    const cJSON *pk = cJSON_GetObjectItem(obj, "public_key");
-    const cJSON *nonce = cJSON_GetObjectItem(obj, "challenge_nonce");
-    const cJSON *sig = cJSON_GetObjectItem(obj, "challenge_signature");
-    if (mi == NULL || !cJSON_IsString(mi) || mi->valuestring == NULL ||
-        !b64url_exact(mi->valuestring, 43)) {
-        snprintf(err_field, err_field_len, "%s", "michi_id");
-        return false;
-    }
-    if (pk == NULL || !cJSON_IsString(pk) || pk->valuestring == NULL ||
-        !b64url_exact(pk->valuestring, 43)) {
-        snprintf(err_field, err_field_len, "%s", "public_key");
-        return false;
-    }
-    if (nonce == NULL || !cJSON_IsString(nonce) ||
-        nonce->valuestring == NULL || strlen(nonce->valuestring) < 22 ||
-        strlen(nonce->valuestring) >= nonce_len ||
-        !b64url_exact(nonce->valuestring, strlen(nonce->valuestring))) {
-        snprintf(err_field, err_field_len, "%s", "challenge_nonce");
-        return false;
-    }
-    if (sig == NULL || !cJSON_IsString(sig) || sig->valuestring == NULL ||
-        !b64url_exact(sig->valuestring, 86)) {
-        snprintf(err_field, err_field_len, "%s", "challenge_signature");
-        return false;
-    }
-    if (michi_id_len < 44 || public_key_len < 44 ||
-        signature_len < 87) {
-        snprintf(err_field, err_field_len, "%s", "body");
-        return false;
-    }
-    memcpy(michi_id, mi->valuestring, 44);
-    memcpy(public_key, pk->valuestring, 44);
-    memcpy(challenge_nonce, nonce->valuestring, strlen(nonce->valuestring) + 1);
-    memcpy(challenge_signature, sig->valuestring, 87);
-    return true;
-}
+    memcpy(out_membership->signature, m_sig->valuestring, 87);
 
-bool michi_http_json_get_pair_confirm(const cJSON *obj,
-                                      char *session_id, size_t session_id_len,
-                                      char *pin, size_t pin_len,
-                                      char *michi_id, size_t michi_id_len,
-                                      char *public_key, size_t public_key_len,
-                                      char *err_field, size_t err_field_len)
-{
-    if (obj == NULL || session_id == NULL || pin == NULL || michi_id == NULL ||
-        public_key == NULL || err_field == NULL || err_field_len == 0) {
-        return false;
-    }
-    const char *rejected = pairing_rejected_field(obj);
-    if (rejected != NULL) {
-        snprintf(err_field, err_field_len, "%s", rejected);
-        return false;
-    }
-    const cJSON *sid = cJSON_GetObjectItem(obj, "session_id");
-    const cJSON *pin_item = cJSON_GetObjectItem(obj, "pin");
-    const cJSON *mi = cJSON_GetObjectItem(obj, "michi_id");
-    const cJSON *pk = cJSON_GetObjectItem(obj, "public_key");
-    if (sid == NULL || !cJSON_IsString(sid) || sid->valuestring == NULL ||
-        !michi_pairing_uuid_valid(sid->valuestring) ||
-        strlen(sid->valuestring) >= session_id_len) {
-        snprintf(err_field, err_field_len, "%s", "session_id");
-        return false;
-    }
-    if (pin_item == NULL || !cJSON_IsString(pin_item) ||
-        pin_item->valuestring == NULL ||
-        !michi_pairing_pin_valid(pin_item->valuestring) ||
-        strlen(pin_item->valuestring) >= pin_len) {
-        snprintf(err_field, err_field_len, "%s", "pin");
-        return false;
-    }
-    if (mi == NULL || !cJSON_IsString(mi) || mi->valuestring == NULL ||
-        !b64url_exact(mi->valuestring, 43)) {
-        snprintf(err_field, err_field_len, "%s", "michi_id");
-        return false;
-    }
-    if (pk == NULL || !cJSON_IsString(pk) || pk->valuestring == NULL ||
-        !b64url_exact(pk->valuestring, 43)) {
-        snprintf(err_field, err_field_len, "%s", "public_key");
-        return false;
-    }
-    if (michi_id_len < 44 || public_key_len < 44) {
-        snprintf(err_field, err_field_len, "%s", "body");
-        return false;
-    }
-    memcpy(session_id, sid->valuestring, strlen(sid->valuestring) + 1);
-    memcpy(pin, pin_item->valuestring, strlen(pin_item->valuestring) + 1);
-    memcpy(michi_id, mi->valuestring, 44);
-    memcpy(public_key, pk->valuestring, 44);
+    snprintf(challenge_id, challenge_id_len, "%s", cid->valuestring);
+    memcpy(client_michi_id, c_id->valuestring, 44);
+    memcpy(client_signature, sig->valuestring, 87);
     return true;
 }
 
@@ -602,7 +480,7 @@ bool michi_http_json_get_heartbeat(const cJSON *obj,
     /* session_id: required, UUID v4 (format uuid). */
     const cJSON *sid = cJSON_GetObjectItem(obj, "session_id");
     if (sid == NULL || !cJSON_IsString(sid) || sid->valuestring == NULL ||
-        !michi_pairing_uuid_valid(sid->valuestring) ||
+        !michi_uuid_valid(sid->valuestring) ||
         strlen(sid->valuestring) >= sizeof(out->session_id)) {
         snprintf(err_field, err_field_len, "%s", "session_id");
         return false;

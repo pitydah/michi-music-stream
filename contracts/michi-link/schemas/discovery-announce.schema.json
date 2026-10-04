@@ -92,6 +92,16 @@
       "description": "Random nonce in base64url, at least 22 chars (16 bytes)",
       "minLength": 22,
       "pattern": "^[A-Za-z0-9_-]{22,}$"
+    },
+    "michi_home_id": {
+      "type": "string",
+      "description": "Michi Home ID that this device belongs to (43 chars base64url).",
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "membership_fingerprint": {
+      "type": "string",
+      "description": "Fingerprint of the device membership certificate in base64url.",
+      "pattern": "^[A-Za-z0-9_-]{16,43}$"
     }
   },
   "allOf": [

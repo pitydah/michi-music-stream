@@ -1,14 +1,14 @@
 {
-  "version": "1.0.0-alpha.2",
-  "upstream_commit": "0bb7f941c418dc17c35b9f142d3d13a611d375ff",
+  "version": "1.0.0-alpha.3",
+  "upstream_commit": "7bb3b4ef4ab4db5f9eae3df287413f1d27ac0e23",
   "files": [
     {
       "path": "UPSTREAM_COMMIT",
-      "sha256": "8a3ad70baab5d52c4a7e2e1a19e7aeb0b1faf45e215ec039a6cf57072ba8dad7"
+      "sha256": "4b996cd734f14320409ce802a9215a6275122acb685ddc4c9c3009b7d3df215c"
     },
     {
       "path": "VERSION",
-      "sha256": "7cea810166d8de3820562c44d6d8f59e786a97c550dfd5285013187f60dfc296"
+      "sha256": "75b3ba9814efb4c8c4bafecae1982e76d80b9b39eed6b67903cc8be243a9b91d"
     },
     {
       "path": "examples/negative/error-conflict.json",
@@ -76,7 +76,7 @@
     },
     {
       "path": "openapi/michi-link-v1.yaml",
-      "sha256": "df7b3c0ff88149a7d013113e150d1c4d61e52d9c73b38f61fb72d9aa12783173"
+      "sha256": "317dd433da3ce7ff9d9f9f56b6ba51cc1105c4844101a7dbc22067cb379d11e4"
     },
     {
       "path": "schemas/album.schema.json",
@@ -103,12 +103,28 @@
       "sha256": "b327d28fffb9210e9b04bd773e842bfe7ff1c041ee5a82ba6d42396ed628bdaa"
     },
     {
+      "path": "schemas/device-auth-challenge-request.schema.json",
+      "sha256": "1abac28a785f4ef34233c0773479fcc5bfafa760d6d9b43860744db9a282a888"
+    },
+    {
+      "path": "schemas/device-auth-challenge-response.schema.json",
+      "sha256": "954475297c122207099554cd29d927f31b4f69d15fbad9e2dcf6649f4ab48a56"
+    },
+    {
+      "path": "schemas/device-auth-session-request.schema.json",
+      "sha256": "ca50abb3fc92d302dcddbfb02ef2df4babf46467bbfd89c1ff63a6ed8014890a"
+    },
+    {
+      "path": "schemas/device-auth-session-response.schema.json",
+      "sha256": "95bc15f258a9df620f40b3c02bfabccc786527bccbc275849a492899cd2052d5"
+    },
+    {
       "path": "schemas/device-info.schema.json",
       "sha256": "a2d01d3668bf79d6493ef2298b1cff7fda2b2ac164c2aca3d5ad1a90e184fc24"
     },
     {
       "path": "schemas/discovery-announce.schema.json",
-      "sha256": "37f0d2a3714602f9b6c55c85c1fd106ceb78d39d038a4b8fa1fa95fff1e0e374"
+      "sha256": "6e8331703167230d231e1b94621375a52d33ede9342db4663973954556c1e8fd"
     },
     {
       "path": "schemas/e2e-report.schema.json",
@@ -121,6 +137,14 @@
     {
       "path": "schemas/event.schema.json",
       "sha256": "e55404b60a0a17af8beeb8d9f0aface7dd28c99103dd7e21e30103cf54ec4bad"
+    },
+    {
+      "path": "schemas/home-device-revocation.schema.json",
+      "sha256": "66de058c64facf8dea937b515cb5a94063cfd458fcadf16258a777da2f6d4a23"
+    },
+    {
+      "path": "schemas/home-device-roster.schema.json",
+      "sha256": "2d8ab5cf01d0feea06c2bb0fc3642678286a1220a0b16d714d7d942413dd83f9"
     },
     {
       "path": "schemas/import-commit-result.schema.json",
@@ -143,8 +167,16 @@
       "sha256": "f16e65e9fef36de2eb1c539aee178943615e5cb2f5b82b68f64dac65fca96506"
     },
     {
+      "path": "schemas/michi-home.schema.json",
+      "sha256": "251913dac802a391b6c66c974ed199be846d2ec532adbf59cfe2f0d78fc52a51"
+    },
+    {
       "path": "schemas/michi-identity.schema.json",
       "sha256": "2662d04b1960533a87589acff5cbc36f666e085f4e3249de8f5380f03575d578"
+    },
+    {
+      "path": "schemas/michi-membership.schema.json",
+      "sha256": "b0bc3df55f2eeae71bb753b0aa277def947254aa837bbad961cf9ab8b31218a6"
     },
     {
       "path": "schemas/pair-confirm-response.schema.json",
@@ -176,7 +208,7 @@
     },
     {
       "path": "schemas/pair-start.schema.json",
-      "sha256": "631955adbd30c5d55a8e38a2264e4a1f1873e134c93247f9ef23d4e044ed5800"
+      "sha256": "091fe31822a02f6aa9dce0c3c9cb67b2a389fdd61c3b3ece217db621c7dd467e"
     },
     {
       "path": "schemas/pair-status.schema.json",
@@ -256,15 +288,15 @@
     },
     {
       "path": "schemas/server-info.schema.json",
-      "sha256": "b796a151bc169b4eddfea5fba75c9156ba2ef80a48eecb2c822b8a2811734645"
+      "sha256": "7dc0793359a1778f06530864ee2ae8800900060dfbd030459aef9f1df8c1f8ca"
     },
     {
       "path": "schemas/sync-delta.schema.json",
-      "sha256": "f51286a2148911bc61f56cb135ef874d062a3893ee16fb43a51990386297a817"
+      "sha256": "df127241cd5eb53969b82facd625fc94c2e2fc7ba699f5d226c6261453ccf8a7"
     },
     {
       "path": "schemas/sync-manifest.schema.json",
-      "sha256": "13af0bf1d85b57016b0d3eef9592eca6d502e23d3d51f596f294a113ed79509d"
+      "sha256": "828b85121120484d485074952b9b8a0008f74bf8c30e559eda3c39ce862cf655"
     },
     {
       "path": "schemas/sync-state-request.schema.json",
@@ -296,11 +328,11 @@
     },
     {
       "path": "vectors/identity/server-info-hifi.json",
-      "sha256": "ffa104b4e435c85e45f7702ccde550b6b8d88837e6c77b9129d58fc37ac5b9ad"
+      "sha256": "df1452ce67124152c955e04586923abc2cfe991ceeafc20174a9c619fb7ccd97"
     },
     {
       "path": "vectors/identity/server-info-standard.json",
-      "sha256": "ba77454b372dfdd748be835fda7e49ab4f1ac45cf0c1492461482de3d09af8c3"
+      "sha256": "97cead7f238c527d051b4cbece1cfc8435553e04e9d2bba33cf802382edc72e7"
     },
     {
       "path": "vectors/pairing/pair-confirm-replay.json",

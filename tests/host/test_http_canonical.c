@@ -24,6 +24,21 @@
 static const char *const TEST_STUB_SERVER_ID = "550e8400-e29b-41d4-a716-446655440000";
 static const char *const TEST_STUB_MICHI_ID = "f2UwxQaeA6vA8LO7Cr1nGRr5MStned_Gbmc_ua48qUc";
 static const char *const TEST_STUB_PUBKEY_B64 = "RpHnJr9oP1DXBkPuIMuk0hJ2hAJ5SiWO2hAQVCMGREE";
+static const char *const TEST_STUB_HOME_ID = "FU1FL-wFLfsfew3qpbR7XjDkmStWZY4g84MyW-zXPOs";
+static bool s_stub_home_provisioned = true;
+
+bool michi_home_is_provisioned(void)
+{
+    return s_stub_home_provisioned;
+}
+
+esp_err_t michi_home_get_id(char *out, size_t out_len)
+{
+    if (!s_stub_home_provisioned) return ESP_ERR_NOT_FOUND;
+    if (out == NULL || out_len < strlen(TEST_STUB_HOME_ID) + 1) return ESP_ERR_INVALID_SIZE;
+    snprintf(out, out_len, "%s", TEST_STUB_HOME_ID);
+    return ESP_OK;
+}
 
 esp_err_t michi_discovery_get_server_id(char *out, size_t out_len)
 {
@@ -181,15 +196,20 @@ static void test_info_profile_standard(void)
     esp_err_t err = build_info_json(root, &p);
     CHECK(err == ESP_OK, "build_info_json succeeds");
 
-    /* Exact top-level key set per server-info.schema.json: 12 keys
+    /* Exact top-level key set per server-info.schema.json: 13 keys
      * (service, name, version, api_version, roles, auth, features,
-     * server_id, identity_scheme, michi_id, public_key, audio). */
-    CHECK(cJSON_GetArraySize(root) == 12, "exactly 12 top-level keys");
+     * server_id, identity_scheme, michi_id, public_key, michi_home_id, audio). */
+    CHECK(cJSON_GetArraySize(root) == 13, "exactly 13 top-level keys (including michi_home_id)");
 
     const cJSON *server_id = cJSON_GetObjectItem(root, "server_id");
     CHECK(server_id != NULL && cJSON_IsString(server_id) &&
           strcmp(server_id->valuestring, TEST_STUB_SERVER_ID) == 0,
           "server_id emitted correctly");
+
+    const cJSON *home_id = cJSON_GetObjectItem(root, "michi_home_id");
+    CHECK(home_id != NULL && cJSON_IsString(home_id) &&
+          strcmp(home_id->valuestring, TEST_STUB_HOME_ID) == 0,
+          "michi_home_id emitted correctly");
 
     const cJSON *scheme = cJSON_GetObjectItem(root, "identity_scheme");
     CHECK(scheme != NULL && cJSON_IsString(scheme) &&
@@ -238,8 +258,8 @@ static void test_info_profile_standard(void)
     const cJSON *refresh = cJSON_GetObjectItem(auth, "token_refresh");
     CHECK(required != NULL && cJSON_IsTrue(required), "auth.required true");
     CHECK(strategy != NULL && strcmp(strategy->valuestring,
-                                     "RECEIVER_BUTTON") == 0,
-          "auth.strategy RECEIVER_BUTTON");
+                                     "HOME_MEMBERSHIP") == 0,
+          "auth.strategy HOME_MEMBERSHIP");
     CHECK(refresh != NULL && cJSON_IsFalse(refresh),
           "auth.token_refresh false");
 

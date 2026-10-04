@@ -10,9 +10,10 @@
   "identity_scheme": "ed25519-blake3-v1",
   "michi_id": "f2UwxQaeA6vA8LO7Cr1nGRr5MStned_Gbmc_ua48qUc",
   "public_key": "RpHnJr9oP1DXBkPuIMuk0hJ2hAJ5SiWO2hAQVCMGREE",
+  "michi_home_id": "FU1FL-wFLfsfew3qpbR7XjDkmStWZY4g84MyW-zXPOs",
   "auth": {
     "required": true,
-    "strategy": "RECEIVER_BUTTON",
+    "strategy": "HOME_MEMBERSHIP",
     "token_refresh": false
   },
   "features": {

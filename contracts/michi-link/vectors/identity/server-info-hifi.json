@@ -27,7 +27,7 @@
   },
   "auth": {
     "required": true,
-    "strategy": "RECEIVER_BUTTON",
+    "strategy": "HOME_MEMBERSHIP",
     "token_refresh": false
   },
   "features": {

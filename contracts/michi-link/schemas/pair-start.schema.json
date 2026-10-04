@@ -34,7 +34,7 @@
     "auth_strategy": {
       "type": "string",
       "description": "Desired authentication strategy",
-      "enum": ["PLAYER_PASSWORD", "SERVER_CODE", "ED25519_CHALLENGE", "RECEIVER_BUTTON", "LEGACY"],
+      "enum": ["PLAYER_PASSWORD", "SERVER_CODE", "ED25519_CHALLENGE", "RECEIVER_BUTTON", "HOME_MEMBERSHIP", "LEGACY"],
       "examples": ["ED25519_CHALLENGE"]
     },
     "michi_id": {

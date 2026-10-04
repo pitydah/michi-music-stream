@@ -1,7 +1,7 @@
 idf_component_register(
     SRCS "http_server.c" "json_helpers.c" "canonical_json.c"
     INCLUDE_DIRS "include"
-    REQUIRES michi_product_profile michi_pairing michi_session michi_state
+    REQUIRES michi_product_profile michi_home michi_session michi_state
              michi_audio michi_audio_output michi_identity michi_discovery
              michi_wifi michi_dac michi_ota michi_sd michi_time esp_http_server json
              lwip
