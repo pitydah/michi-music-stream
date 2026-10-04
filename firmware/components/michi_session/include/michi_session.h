@@ -86,8 +86,8 @@ extern "C" {
  * (never logged, never persisted, RAM only; returned once at creation) */
 #define MICHI_SESSION_TOKEN_B64_LEN 43
 #define MICHI_SESSION_TOKEN_LEN (MICHI_SESSION_TOKEN_B64_LEN + 1)
-/*!< owner controller id (same charset rule as the pairing registry) */
-#define MICHI_SESSION_OWNER_MAX 31
+/*!< owner controller id (supports base64url michi_id and UUID v4) */
+#define MICHI_SESSION_OWNER_MAX 63
 /*!< source address buffer (longest IPv4 dotted string fits in 16) */
 #define MICHI_SESSION_SOURCE_ADDR_LEN 16
 /*!< codec string ("pcm_s16le") */
@@ -133,7 +133,7 @@ typedef enum {
  */
 typedef struct {
     char session_id[MICHI_SESSION_ID_LEN]; /* UUID v4 */
-    char owner_controller_id[32];          /* pairing controller id */
+    char owner_controller_id[MICHI_SESSION_OWNER_MAX + 1]; /* controller michi_id or UUID */
     michi_session_state_t state;           /* starting/playing/paused/stopping */
     char codec[MICHI_SESSION_CODEC_LEN];   /* "pcm_s16le" */
     uint32_t sample_rate;                  /* 48000 */

@@ -100,7 +100,7 @@ void michi_display_request_redraw(void);
  *        by HTTP).
  *
  * Copies the 6-digit PIN into an internal buffer (truncation is
- * impossible: the buffer is exactly MICHI_PAIRING_PIN_LEN + 1; a
+ * impossible: the buffer is exactly 7 bytes (6 digits + 1); a
  * malformed string renders as "--") and requests a re-render. Called by
  * the pairing PIN display callback, from TASK context only; never
  * blocks (render queue contract of request_redraw).

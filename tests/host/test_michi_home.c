@@ -313,12 +313,76 @@ static void test_michi_auth_manager(void)
     CHECK(strcmp(out_id, client_michi_id) == 0, "token maps to client michi_id");
 
     CHECK(!michi_auth_validate_token("invalid-random-token", out_id, sizeof(out_id)), "bogus token rejected");
+
+    /* 7. Role-based permissions */
+    CHECK(michi_auth_validate_token_perm(token, MICHI_PERM_PLAYBACK, out_id, sizeof(out_id)) == ESP_OK,
+          "music_server token has playback permission");
+    CHECK(michi_auth_validate_token_perm(token, MICHI_PERM_VOLUME, out_id, sizeof(out_id)) == ESP_OK,
+          "music_server token has volume permission");
+    CHECK(michi_auth_validate_token_perm(token, MICHI_PERM_OTA, out_id, sizeof(out_id)) == ESP_ERR_INVALID_STATE,
+          "music_server token lacks OTA permission (403)");
+    CHECK(michi_auth_validate_token_perm("invalid-random-token", MICHI_PERM_PLAYBACK, out_id, sizeof(out_id)) == ESP_ERR_NOT_FOUND,
+          "bogus token returns NOT_FOUND (401)");
 }
 
-/* ── 6. Factory Config Parser (MICHI-F1) ──────────────────── */
+/* ── 6. DoS Challenge Protection & Slot Reuse ──────────────── */
+static void test_challenge_dos_protection(void)
+{
+    printf("michi_auth: DoS challenge slot allocation and reuse\n");
+    uint8_t ca_sk[64], ca_pk[32];
+    char ca_pk_b64[MICHI_HOME_PUBKEY_B64_LEN], ca_id[MICHI_IDENTITY_MICHI_ID_LEN];
+    make_keypair(0x41, ca_sk, ca_pk, ca_pk_b64, ca_id);
+
+    char home_id[MICHI_HOME_ID_LEN];
+    michi_home_get_id(home_id, sizeof(home_id));
+
+    char cid1[MICHI_AUTH_CHALLENGE_ID_LEN];
+    char nonce1[MICHI_AUTH_NONCE_B64_LEN];
+    uint32_t exp = 0;
+
+    /* Slot reuse for same client */
+    CHECK(michi_auth_create_challenge(ca_id, ca_pk_b64, home_id,
+                                      cid1, sizeof(cid1), nonce1, sizeof(nonce1), &exp) == ESP_OK,
+          "client-A creates challenge 1");
+    char cid2[MICHI_AUTH_CHALLENGE_ID_LEN];
+    char nonce2[MICHI_AUTH_NONCE_B64_LEN];
+    CHECK(michi_auth_create_challenge(ca_id, ca_pk_b64, home_id,
+                                      cid2, sizeof(cid2), nonce2, sizeof(nonce2), &exp) == ESP_OK,
+          "client-A creates challenge 2 (reuses slot)");
+    CHECK(strcmp(cid1, cid2) != 0, "new challenge ID generated on client slot refresh");
+
+    /* Fill remaining slots up to capacity 16 */
+    for (int i = 1; i < 16; i++) {
+        uint8_t c_sk[64], c_pk[32];
+        char c_pk_b64[MICHI_HOME_PUBKEY_B64_LEN], c_id[MICHI_IDENTITY_MICHI_ID_LEN];
+        make_keypair((uint8_t)(0x50 + i), c_sk, c_pk, c_pk_b64, c_id);
+
+        char c[MICHI_AUTH_CHALLENGE_ID_LEN], n[MICHI_AUTH_NONCE_B64_LEN];
+        CHECK(michi_auth_create_challenge(c_id, c_pk_b64, home_id,
+                                          c, sizeof(c), n, sizeof(n), &exp) == ESP_OK,
+              "fill challenge slot");
+    }
+
+    /* 17th client rejected without evicting others */
+    uint8_t ov_sk[64], ov_pk[32];
+    char ov_pk_b64[MICHI_HOME_PUBKEY_B64_LEN], ov_id[MICHI_IDENTITY_MICHI_ID_LEN];
+    make_keypair(0x99, ov_sk, ov_pk, ov_pk_b64, ov_id);
+
+    char c_over[MICHI_AUTH_CHALLENGE_ID_LEN], n_over[MICHI_AUTH_NONCE_B64_LEN];
+    CHECK(michi_auth_create_challenge(ov_id, ov_pk_b64, home_id,
+                                      c_over, sizeof(c_over), n_over, sizeof(n_over), &exp) == ESP_ERR_NO_MEM,
+          "17th client rejected with NO_MEM when table is full");
+
+    /* Client-A can still refresh its slot */
+    CHECK(michi_auth_create_challenge(ca_id, ca_pk_b64, home_id,
+                                      cid1, sizeof(cid1), nonce1, sizeof(nonce1), &exp) == ESP_OK,
+          "client-A can refresh its existing slot even when table is full");
+}
+
+/* ── 7. Factory Config Parser (MICHI-F1) & Device Membership ── */
 static void test_factory_config(void)
 {
-    printf("factory_cfg: MICHI-F1 parsing\n");
+    printf("factory_cfg: MICHI-F1 parsing and device membership\n");
 
     const char *payload_lines =
         "MICHI-F1\n"
@@ -342,6 +406,66 @@ static void test_factory_config(void)
     CHECK(michi_factory_cfg_parse(payload_json, strlen(payload_json), &cfg) == ESP_OK,
           "parse json MICHI-F1 config");
     CHECK(strcmp(cfg.wifi_ssid, "TestWiFi") == 0, "json wifi_ssid parsed");
+
+    /* Device membership handling */
+    uint8_t root_sk[64], root_pk[32];
+    char root_pk_b64[44], root_michi_id[44];
+    make_keypair(0x77, root_sk, root_pk, root_pk_b64, root_michi_id);
+
+    michi_home_erase();
+    michi_home_set_credentials(root_michi_id, root_pk);
+    CHECK(!michi_home_has_device_membership(), "no device membership initially");
+
+    uint8_t dev_sk[64], dev_pk[32];
+    char dev_pk_b64[44], dev_michi_id[44];
+    make_keypair(0x88, dev_sk, dev_pk, dev_pk_b64, dev_michi_id);
+
+    michi_membership_t dev_mem;
+    memset(&dev_mem, 0, sizeof(dev_mem));
+    dev_mem.version = 1;
+    snprintf(dev_mem.home_id, sizeof(dev_mem.home_id), "%s", root_michi_id);
+    snprintf(dev_mem.device_michi_id, sizeof(dev_mem.device_michi_id), "%s", dev_michi_id);
+    snprintf(dev_mem.device_public_key, sizeof(dev_mem.device_public_key), "%s", dev_pk_b64);
+    snprintf(dev_mem.device_type, sizeof(dev_mem.device_type), "stream");
+    snprintf(dev_mem.roles[0], sizeof(dev_mem.roles[0]), "audio_receiver");
+    dev_mem.role_count = 1;
+    snprintf(dev_mem.issued_at, sizeof(dev_mem.issued_at), "2026-10-04T12:00:00Z");
+    dev_mem.serial = 100;
+
+    uint8_t canon[512];
+    size_t c_len = michi_home_canonical_membership_bytes(
+        dev_mem.home_id, dev_mem.device_michi_id, dev_mem.device_public_key,
+        dev_mem.device_type, dev_mem.roles, dev_mem.role_count,
+        dev_mem.issued_at, dev_mem.serial, canon, sizeof(canon));
+    uint8_t sig_raw[64];
+    crypto_ed25519_sign(sig_raw, root_sk, canon, c_len);
+    michi_identity_base64url_encode(sig_raw, sizeof(sig_raw), dev_mem.signature, sizeof(dev_mem.signature));
+
+    CHECK(michi_home_set_device_membership(&dev_mem) == ESP_OK, "set device membership");
+    CHECK(michi_home_has_device_membership(), "has device membership now");
+
+    michi_membership_t loaded_mem;
+    CHECK(michi_home_get_device_membership(&loaded_mem) == ESP_OK, "get device membership");
+    CHECK(strcmp(loaded_mem.device_michi_id, dev_michi_id) == 0, "device michi_id matches");
+    CHECK(strcmp(loaded_mem.roles[0], "audio_receiver") == 0, "role matches");
+
+    /* One-shot factory_cfg import */
+    michi_home_erase();
+    CHECK(!michi_home_is_provisioned(), "erased home");
+
+    char json_with_mem[1024];
+    snprintf(json_with_mem, sizeof(json_with_mem),
+             "{\"home_id\":\"%s\",\"root_public_key\":\"%s\",\"wifi_ssid\":\"HomeWiFi\","
+             "\"device_membership\":{\"version\":1,\"home_id\":\"%s\",\"device_michi_id\":\"%s\","
+             "\"device_public_key\":\"%s\",\"device_type\":\"stream\",\"roles\":[\"audio_receiver\"],"
+             "\"issued_at\":\"2026-10-04T12:00:00Z\",\"serial\":100,\"signature\":\"%s\"}}",
+             root_michi_id, root_pk_b64, root_michi_id, dev_michi_id, dev_pk_b64, dev_mem.signature);
+
+    michi_factory_cfg_set_test_partition_data(json_with_mem);
+    CHECK(michi_factory_cfg_check_and_import() == ESP_OK, "one-shot check_and_import succeeds");
+    CHECK(michi_home_is_provisioned(), "home is now provisioned");
+    CHECK(michi_home_has_device_membership(), "device membership imported from partition");
+    michi_factory_cfg_set_test_partition_data(NULL);
 }
 
 int main(void)
@@ -351,6 +475,7 @@ int main(void)
     test_membership_verification();
     test_device_and_server_auth();
     test_michi_auth_manager();
+    test_challenge_dos_protection();
     test_factory_config();
 
     if (failures == 0) {

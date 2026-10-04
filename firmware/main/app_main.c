@@ -219,6 +219,12 @@ void app_main(void)
         }
     }
 
+    /* Factory configuration partition (MICHI-F1): one-shot credentials import */
+    err = michi_factory_cfg_check_and_import();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "michi_factory_cfg_check_and_import notice: %s", esp_err_to_name(err));
+    }
+
     /* Device identity (MS-04): Ed25519 identity key + BLAKE3 michi_id.
      * Mints seed on first boot or loads existing key from NVS. */
     err = michi_identity_init();
@@ -227,6 +233,20 @@ void app_main(void)
         ESP_LOGI(TAG, "subsystem=identity state=failed phase=ms04");
     } else {
         ESP_LOGI(TAG, "subsystem=identity state=ok phase=ms04");
+    }
+
+    /* Michi Home membership & auth (phase 10 / Trust Architecture V2):
+     * home root authority certificate verification and in-RAM session management. */
+    err = michi_home_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "michi_home_init failed: %s", esp_err_to_name(err));
+        ESP_LOGI(TAG, "subsystem=home state=failed phase=10");
+    } else {
+        ESP_LOGI(TAG, "subsystem=home state=ok phase=10");
+    }
+    err = michi_auth_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "michi_auth_init failed: %s", esp_err_to_name(err));
     }
 
     /* Log journal (phase 16): SPIFFS mount + boot_seq + journal task,
@@ -243,8 +263,8 @@ void app_main(void)
     }
 
     /* Network subsystem (phase 9): Wi-Fi STA + BLE provisioning +
-     * mDNS. Runs AFTER init_nvs() (the credentials live in the NVS
-     * "wifi" namespace) and BEFORE the boot events: the FSM is still
+     * mDNS. Runs AFTER init_nvs() & factory_cfg import (the credentials
+     * live in the NVS "wifi" namespace) and BEFORE the boot events: the FSM is still
      * BOOTING, and michi_wifi places itself (WIFI_CONNECTING or
      * UNPROVISIONED) through its STATE_CHANGED observer once the FSM
      * reaches IDLE. On failure boot continues degraded - no network,
@@ -254,20 +274,6 @@ void app_main(void)
         ESP_LOGE(TAG, "michi_wifi_init failed: %s (no network)",
                  esp_err_to_name(err));
         ESP_LOGI(TAG, "subsystem=wifi state=failed phase=9");
-    }
-
-    /* Michi Home membership & auth (phase 10 / Trust Architecture V2):
-     * home root authority certificate verification and in-RAM session management. */
-    err = michi_home_init();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "michi_home_init failed: %s", esp_err_to_name(err));
-        ESP_LOGI(TAG, "subsystem=home state=failed phase=10");
-    } else {
-        ESP_LOGI(TAG, "subsystem=home state=ok phase=10");
-    }
-    err = michi_auth_init();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "michi_auth_init failed: %s", esp_err_to_name(err));
     }
 
     err = michi_board_init();

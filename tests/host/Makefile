@@ -1,7 +1,7 @@
 # Host-side unit tests for the universal firmware (F15).
 #
 # Compiles the REAL firmware sources (semver.c, validators.c,
-# json_helpers.c, canonical_json.c, michi_pairing.c, michi_identity.c) -
+# json_helpers.c, canonical_json.c, michi_home.c, michi_identity.c) -
 # no reimplementations. The firmware components keep these files on their
 # SRCS list; the tests compile the SAME .c.
 #

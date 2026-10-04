@@ -102,7 +102,6 @@ require_host_cjson() {
 # fails the gate. contracts/ is vendored and excluded from the scan.
 LEGACY_PATTERN='/api/v1/receiver/|receiver-lite/info|receiver-lite/volume|receiver-lite/config|pcm_s24le|opus|music_stream_receiver|unsupported_codec|client_token|initiator_id'
 LEGACY_ALLOWLIST='
-tests/host/test_pairing_http.c
 tests/host/test_session_http.c
 tests/host/test_michi_session.c
 tests/contract/test_contract.py
@@ -111,7 +110,6 @@ tests/e2e/test_e2e_micro_stream.py
 firmware/components/michi_http/json_helpers.c
 firmware/components/michi_http/include/michi_http.h
 firmware/components/michi_http/http_server.c
-firmware/components/michi_pairing/include/michi_pairing.h
 firmware/components/michi_product_profile/michi_product_profile.c
 firmware/components/michi_product_profile/include/michi_product_profile.h
 firmware/README.md

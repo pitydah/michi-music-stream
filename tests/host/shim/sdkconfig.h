@@ -10,9 +10,7 @@
  * TEST-ONLY: never compiled into firmware.
  */
 
-/* === 1. TEST_OVERRIDE === */
-/* Fast 5s pairing window so host expiration tests run deterministically in ms (firmware default is 120s) */
-#define CONFIG_MICHI_PAIRING_WINDOW_SECONDS 5
+
 
 /* Fast 250ms SNTP sync timeout so host bounded-wait tests complete quickly (firmware default is 10000ms) */
 #define CONFIG_MICHI_TIME_SYNC_TIMEOUT_MS 250
@@ -32,22 +30,9 @@
 
 
 /* === 2. PRODUCTION_DEFAULT === */
-/* michi_pairing */
-#define CONFIG_MICHI_PAIRING_MAX_CONTROLLERS 8
-
 /* michi_time */
 #define CONFIG_MICHI_TIME_SNTP_SERVER "pool.ntp.org"
 #define CONFIG_MICHI_TIME_TASK_STACK_BYTES 3072
-
-/* michi_button */
-#define CONFIG_MICHI_BUTTON_DEBOUNCE_MS 30
-#define CONFIG_MICHI_BUTTON_MIN_PRESS_MS 50
-#define CONFIG_MICHI_BUTTON_PAIRING_HOLD_MS 5000
-#define CONFIG_MICHI_BUTTON_FACTORY_WARN_MS 10000
-#define CONFIG_MICHI_BUTTON_FACTORY_RESET_PRESS_MS 15000
-#define CONFIG_MICHI_BUTTON_FACTORY_ARM_MS 10000
-#define CONFIG_MICHI_BUTTON_POLL_MS 5
-#define CONFIG_MICHI_BUTTON_TASK_STACK_BYTES 3072
 
 /* lwIP SNTP shim */
 #define CONFIG_LWIP_SNTP_MAX_SERVERS 1

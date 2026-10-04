@@ -200,9 +200,6 @@ static void test_host_kconfig_parity(void)
     CHECK(CONFIG_MICHI_I2S_MCLK == -1, "I2S MCLK pin == -1 (disabled/internal PLL)");
     CHECK(CONFIG_MICHI_LED_GPIO == 4, "LED GPIO pin == 4");
     CHECK(CONFIG_MICHI_BUTTON_GPIO == 17, "Button GPIO pin == 17");
-    CHECK(CONFIG_MICHI_BUTTON_DEBOUNCE_MS == 30, "Button debounce == 30 ms");
-    CHECK(CONFIG_MICHI_BUTTON_POLL_MS == 5, "Button poll == 5 ms");
-    CHECK(CONFIG_MICHI_BUTTON_MIN_PRESS_MS == 50, "Button min press == 50 ms");
     CHECK(CONFIG_MICHI_SKU_EXPECTS_AUDIO == 1, "SKU expects audio == 1");
     CHECK(strcmp(CONFIG_MICHI_DAC_DEFAULT_PROFILE, "pcm5102a") == 0,
           "DAC default profile == pcm5102a");

@@ -50,8 +50,8 @@
  * Handler contract (shared with michi_http.h): copy ALL values out of
  * the cJSON tree BEFORE delete, never return pointers into the tree;
  * parse -> copy -> delete -> process -> respond. No handler may deviate
- * from it. Bearer tokens are validated by michi_pairing_validate_token
- * (constant-time registry scan) and their VALUE is never logged.
+ * from it. Bearer tokens are validated by michi_auth_validate_token_perm
+ * (in-RAM session lookup + role permissions) and their VALUE is never logged.
  */
 
 #include <inttypes.h>
@@ -237,12 +237,12 @@ static esp_err_t send_auth_error(httpd_req_t *req, bool forbidden)
 }
 
 /* Bearer auth + permission gate. Never logs the token; on success the
- * owning controller id (not secret) is copied out. Returns:
- *  ESP_OK                 - authorized; out_controller_id (>= 32) filled.
+ * owning client michi_id (not secret) is copied out. Returns:
+ *  ESP_OK                 - authorized; out_client_id filled.
  *  ESP_ERR_NOT_FOUND      - missing/malformed/unknown token -> 401.
  *  ESP_ERR_INVALID_STATE  - token valid but lacks the permission -> 403. */
 static esp_err_t require_auth(httpd_req_t *req, uint32_t perm,
-                              char *out_controller_id, size_t id_len)
+                              char *out_client_id, size_t id_len)
 {
     char auth[MICHI_HTTP_AUTH_HEADER_MAX] = {0};
     if (httpd_req_get_hdr_value_str(req, "Authorization", auth,
@@ -254,11 +254,7 @@ static esp_err_t require_auth(httpd_req_t *req, uint32_t perm,
         return ESP_ERR_NOT_FOUND; /* wrong scheme: treated as absent */
     }
     const char *token = auth + strlen(prefix);
-    if (!michi_auth_validate_token(token, out_controller_id, id_len)) {
-        return ESP_ERR_NOT_FOUND; /* malformed, unknown, or expired session */
-    }
-    (void)perm;
-    return ESP_OK;
+    return michi_auth_validate_token_perm(token, perm, out_client_id, id_len);
 }
 
 /* Auth gate for handlers: true = authorized (id filled); false = the
@@ -571,9 +567,9 @@ static esp_err_t read_session_token(httpd_req_t *req, char *out,
  * 201 returns the session_token ONCE (RAM-only). */
 static esp_err_t session_start_handler(httpd_req_t *req)
 {
-    char controller_id[MICHI_PAIRING_DEVICE_ID_LEN] = {0};
-    if (!auth_gate(req, MICHI_PERM_PLAYBACK, controller_id,
-                   sizeof(controller_id))) {
+    char client_id[MICHI_HOME_ID_LEN] = {0};
+    if (!auth_gate(req, MICHI_PERM_PLAYBACK, client_id,
+                   sizeof(client_id))) {
         return ESP_OK; /* 401/403 already sent (P0-5) */
     }
 
@@ -617,7 +613,7 @@ static esp_err_t session_start_handler(httpd_req_t *req)
     }
 
     const michi_session_start_params_t params = {
-        .owner_controller_id = controller_id,
+        .owner_controller_id = client_id,
         .codec = body.codec,
         .sample_rate = (uint32_t)body.sample_rate,
         .bit_depth = (uint8_t)body.bit_depth,
@@ -716,9 +712,9 @@ static esp_err_t session_start_handler(httpd_req_t *req)
  * session. The session_token NEVER appears. */
 static esp_err_t session_current_get_handler(httpd_req_t *req)
 {
-    char controller_id[MICHI_PAIRING_DEVICE_ID_LEN] = {0};
-    if (!auth_gate(req, MICHI_PERM_STATUS, controller_id,
-                   sizeof(controller_id))) {
+    char client_id[MICHI_HOME_ID_LEN] = {0};
+    if (!auth_gate(req, MICHI_PERM_STATUS, client_id,
+                   sizeof(client_id))) {
         return ESP_OK; /* 401/403 already sent (P0-5) */
     }
     michi_session_info_t info;
@@ -735,9 +731,9 @@ static esp_err_t session_current_get_handler(httpd_req_t *req)
  * applying. */
 static esp_err_t session_patch_handler(httpd_req_t *req)
 {
-    char controller_id[MICHI_PAIRING_DEVICE_ID_LEN] = {0};
-    if (!auth_gate(req, MICHI_PERM_PLAYBACK, controller_id,
-                   sizeof(controller_id))) {
+    char client_id[MICHI_HOME_ID_LEN] = {0};
+    if (!auth_gate(req, MICHI_PERM_PLAYBACK, client_id,
+                   sizeof(client_id))) {
         return ESP_OK; /* 401/403 already sent (P0-5) */
     }
     if (!michi_session_active()) {
@@ -795,9 +791,9 @@ static esp_err_t session_patch_handler(httpd_req_t *req)
  * -> session token (401). Idempotent for the authenticated session. */
 static esp_err_t session_delete_handler(httpd_req_t *req)
 {
-    char controller_id[MICHI_PAIRING_DEVICE_ID_LEN] = {0};
-    if (!auth_gate(req, MICHI_PERM_PLAYBACK, controller_id,
-                   sizeof(controller_id))) {
+    char client_id[MICHI_HOME_ID_LEN] = {0};
+    if (!auth_gate(req, MICHI_PERM_PLAYBACK, client_id,
+                   sizeof(client_id))) {
         return ESP_OK; /* 401/403 already sent (P0-5) */
     }
     if (!michi_session_active()) {
@@ -805,7 +801,7 @@ static esp_err_t session_delete_handler(httpd_req_t *req)
     }
     char token[MICHI_SESSION_TOKEN_LEN];
     const esp_err_t token_err = read_session_token(req, token,
-                                                   sizeof(token));
+                                                    sizeof(token));
     if (token_err != ESP_OK) {
         return token_err; /* 401 already sent (P0-5) */
     }
@@ -845,9 +841,9 @@ static esp_err_t session_delete_handler(httpd_req_t *req)
  * and then ignored (informational per the contract). */
 static esp_err_t v1lite_heartbeat_handler(httpd_req_t *req)
 {
-    char controller_id[MICHI_PAIRING_DEVICE_ID_LEN] = {0};
-    if (!auth_gate(req, MICHI_PERM_PLAYBACK, controller_id,
-                     sizeof(controller_id))) {
+    char client_id[MICHI_HOME_ID_LEN] = {0};
+    if (!auth_gate(req, MICHI_PERM_PLAYBACK, client_id,
+                     sizeof(client_id))) {
         return ESP_OK; /* 401/403 already sent (P0-5) */
     }
     if (!michi_session_active()) {
@@ -935,9 +931,9 @@ static esp_err_t v1lite_heartbeat_handler(httpd_req_t *req)
  */
 static esp_err_t now_playing_put_handler(httpd_req_t *req)
 {
-    char controller_id[MICHI_PAIRING_DEVICE_ID_LEN] = {0};
-    if (!auth_gate(req, MICHI_PERM_PLAYBACK, controller_id,
-                     sizeof(controller_id))) {
+    char client_id[MICHI_HOME_ID_LEN] = {0};
+    if (!auth_gate(req, MICHI_PERM_PLAYBACK, client_id,
+                     sizeof(client_id))) {
         return ESP_OK; /* 401/403 already sent (P0-5) */
     }
     return not_implemented_with_body(req,
@@ -949,9 +945,9 @@ static esp_err_t now_playing_put_handler(httpd_req_t *req)
  * availability semantics are not implemented. */
 static esp_err_t firmware_get_handler(httpd_req_t *req)
 {
-    char controller_id[MICHI_PAIRING_DEVICE_ID_LEN] = {0};
-    if (!auth_gate(req, MICHI_PERM_STATUS, controller_id,
-                     sizeof(controller_id))) {
+    char client_id[MICHI_HOME_ID_LEN] = {0};
+    if (!auth_gate(req, MICHI_PERM_STATUS, client_id,
+                     sizeof(client_id))) {
         return ESP_OK; /* 401/403 already sent (P0-5) */
     }
     return send_not_implemented(req,
@@ -963,9 +959,9 @@ static esp_err_t firmware_get_handler(httpd_req_t *req)
  */
 static esp_err_t firmware_post_handler(httpd_req_t *req)
 {
-    char controller_id[MICHI_PAIRING_DEVICE_ID_LEN] = {0};
-    if (!auth_gate(req, MICHI_PERM_OTA, controller_id,
-                     sizeof(controller_id))) {
+    char client_id[MICHI_HOME_ID_LEN] = {0};
+    if (!auth_gate(req, MICHI_PERM_OTA, client_id,
+                     sizeof(client_id))) {
         return ESP_OK; /* 401/403 already sent (P0-5) */
     }
     return not_implemented_with_body(req,
@@ -1045,9 +1041,9 @@ static const char *last_error_target_name(michi_state_t t)
  * snapshot conforms as-is. */
 static esp_err_t diagnostics_get_handler(httpd_req_t *req)
 {
-    char controller_id[MICHI_PAIRING_DEVICE_ID_LEN] = {0};
-    if (!auth_gate(req, MICHI_PERM_STATUS, controller_id,
-                     sizeof(controller_id))) {
+    char client_id[MICHI_HOME_ID_LEN] = {0};
+    if (!auth_gate(req, MICHI_PERM_STATUS, client_id,
+                     sizeof(client_id))) {
         return ESP_OK; /* 401/403 already sent (P0-5) */
     }
     cJSON *root = cJSON_CreateObject();

@@ -118,6 +118,65 @@ esp_err_t michi_home_set_credentials(const char *home_id, const uint8_t root_pk[
     return err;
 }
 
+esp_err_t michi_home_set_device_membership(const michi_membership_t *membership)
+{
+    if (membership == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (s_provisioned) {
+        if (!michi_home_verify_membership(membership, s_root_pk)) {
+            ESP_LOGE(TAG, "device membership verification failed under home root authority");
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
+
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(MICHI_HOME_NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = nvs_set_blob(h, MICHI_HOME_NVS_KEY_MEMBERSHIP, membership, sizeof(*membership));
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Device membership saved to NVS (device_michi_id=%s)", membership->device_michi_id);
+    }
+    return err;
+}
+
+esp_err_t michi_home_get_device_membership(michi_membership_t *out_membership)
+{
+    if (out_membership == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(MICHI_HOME_NVS_NAMESPACE, NVS_READONLY, &h);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    size_t mem_len = sizeof(*out_membership);
+    err = nvs_get_blob(h, MICHI_HOME_NVS_KEY_MEMBERSHIP, out_membership, &mem_len);
+    nvs_close(h);
+
+    if (err != ESP_OK || mem_len != sizeof(*out_membership)) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    return ESP_OK;
+}
+
+bool michi_home_has_device_membership(void)
+{
+    michi_membership_t mem;
+    return michi_home_get_device_membership(&mem) == ESP_OK;
+}
+
 esp_err_t michi_home_erase(void)
 {
     nvs_handle_t h;
@@ -125,6 +184,7 @@ esp_err_t michi_home_erase(void)
     if (err == ESP_OK) {
         (void)nvs_erase_key(h, MICHI_HOME_NVS_KEY_ID);
         (void)nvs_erase_key(h, MICHI_HOME_NVS_KEY_ROOT_PK);
+        (void)nvs_erase_key(h, MICHI_HOME_NVS_KEY_MEMBERSHIP);
         (void)nvs_commit(h);
         nvs_close(h);
     }

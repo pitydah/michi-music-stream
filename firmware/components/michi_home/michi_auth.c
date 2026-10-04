@@ -17,7 +17,7 @@
 
 #define TAG "michi_auth"
 
-#define MAX_ACTIVE_CHALLENGES 8
+#define MAX_ACTIVE_CHALLENGES 16
 #define MAX_ACTIVE_SESSIONS 8
 
 typedef struct {
@@ -34,6 +34,7 @@ typedef struct {
     bool active;
     char session_token[MICHI_AUTH_TOKEN_B64_LEN];
     char client_michi_id[MICHI_HOME_ID_LEN];
+    uint32_t permissions;
     int64_t expires_mono_us;
 } auth_session_entry_t;
 
@@ -149,17 +150,30 @@ esp_err_t michi_auth_create_challenge(
     const int64_t now_us = esp_timer_get_time();
     purge_expired_locked(now_us);
 
-    /* Find a free slot or replace the oldest expired/existing for this client */
+    /* DoS-safe slot allocation:
+     * 1. If this client already has an active challenge, reuse their slot (refreshes nonce)
+     * 2. Otherwise allocate the first available inactive slot
+     * 3. If table is full of other clients' in-flight challenges, reject with ESP_ERR_NO_MEM
+     *    (never evict other clients' active challenges) */
     int slot = -1;
     for (size_t i = 0; i < MAX_ACTIVE_CHALLENGES; i++) {
-        if (!s_challenges[i].active) {
+        if (s_challenges[i].active &&
+            strcmp(s_challenges[i].client_michi_id, client_michi_id) == 0) {
             slot = (int)i;
             break;
         }
     }
     if (slot == -1) {
-        /* Evict slot 0 */
-        slot = 0;
+        for (size_t i = 0; i < MAX_ACTIVE_CHALLENGES; i++) {
+            if (!s_challenges[i].active) {
+                slot = (int)i;
+                break;
+            }
+        }
+    }
+    if (slot == -1) {
+        (void)xSemaphoreGive(s_mutex);
+        return ESP_ERR_NO_MEM;
     }
 
     char cid[MICHI_AUTH_CHALLENGE_ID_LEN];
@@ -253,6 +267,32 @@ esp_err_t michi_auth_verify_and_create_session(
         return ESP_ERR_INVALID_RESPONSE; /* 401 Unauthorized */
     }
 
+    /* Enforce roles & compute permissions for receiver control */
+    uint32_t perms = 0;
+    for (size_t r = 0; r < membership->role_count; r++) {
+        const char *role = membership->roles[r];
+        if (strcmp(role, "music_server") == 0 ||
+            strcmp(role, "remote_controller") == 0) {
+            perms |= (MICHI_PERM_STATUS | MICHI_PERM_PLAYBACK | MICHI_PERM_VOLUME | MICHI_PERM_SETTINGS);
+        } else if (strcmp(role, "playback_host") == 0 ||
+                   strcmp(role, "desktop_player") == 0 ||
+                   strcmp(role, "mobile_player") == 0) {
+            perms |= (MICHI_PERM_STATUS | MICHI_PERM_PLAYBACK | MICHI_PERM_VOLUME);
+        } else if (strcmp(role, "sync_host") == 0) {
+            perms |= (MICHI_PERM_STATUS | MICHI_PERM_PLAYBACK);
+        } else if (strcmp(role, "library_master") == 0) {
+            perms |= (MICHI_PERM_STATUS | MICHI_PERM_SETTINGS | MICHI_PERM_OTA);
+        } else if (strcmp(role, "sync_client") == 0 ||
+                   strcmp(role, "library_host") == 0 ||
+                   strcmp(role, "audio_receiver") == 0) {
+            perms |= MICHI_PERM_STATUS;
+        }
+    }
+    if (perms == 0) {
+        ESP_LOGW(TAG, "Membership for %s has no authorized roles for receiver control", client_michi_id);
+        return ESP_ERR_INVALID_ARG;
+    }
+
     /* Validate client signature over device auth domain */
     uint8_t client_pk[MICHI_HOME_KEY_BYTES];
     size_t client_pk_len = 0;
@@ -315,6 +355,7 @@ esp_err_t michi_auth_verify_and_create_session(
     s_sessions[session_slot].active = true;
     snprintf(s_sessions[session_slot].session_token, sizeof(s_sessions[session_slot].session_token), "%s", token_b64);
     snprintf(s_sessions[session_slot].client_michi_id, sizeof(s_sessions[session_slot].client_michi_id), "%s", client_michi_id);
+    s_sessions[session_slot].permissions = perms;
     s_sessions[session_slot].expires_mono_us = session_now_us + (int64_t)MICHI_AUTH_SESSION_TTL_SEC * 1000000LL;
 
     (void)xSemaphoreGive(s_mutex);
@@ -323,8 +364,42 @@ esp_err_t michi_auth_verify_and_create_session(
     snprintf(out_server_signature_b64, server_signature_len, "%s", server_sig_b64);
     *out_expires_in = MICHI_AUTH_SESSION_TTL_SEC;
 
-    ESP_LOGI(TAG, "Device session ESTABLISHED for client %s", client_michi_id);
+    ESP_LOGI(TAG, "Device session ESTABLISHED for client %s (perms=0x%" PRIx32 ")", client_michi_id, perms);
     return ESP_OK;
+}
+
+esp_err_t michi_auth_validate_token_perm(
+    const char *token,
+    uint32_t perm,
+    char *out_client_michi_id,
+    size_t client_michi_id_len)
+{
+    if (token == NULL || s_mutex == NULL) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    (void)xSemaphoreTake(s_mutex, portMAX_DELAY);
+    const int64_t now_us = esp_timer_get_time();
+    purge_expired_locked(now_us);
+
+    for (size_t i = 0; i < MAX_ACTIVE_SESSIONS; i++) {
+        if (s_sessions[i].active && strcmp(s_sessions[i].session_token, token) == 0) {
+            if (perm != 0 && (s_sessions[i].permissions & perm) != perm) {
+                (void)xSemaphoreGive(s_mutex);
+                return ESP_ERR_INVALID_STATE; /* 403 Forbidden: lacks required permission */
+            }
+            if (out_client_michi_id != NULL && client_michi_id_len > 0) {
+                snprintf(out_client_michi_id, client_michi_id_len, "%s", s_sessions[i].client_michi_id);
+            }
+            /* Refresh session TTL on active use */
+            s_sessions[i].expires_mono_us = now_us + (int64_t)MICHI_AUTH_SESSION_TTL_SEC * 1000000LL;
+            (void)xSemaphoreGive(s_mutex);
+            return ESP_OK;
+        }
+    }
+
+    (void)xSemaphoreGive(s_mutex);
+    return ESP_ERR_NOT_FOUND; /* 401 Unauthorized: token not found or expired */
 }
 
 bool michi_auth_validate_token(
@@ -332,27 +407,5 @@ bool michi_auth_validate_token(
     char *out_client_michi_id,
     size_t client_michi_id_len)
 {
-    if (token == NULL || s_mutex == NULL) {
-        return false;
-    }
-
-    (void)xSemaphoreTake(s_mutex, portMAX_DELAY);
-    const int64_t now_us = esp_timer_get_time();
-    purge_expired_locked(now_us);
-
-    bool valid = false;
-    for (size_t i = 0; i < MAX_ACTIVE_SESSIONS; i++) {
-        if (s_sessions[i].active && strcmp(s_sessions[i].session_token, token) == 0) {
-            valid = true;
-            if (out_client_michi_id != NULL && client_michi_id_len > 0) {
-                snprintf(out_client_michi_id, client_michi_id_len, "%s", s_sessions[i].client_michi_id);
-            }
-            /* Refresh session TTL on active use */
-            s_sessions[i].expires_mono_us = now_us + (int64_t)MICHI_AUTH_SESSION_TTL_SEC * 1000000LL;
-            break;
-        }
-    }
-
-    (void)xSemaphoreGive(s_mutex);
-    return valid;
+    return michi_auth_validate_token_perm(token, 0, out_client_michi_id, client_michi_id_len) == ESP_OK;
 }

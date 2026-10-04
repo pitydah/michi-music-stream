@@ -43,7 +43,21 @@ esp_err_t michi_auth_verify_and_create_session(
     size_t server_signature_len,
     uint32_t *out_expires_in);
 
-/* Validate a Bearer session token against active RAM sessions */
+#define MICHI_PERM_STATUS        0x00000001u /*!< Read status/state/diagnostics */
+#define MICHI_PERM_PLAYBACK      0x00000002u /*!< Start/stop/pause playback */
+#define MICHI_PERM_VOLUME        0x00000004u /*!< Read/set volume */
+#define MICHI_PERM_SETTINGS      0x00000008u /*!< Read/change device settings */
+#define MICHI_PERM_OTA           0x00000020u /*!< Trigger/authorize OTA */
+#define MICHI_PERM_DEFAULT       (MICHI_PERM_STATUS | MICHI_PERM_PLAYBACK | MICHI_PERM_VOLUME | MICHI_PERM_SETTINGS)
+
+/* Validate a Bearer session token against active RAM sessions and check permissions */
+esp_err_t michi_auth_validate_token_perm(
+    const char *token,
+    uint32_t perm,
+    char *out_client_michi_id,
+    size_t client_michi_id_len);
+
+/* Validate a Bearer session token against active RAM sessions (any permission) */
 bool michi_auth_validate_token(
     const char *token,
     char *out_client_michi_id,

@@ -97,19 +97,30 @@ esp_err_t michi_home_sign_server_auth(
     const char *session_token,
     uint8_t out_sig[MICHI_HOME_SIG_BYTES]);
 
+#define MICHI_HOME_NVS_KEY_MEMBERSHIP "membership"
+
+/* Receiver device membership */
+esp_err_t michi_home_set_device_membership(const michi_membership_t *membership);
+esp_err_t michi_home_get_device_membership(michi_membership_t *out_membership);
+bool michi_home_has_device_membership(void);
+
 /* Factory configuration MICHI-F1 */
 typedef struct {
     char home_id[MICHI_HOME_ID_LEN];
     char root_public_key[MICHI_HOME_PUBKEY_B64_LEN];
     char wifi_ssid[64];
     char wifi_password[64];
+    bool has_device_membership;
+    michi_membership_t device_membership;
 } michi_factory_cfg_t;
 
 esp_err_t michi_factory_cfg_parse(const char *payload, size_t len, michi_factory_cfg_t *out_cfg);
 esp_err_t michi_home_import_factory_cfg(const char *payload, size_t len);
+esp_err_t michi_factory_cfg_check_and_import(void);
 
 #ifdef MICHI_HOME_TESTING
 void michi_home_test_reset(void);
+void michi_factory_cfg_set_test_partition_data(const char *data);
 #endif
 
 #ifdef __cplusplus

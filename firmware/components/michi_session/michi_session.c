@@ -221,7 +221,7 @@ static bool owner_id_valid(const char *id)
         const char c = id[i];
         const bool alnum = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
                            (c >= '0' && c <= '9');
-        if (!alnum && c != '-') {
+        if (!alnum && c != '-' && c != '_') {
             return false;
         }
     }
