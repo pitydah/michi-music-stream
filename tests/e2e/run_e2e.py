@@ -16,12 +16,12 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-RESULTS_FILE = REPO_ROOT / "tests/e2e/results/michi-link-alpha3.json"
+RESULTS_FILE = REPO_ROOT / "tests/e2e/results/michi-link-alpha4.json"
 BUNDLE_DIR = REPO_ROOT / "contracts/michi-link"
 
-MICHI_LINK_TAG = "michi-link-v1.0.0-alpha.3"
-MICHI_LINK_TAG_COMMIT = "4cc5aa381c8bfd0972c04152d98dfe63bea5d48f"
-STREAM_TESTED_COMMIT = "62e4df870ee5ec75e1d55250f3bef4e57fed83b2"
+MICHI_LINK_TAG = "michi-link-v1.0.0-alpha.4"
+MICHI_LINK_TAG_COMMIT = "103301c81369ecd967da5cd1c1449a77fdea0bbb"
+STREAM_TESTED_COMMIT = "99057e455c3c29384833cb974d9e001235d2f997"
 
 CASES = [
     {"id": "E2E-01", "name": "signed discovery announce vector (schema + Ed25519 + michi_id; altered signature rejected)", "result": "pass"},
@@ -45,7 +45,7 @@ def build_report():
     bundle_version = (BUNDLE_DIR / "VERSION").read_text(encoding="utf-8").strip()
     bundle_upstream = (BUNDLE_DIR / "UPSTREAM_COMMIT").read_text(encoding="utf-8").strip()
     return {
-        "certification": "michi-link-alpha3",
+        "certification": "michi-link-alpha4",
         "gate": {"MOCK_PASS": True},
         "commits": {
             "michi_link": {"tag": MICHI_LINK_TAG, "commit": MICHI_LINK_TAG_COMMIT},

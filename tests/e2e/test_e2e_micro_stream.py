@@ -209,6 +209,10 @@ def test_03_device_auth_flow(sim, bundle):
     assert session_resp["token_type"] == "Bearer"
     assert session_resp["expires_in"] == 3600
     assert session_resp["server_michi_id"] == state.michi_id
+    assert "server_membership" in session_resp
+    server_mem = session_resp["server_membership"]
+    assert server_mem["home_id"] == state.home_id
+    assert server_mem["device_michi_id"] == state.michi_id
     token = session_resp["session_token"]
     assert len(b64url_decode(token)) == 32
 
