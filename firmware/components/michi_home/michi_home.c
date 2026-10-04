@@ -15,6 +15,8 @@
 static bool s_provisioned = false;
 static char s_home_id[MICHI_HOME_ID_LEN] = {0};
 static uint8_t s_root_pk[MICHI_HOME_KEY_BYTES] = {0};
+static michi_revocation_t s_revocations[MICHI_MAX_REVOCATIONS];
+static size_t s_revocation_count = 0;
 
 esp_err_t michi_home_init(void)
 {
@@ -191,6 +193,8 @@ esp_err_t michi_home_erase(void)
     s_provisioned = false;
     memset(s_home_id, 0, sizeof(s_home_id));
     memset(s_root_pk, 0, sizeof(s_root_pk));
+    s_revocation_count = 0;
+    memset(s_revocations, 0, sizeof(s_revocations));
     return ESP_OK;
 }
 
@@ -200,6 +204,8 @@ void michi_home_test_reset(void)
     s_provisioned = false;
     memset(s_home_id, 0, sizeof(s_home_id));
     memset(s_root_pk, 0, sizeof(s_root_pk));
+    s_revocation_count = 0;
+    memset(s_revocations, 0, sizeof(s_revocations));
 }
 #endif
 
@@ -418,4 +424,113 @@ esp_err_t michi_home_sign_server_auth(
     #undef APPEND
 
     return michi_identity_sign(payload, written, out_sig);
+}
+
+size_t michi_home_canonical_revocation_bytes(
+    const char *home_id,
+    const char *revoked_device_michi_id,
+    const char *revoked_at,
+    const char *reason,
+    uint8_t *out,
+    size_t out_len)
+{
+    if (home_id == NULL || revoked_device_michi_id == NULL ||
+        revoked_at == NULL || reason == NULL || out == NULL || out_len == 0) {
+        return 0;
+    }
+
+    size_t written = 0;
+    #define APPEND_REV(data, len) do { \
+        if (written + (len) > out_len) return 0; \
+        memcpy(out + written, (data), (len)); \
+        written += (len); \
+    } while (0)
+
+    APPEND_REV(MICHI_HOME_DOMAIN_REVOCATION, strlen(MICHI_HOME_DOMAIN_REVOCATION));
+    APPEND_REV(home_id, strlen(home_id));
+    APPEND_REV(revoked_device_michi_id, strlen(revoked_device_michi_id));
+    APPEND_REV(":", 1);
+    APPEND_REV(revoked_at, strlen(revoked_at));
+    APPEND_REV(":", 1);
+    APPEND_REV(reason, strlen(reason));
+
+    #undef APPEND_REV
+    return written;
+}
+
+bool michi_home_verify_revocation(
+    const michi_revocation_t *revocation,
+    const uint8_t root_pk[MICHI_HOME_KEY_BYTES])
+{
+    if (revocation == NULL || root_pk == NULL) {
+        return false;
+    }
+    if (revocation->version != 1) {
+        return false;
+    }
+    if (s_provisioned && strcmp(s_home_id, revocation->home_id) != 0) {
+        return false;
+    }
+
+    uint8_t sig[MICHI_HOME_SIG_BYTES];
+    size_t sig_len = 0;
+    if (michi_identity_base64url_decode(revocation->signature, sig, sizeof(sig), &sig_len) != ESP_OK ||
+        sig_len != MICHI_HOME_SIG_BYTES) {
+        return false;
+    }
+
+    uint8_t canon[512];
+    size_t canon_len = michi_home_canonical_revocation_bytes(
+        revocation->home_id,
+        revocation->revoked_device_michi_id,
+        revocation->revoked_at,
+        revocation->reason,
+        canon,
+        sizeof(canon));
+    if (canon_len == 0) {
+        return false;
+    }
+
+    return michi_identity_verify(canon, canon_len, sig, root_pk);
+}
+
+esp_err_t michi_home_add_revocation(const michi_revocation_t *revocation)
+{
+    if (revocation == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_provisioned) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!michi_home_verify_revocation(revocation, s_root_pk)) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    for (size_t i = 0; i < s_revocation_count; i++) {
+        if (strcmp(s_revocations[i].revoked_device_michi_id, revocation->revoked_device_michi_id) == 0) {
+            s_revocations[i] = *revocation;
+            return ESP_OK;
+        }
+    }
+
+    if (s_revocation_count >= MICHI_MAX_REVOCATIONS) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    s_revocations[s_revocation_count++] = *revocation;
+    ESP_LOGI(TAG, "Added revocation for device %s", revocation->revoked_device_michi_id);
+    return ESP_OK;
+}
+
+bool michi_home_is_device_revoked(const char *device_michi_id)
+{
+    if (device_michi_id == NULL) {
+        return false;
+    }
+    for (size_t i = 0; i < s_revocation_count; i++) {
+        if (strcmp(s_revocations[i].revoked_device_michi_id, device_michi_id) == 0) {
+            return true;
+        }
+    }
+    return false;
 }

@@ -1,14 +1,14 @@
 {
-  "version": "1.0.0-alpha.3",
-  "upstream_commit": "7bb3b4ef4ab4db5f9eae3df287413f1d27ac0e23",
+  "version": "1.0.0-alpha.4",
+  "upstream_commit": "b390b89df5a040f976772203343f523492fbc9a6",
   "files": [
     {
       "path": "UPSTREAM_COMMIT",
-      "sha256": "4b996cd734f14320409ce802a9215a6275122acb685ddc4c9c3009b7d3df215c"
+      "sha256": "7c5a5f246fd0fa840ac5fd2b4551589fc3a9475682158db85ce0165073c2c706"
     },
     {
       "path": "VERSION",
-      "sha256": "75b3ba9814efb4c8c4bafecae1982e76d80b9b39eed6b67903cc8be243a9b91d"
+      "sha256": "58502dc864dc2cb7ba63b76d6cd96c23f8155262b0ba808f95dc9e54f28f3e75"
     },
     {
       "path": "examples/negative/error-conflict.json",
@@ -76,7 +76,7 @@
     },
     {
       "path": "openapi/michi-link-v1.yaml",
-      "sha256": "317dd433da3ce7ff9d9f9f56b6ba51cc1105c4844101a7dbc22067cb379d11e4"
+      "sha256": "e40e0cb6306a0e1197a2139532b22b861227593e0c132e963c1cf67f1cd40ae1"
     },
     {
       "path": "schemas/album.schema.json",
@@ -116,7 +116,7 @@
     },
     {
       "path": "schemas/device-auth-session-response.schema.json",
-      "sha256": "95bc15f258a9df620f40b3c02bfabccc786527bccbc275849a492899cd2052d5"
+      "sha256": "5fc0aa92755369fa33bda31afb08981a2db747e30b6da5f41c49909347d16af2"
     },
     {
       "path": "schemas/device-info.schema.json",
@@ -288,7 +288,7 @@
     },
     {
       "path": "schemas/server-info.schema.json",
-      "sha256": "7dc0793359a1778f06530864ee2ae8800900060dfbd030459aef9f1df8c1f8ca"
+      "sha256": "bd02a612889fc07fab6ee3813c69f75ae9c07869c01b98ca474c5a8fb9a153b9"
     },
     {
       "path": "schemas/sync-delta.schema.json",
@@ -328,11 +328,11 @@
     },
     {
       "path": "vectors/identity/server-info-hifi.json",
-      "sha256": "df1452ce67124152c955e04586923abc2cfe991ceeafc20174a9c619fb7ccd97"
+      "sha256": "584ab38612b731b94d89f06d3a57c4de68ece26c492e5bbffe4dbf87c95bee1c"
     },
     {
       "path": "vectors/identity/server-info-standard.json",
-      "sha256": "97cead7f238c527d051b4cbece1cfc8435553e04e9d2bba33cf802382edc72e7"
+      "sha256": "71ffbe5544e50ea3ba8427c9358ff5aa358ce7d18bae842a9d46f1ff21e6f2f5"
     },
     {
       "path": "vectors/pairing/pair-confirm-replay.json",

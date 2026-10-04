@@ -9,6 +9,7 @@
     "token_type",
     "expires_in",
     "server_michi_id",
+    "server_membership",
     "server_signature"
   ],
   "additionalProperties": false,
@@ -35,6 +36,10 @@
       "type": "string",
       "description": "Server or receiver michi_id (43 chars base64url).",
       "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "server_membership": {
+      "$ref": "michi-membership.schema.json",
+      "description": "Valid membership certificate of the server/receiver issued by the Home Root Authority proving membership in the same Home."
     },
     "server_signature": {
       "type": "string",

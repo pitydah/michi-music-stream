@@ -90,7 +90,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ServerInfo"
-              example: {"service": "michi-stream-standard", "name": "Michi Stream Cocina", "server_id": "550e8400-e29b-41d4-a716-446655440000", "version": "0.3.0", "api_version": "v1-lite", "roles": ["audio_receiver"], "identity_scheme": "ed25519-blake3-v1", "michi_id": "QlGQosQszLQse057MCaw32IAHXv-I5klmAAsbivIays", "public_key": "KJN5aOu4gWhA0clmvmwqprYcwYI013vDNPx1jf90CpQ", "auth": {"required": true, "strategy": "HOME_MEMBERSHIP", "token_refresh": false}, "features": {"session": true, "heartbeat": true, "volume": true, "now_playing": true, "diagnostics": true, "ota": true}, "audio": {"transports": ["rtp_udp"], "codecs": ["pcm_s16le"], "sample_rates": [48000], "bit_depths": [16], "channels": [2], "packet_ms": [10], "payload_types": [97], "buffer_ms_min": 50, "buffer_ms_max": 500}}
+              example: {"service": "michi-stream-standard", "name": "Michi Stream Cocina", "server_id": "550e8400-e29b-41d4-a716-446655440000", "version": "0.3.0", "api_version": "v1-lite", "roles": ["audio_receiver"], "identity_scheme": "ed25519-blake3-v1", "michi_id": "QlGQosQszLQse057MCaw32IAHXv-I5klmAAsbivIays", "public_key": "KJN5aOu4gWhA0clmvmwqprYcwYI013vDNPx1jf90CpQ", "michi_home_id": "vLzV3iL3x7eJ8qZ0a1b2c3d4e5f6g7h8i9j0k1l2m3n", "auth": {"required": true, "strategy": "HOME_MEMBERSHIP", "token_refresh": false}, "features": {"session": true, "heartbeat": true, "volume": true, "now_playing": true, "diagnostics": true, "ota": true}, "audio": {"transports": ["rtp_udp"], "codecs": ["pcm_s16le"], "sample_rates": [48000], "bit_depths": [16], "channels": [2], "packet_ms": [10], "payload_types": [97], "buffer_ms_min": 50, "buffer_ms_max": 500}}
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -240,7 +240,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DeviceAuthSessionResponse"
-              example: {"session_token": "michi_session_ram_token_example_1234567890", "token_type": "Bearer", "expires_in": 3600, "server_michi_id": "97ryPKOLZ-JgVKQFc2ZuuSk0alWzxagdNILuDW26jEc", "server_signature": "DTlMt9BYH_TnYgKAeGd8zTpza-w5b8BDm9AyIoAW2p0clD7JrzwN9cwPY5y48K14x_0z2TPq7-LTXdNTqmhr-w"}
+              example: {"session_token": "michi_session_ram_token_example_1234567890", "token_type": "Bearer", "expires_in": 3600, "server_michi_id": "97ryPKOLZ-JgVKQFc2ZuuSk0alWzxagdNILuDW26jEc", "server_membership": {"version": 1, "home_id": "vLzV3iL3x7eJ8qZ0a1b2c3d4e5f6g7h8i9j0k1l2m3n", "device_michi_id": "97ryPKOLZ-JgVKQFc2ZuuSk0alWzxagdNILuDW26jEc", "device_public_key": "KJN5aOu4gWhA0clmvmwqprYcwYI013vDNPx1jf90CpQ", "device_type": "server", "roles": ["music_server"], "issued_at": "2026-10-04T12:00:00Z", "serial": 2, "signature": "DTlMt9BYH_TnYgKAeGd8zTpza-w5b8BDm9AyIoAW2p0clD7JrzwN9cwPY5y48K14x_0z2TPq7-LTXdNTqmhr-w"}, "server_signature": "DTlMt9BYH_TnYgKAeGd8zTpza-w5b8BDm9AyIoAW2p0clD7JrzwN9cwPY5y48K14x_0z2TPq7-LTXdNTqmhr-w"}
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -261,6 +261,9 @@ paths:
         - Pairing
       summary: Start pairing
       description: |
+        [DEPRECATED in Trust Architecture V2]
+        Legacy PIN/button pairing handshake. Superceded by Home Membership
+        authentication (/auth/challenge and /auth/session). Retained for v1 compatibility.
         Initiates the pairing handshake with the Michi Link server. Returns a
         pairing session; the server displays a 6-digit PIN on the initiating
         device, which is never transmitted over the network. The client
@@ -4060,6 +4063,10 @@ components:
           type: string
           pattern: "^[A-Za-z0-9_-]{43}$"
           description: Ed25519 public key in base64url, exactly 43 chars. Mandatory for michi-stream-*
+        michi_home_id:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+          description: Michi Home ID. Mandatory for michi-stream-* under HOME_MEMBERSHIP auth strategy
         auth:
           type: object
           description: Authentication configuration. REQUIRED for all servers
@@ -4434,6 +4441,7 @@ components:
         - token_type
         - expires_in
         - server_michi_id
+        - server_membership
         - server_signature
       properties:
         session_token:
@@ -4449,6 +4457,8 @@ components:
         server_michi_id:
           type: string
           pattern: "^[A-Za-z0-9_-]{43}$"
+        server_membership:
+          $ref: "#/components/schemas/MichiMembership"
         server_signature:
           type: string
           pattern: "^[A-Za-z0-9_-]{86}$"

@@ -246,11 +246,34 @@ class SimulatorState:
         self.home_id = config.get("michi_home_id", VECTOR_HOME_ID)
         self.active_challenges = {}
         self.ram_sessions = {}
+        self.revoked_devices = set(config.get("revoked_devices", []))
         server_seed = blake3.blake3(b"michi-link contract vectors v1" + b"receiver").digest()
         self.server_private_key = Ed25519PrivateKey.from_private_bytes(server_seed)
         root_seed = blake3.blake3(b"michi-link contract vectors v1" + b"home-root").digest()
         self.home_root_private_key = Ed25519PrivateKey.from_private_bytes(root_seed)
         self.home_root_public_key = self.home_root_private_key.public_key()
+
+        canon_bytes = (
+            b"michi-link-membership-v1"
+            + self.home_id.encode("ascii")
+            + self.michi_id.encode("ascii")
+            + self.public_key.encode("ascii")
+            + b"stream"
+            + b":audio_receiver"
+            + b":2026-10-04T12:00:00Z:1"
+        )
+        server_mem_sig = base64.urlsafe_b64encode(self.home_root_private_key.sign(canon_bytes)).decode("ascii").rstrip("=")
+        self.server_membership = {
+            "version": 1,
+            "home_id": self.home_id,
+            "device_michi_id": self.michi_id,
+            "device_public_key": self.public_key,
+            "device_type": "stream",
+            "roles": ["audio_receiver"],
+            "issued_at": "2026-10-04T12:00:00Z",
+            "serial": 1,
+            "signature": server_mem_sig,
+        }
 
         self.window_open = False
         self.window_expires_mono = 0.0
@@ -363,6 +386,9 @@ class SimulatorState:
         if client_michi_id != challenge["client_michi_id"]:
             return 400, error_body("INVALID_REQUEST", "client_michi_id does not match challenge", {"field": "client_michi_id"})
 
+        if client_michi_id in self.revoked_devices:
+            return 401, error_body("UNAUTHORIZED", "Device has been revoked from this home")
+
         # Validate membership certificate
         membership = payload["membership"]
         if membership.get("version") != 1:
@@ -440,6 +466,7 @@ class SimulatorState:
             "token_type": "Bearer",
             "expires_in": expires_in,
             "server_michi_id": self.michi_id,
+            "server_membership": self.server_membership,
             "server_signature": server_signature,
         }
 

@@ -463,18 +463,57 @@ static esp_err_t auth_session_handler(httpd_req_t *req)
         return michi_http_send_error(req, 500, "server identity is not available", NULL);
     }
 
+    michi_membership_t server_mem;
+    if (michi_home_get_device_membership(&server_mem) != ESP_OK) {
+        return michi_http_send_error(req, 500, "server membership not provisioned", NULL);
+    }
+
     cJSON *resp = cJSON_CreateObject();
     if (resp == NULL) {
         return michi_http_send_error(req, 500, "out of memory while building response", NULL);
     }
 
+    cJSON *mem_json = cJSON_CreateObject();
+    if (mem_json == NULL) {
+        cJSON_Delete(resp);
+        return michi_http_send_error(req, 500, "out of memory while building response", NULL);
+    }
+
     esp_err_t err = ESP_OK;
-    if (cJSON_AddStringToObject(resp, "session_token", session_token) == NULL ||
-        cJSON_AddStringToObject(resp, "token_type", "Bearer") == NULL ||
-        cJSON_AddNumberToObject(resp, "expires_in", (double)expires_in) == NULL ||
-        cJSON_AddStringToObject(resp, "server_michi_id", server_michi_id) == NULL ||
-        cJSON_AddStringToObject(resp, "server_signature", server_signature) == NULL) {
+    cJSON *roles_arr = cJSON_CreateArray();
+    if (roles_arr == NULL) {
         err = ESP_ERR_NO_MEM;
+    } else {
+        for (size_t r = 0; r < server_mem.role_count; r++) {
+            cJSON_AddItemToArray(roles_arr, cJSON_CreateString(server_mem.roles[r]));
+        }
+        cJSON_AddItemToObject(mem_json, "roles", roles_arr);
+    }
+
+    if (err == ESP_OK) {
+        if (cJSON_AddNumberToObject(mem_json, "version", (double)server_mem.version) == NULL ||
+            cJSON_AddStringToObject(mem_json, "home_id", server_mem.home_id) == NULL ||
+            cJSON_AddStringToObject(mem_json, "device_michi_id", server_mem.device_michi_id) == NULL ||
+            cJSON_AddStringToObject(mem_json, "device_public_key", server_mem.device_public_key) == NULL ||
+            cJSON_AddStringToObject(mem_json, "device_type", server_mem.device_type) == NULL ||
+            cJSON_AddStringToObject(mem_json, "issued_at", server_mem.issued_at) == NULL ||
+            cJSON_AddNumberToObject(mem_json, "serial", (double)server_mem.serial) == NULL ||
+            cJSON_AddStringToObject(mem_json, "signature", server_mem.signature) == NULL) {
+            err = ESP_ERR_NO_MEM;
+        }
+    }
+
+    if (err == ESP_OK) {
+        cJSON_AddItemToObject(resp, "server_membership", mem_json);
+        if (cJSON_AddStringToObject(resp, "session_token", session_token) == NULL ||
+            cJSON_AddStringToObject(resp, "token_type", "Bearer") == NULL ||
+            cJSON_AddNumberToObject(resp, "expires_in", (double)expires_in) == NULL ||
+            cJSON_AddStringToObject(resp, "server_michi_id", server_michi_id) == NULL ||
+            cJSON_AddStringToObject(resp, "server_signature", server_signature) == NULL) {
+            err = ESP_ERR_NO_MEM;
+        }
+    } else {
+        cJSON_Delete(mem_json);
     }
 
     if (err == ESP_OK) {

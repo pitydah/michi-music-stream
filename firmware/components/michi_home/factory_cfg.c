@@ -230,6 +230,39 @@ esp_err_t michi_home_import_factory_cfg(const char *payload, size_t len)
         return ESP_ERR_INVALID_ARG;
     }
 
+    /* Verify root_public_key derives home_id: blake3(root_pk) == home_id */
+    char derived_home_id[MICHI_HOME_ID_LEN];
+    if (michi_identity_derive_michi_id(root_pk, derived_home_id, sizeof(derived_home_id)) != ESP_OK ||
+        strcmp(derived_home_id, cfg.home_id) != 0) {
+        ESP_LOGE(TAG, "factory_cfg: home_id does not derive from root_public_key");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    /* Pre-verify device membership and identity coherence before modifying NVS */
+    if (cfg.has_device_membership) {
+        if (strcmp(cfg.device_membership.home_id, cfg.home_id) != 0) {
+            ESP_LOGE(TAG, "factory_cfg: device membership home_id mismatch");
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        if (!michi_home_verify_membership(&cfg.device_membership, root_pk)) {
+            ESP_LOGE(TAG, "factory_cfg: device membership signature verification failed");
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        if (michi_identity_get_state() == MICHI_IDENTITY_READY) {
+            char local_michi_id[MICHI_IDENTITY_MICHI_ID_LEN] = {0};
+            if (michi_identity_michi_id(local_michi_id, sizeof(local_michi_id)) == ESP_OK) {
+                if (strcmp(local_michi_id, cfg.device_membership.device_michi_id) != 0) {
+                    ESP_LOGE(TAG, "factory_cfg: device membership does not match local device identity (%s vs %s)",
+                             cfg.device_membership.device_michi_id, local_michi_id);
+                    return ESP_ERR_INVALID_ARG;
+                }
+            }
+        }
+    }
+
+    /* Transactional commit: rollback everything if any write fails */
     err = michi_home_set_credentials(cfg.home_id, root_pk);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "factory_cfg: failed to store home credentials: %s", esp_err_to_name(err));
@@ -239,22 +272,36 @@ esp_err_t michi_home_import_factory_cfg(const char *payload, size_t len)
     if (cfg.has_device_membership) {
         err = michi_home_set_device_membership(&cfg.device_membership);
         if (err != ESP_OK) {
-            ESP_LOGW(TAG, "factory_cfg: failed to store device membership: %s", esp_err_to_name(err));
-        } else {
-            ESP_LOGI(TAG, "factory_cfg: device membership stored and verified");
+            ESP_LOGE(TAG, "factory_cfg: failed to store device membership: %s (rolling back)", esp_err_to_name(err));
+            (void)michi_home_erase();
+            return err;
         }
+        ESP_LOGI(TAG, "factory_cfg: device membership stored and verified");
     }
 
     /* If Wi-Fi credentials provided, save to NVS "wifi" */
     if (cfg.wifi_ssid[0] != '\0') {
         nvs_handle_t wh;
-        if (nvs_open("wifi", NVS_READWRITE, &wh) == ESP_OK) {
-            (void)nvs_set_str(wh, "ssid", cfg.wifi_ssid);
-            (void)nvs_set_str(wh, "password", cfg.wifi_password);
-            (void)nvs_commit(wh);
-            nvs_close(wh);
-            ESP_LOGI(TAG, "factory_cfg: Wi-Fi credentials imported (SSID: %s)", cfg.wifi_ssid);
+        err = nvs_open("wifi", NVS_READWRITE, &wh);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "factory_cfg: failed to open wifi nvs: %s (rolling back)", esp_err_to_name(err));
+            (void)michi_home_erase();
+            return err;
         }
+        err = nvs_set_str(wh, "ssid", cfg.wifi_ssid);
+        if (err == ESP_OK) {
+            err = nvs_set_str(wh, "password", cfg.wifi_password);
+        }
+        if (err == ESP_OK) {
+            err = nvs_commit(wh);
+        }
+        nvs_close(wh);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "factory_cfg: failed to write wifi credentials: %s (rolling back)", esp_err_to_name(err));
+            (void)michi_home_erase();
+            return err;
+        }
+        ESP_LOGI(TAG, "factory_cfg: Wi-Fi credentials imported (SSID: %s)", cfg.wifi_ssid);
     }
 
     ESP_LOGI(TAG, "factory_cfg: Home credentials imported successfully (home_id: %s)", cfg.home_id);
@@ -278,7 +325,12 @@ esp_err_t michi_factory_cfg_check_and_import(void)
 
 #ifdef MICHI_HOME_TESTING
     if (s_test_factory_partition_data != NULL) {
-        return michi_home_import_factory_cfg(s_test_factory_partition_data, strlen(s_test_factory_partition_data));
+        esp_err_t res = michi_home_import_factory_cfg(s_test_factory_partition_data, strlen(s_test_factory_partition_data));
+        if (res == ESP_OK) {
+            /* Wipe test partition on successful import */
+            s_test_factory_partition_data = NULL;
+        }
+        return res;
     }
     return ESP_OK;
 #else
@@ -335,7 +387,12 @@ esp_err_t michi_factory_cfg_check_and_import(void)
     ESP_LOGI(TAG, "factory_cfg: found config in partition (%zu bytes), importing...", content_len);
     err = michi_home_import_factory_cfg(buf, content_len);
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "factory_cfg: one-shot import completed successfully");
+        ESP_LOGI(TAG, "factory_cfg: one-shot import completed successfully, erasing partition");
+        /* Securely erase partition to avoid retaining credentials */
+        esp_err_t erase_err = esp_partition_erase_range(part, 0, part->size);
+        if (erase_err != ESP_OK) {
+            ESP_LOGW(TAG, "factory_cfg: warning, erase failed: %s", esp_err_to_name(erase_err));
+        }
     } else {
         ESP_LOGW(TAG, "factory_cfg: one-shot import failed: %s", esp_err_to_name(err));
     }

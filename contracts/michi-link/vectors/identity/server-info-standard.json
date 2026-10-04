@@ -39,6 +39,7 @@
     "volume": true
   },
   "identity_scheme": "ed25519-blake3-v1",
+  "michi_home_id": "J0a0g8YkmJykqurslHUCq2bSPsFQDEoj4JJ7ovNn6_k",
   "michi_id": "f2UwxQaeA6vA8LO7Cr1nGRr5MStned_Gbmc_ua48qUc",
   "name": "Michi Stream Cocina",
   "public_key": "RpHnJr9oP1DXBkPuIMuk0hJ2hAJ5SiWO2hAQVCMGREE",

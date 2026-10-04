@@ -104,6 +104,35 @@ esp_err_t michi_home_set_device_membership(const michi_membership_t *membership)
 esp_err_t michi_home_get_device_membership(michi_membership_t *out_membership);
 bool michi_home_has_device_membership(void);
 
+#define MICHI_MAX_REVOCATIONS 16
+
+typedef struct {
+    uint32_t version;
+    char home_id[MICHI_HOME_ID_LEN];
+    char revoked_device_michi_id[MICHI_HOME_ID_LEN];
+    char revoked_at[40];
+    char reason[256];
+    char signature[MICHI_HOME_SIG_B64_LEN];
+} michi_revocation_t;
+
+/* Canonical revocation payload bytes */
+size_t michi_home_canonical_revocation_bytes(
+    const char *home_id,
+    const char *revoked_device_michi_id,
+    const char *revoked_at,
+    const char *reason,
+    uint8_t *out,
+    size_t out_len);
+
+/* Verify revocation certificate */
+bool michi_home_verify_revocation(
+    const michi_revocation_t *revocation,
+    const uint8_t root_pk[MICHI_HOME_KEY_BYTES]);
+
+/* Revocation list management */
+esp_err_t michi_home_add_revocation(const michi_revocation_t *revocation);
+bool michi_home_is_device_revoked(const char *device_michi_id);
+
 /* Factory configuration MICHI-F1 */
 typedef struct {
     char home_id[MICHI_HOME_ID_LEN];

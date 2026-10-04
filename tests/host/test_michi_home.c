@@ -407,7 +407,7 @@ static void test_factory_config(void)
           "parse json MICHI-F1 config");
     CHECK(strcmp(cfg.wifi_ssid, "TestWiFi") == 0, "json wifi_ssid parsed");
 
-    /* Device membership handling */
+    /* Device membership handling: coherent with local device identity */
     uint8_t root_sk[64], root_pk[32];
     char root_pk_b64[44], root_michi_id[44];
     make_keypair(0x77, root_sk, root_pk, root_pk_b64, root_michi_id);
@@ -416,9 +416,11 @@ static void test_factory_config(void)
     michi_home_set_credentials(root_michi_id, root_pk);
     CHECK(!michi_home_has_device_membership(), "no device membership initially");
 
-    uint8_t dev_sk[64], dev_pk[32];
+    uint8_t dev_pk[32];
     char dev_pk_b64[44], dev_michi_id[44];
-    make_keypair(0x88, dev_sk, dev_pk, dev_pk_b64, dev_michi_id);
+    CHECK(michi_identity_public_key(dev_pk) == ESP_OK, "get local dev pk");
+    CHECK(michi_identity_base64url_encode(dev_pk, 32, dev_pk_b64, sizeof(dev_pk_b64)) == ESP_OK, "encode local dev pk");
+    CHECK(michi_identity_michi_id(dev_michi_id, sizeof(dev_michi_id)) == ESP_OK, "get local dev michi_id");
 
     michi_membership_t dev_mem;
     memset(&dev_mem, 0, sizeof(dev_mem));
@@ -449,10 +451,29 @@ static void test_factory_config(void)
     CHECK(strcmp(loaded_mem.device_michi_id, dev_michi_id) == 0, "device michi_id matches");
     CHECK(strcmp(loaded_mem.roles[0], "audio_receiver") == 0, "role matches");
 
-    /* One-shot factory_cfg import */
+    /* Transactional rejection: incoherent home_id vs root_public_key */
     michi_home_erase();
-    CHECK(!michi_home_is_provisioned(), "erased home");
+    char bad_json[1024];
+    snprintf(bad_json, sizeof(bad_json),
+             "{\"home_id\":\"wrong_home_id_length_43_chars_xxxxxxxxxxxx\",\"root_public_key\":\"%s\",\"wifi_ssid\":\"HomeWiFi\"}",
+             root_pk_b64);
+    CHECK(michi_home_import_factory_cfg(bad_json, strlen(bad_json)) == ESP_ERR_INVALID_ARG,
+          "import rejects incoherent home_id vs root_pk");
+    CHECK(!michi_home_is_provisioned(), "home remains unprovisioned after rejected import");
 
+    /* Incoherent device membership identity vs local device identity */
+    char wrong_dev_json[1024];
+    snprintf(wrong_dev_json, sizeof(wrong_dev_json),
+             "{\"home_id\":\"%s\",\"root_public_key\":\"%s\",\"wifi_ssid\":\"HomeWiFi\","
+             "\"device_membership\":{\"version\":1,\"home_id\":\"%s\",\"device_michi_id\":\"foreign_device_id_43_chars_xxxxxxxxxxxxxxx\","
+             "\"device_public_key\":\"%s\",\"device_type\":\"stream\",\"roles\":[\"audio_receiver\"],"
+             "\"issued_at\":\"2026-10-04T12:00:00Z\",\"serial\":100,\"signature\":\"%s\"}}",
+             root_michi_id, root_pk_b64, root_michi_id, dev_pk_b64, dev_mem.signature);
+    CHECK(michi_home_import_factory_cfg(wrong_dev_json, strlen(wrong_dev_json)) == ESP_ERR_INVALID_ARG,
+          "import rejects incoherent device_michi_id vs local identity");
+    CHECK(!michi_home_is_provisioned(), "home remains unprovisioned after rejected identity mismatch");
+
+    /* One-shot factory_cfg import with coherent identity & partition wipe */
     char json_with_mem[1024];
     snprintf(json_with_mem, sizeof(json_with_mem),
              "{\"home_id\":\"%s\",\"root_public_key\":\"%s\",\"wifi_ssid\":\"HomeWiFi\","
@@ -465,7 +486,116 @@ static void test_factory_config(void)
     CHECK(michi_factory_cfg_check_and_import() == ESP_OK, "one-shot check_and_import succeeds");
     CHECK(michi_home_is_provisioned(), "home is now provisioned");
     CHECK(michi_home_has_device_membership(), "device membership imported from partition");
-    michi_factory_cfg_set_test_partition_data(NULL);
+}
+
+/* ── 8. Revocation Verification & Enforcement ── */
+static void test_revocation(void)
+{
+    printf("revocation: certificate verification, roster tracking and auth enforcement\n");
+
+    /* Reset home and auth */
+    michi_home_erase();
+    michi_auth_reset();
+
+    uint8_t root_sk[64], root_pk[32];
+    char root_pk_b64[44], root_michi_id[44];
+    make_keypair(0x33, root_sk, root_pk, root_pk_b64, root_michi_id);
+    CHECK(michi_home_set_credentials(root_michi_id, root_pk) == ESP_OK, "provision home root");
+
+    /* Create client and membership */
+    uint8_t client_sk[64], client_pk[32];
+    char client_pk_b64[44], client_michi_id[44];
+    make_keypair(0x44, client_sk, client_pk, client_pk_b64, client_michi_id);
+
+    michi_membership_t client_mem;
+    memset(&client_mem, 0, sizeof(client_mem));
+    client_mem.version = 1;
+    snprintf(client_mem.home_id, sizeof(client_mem.home_id), "%s", root_michi_id);
+    snprintf(client_mem.device_michi_id, sizeof(client_mem.device_michi_id), "%s", client_michi_id);
+    snprintf(client_mem.device_public_key, sizeof(client_mem.device_public_key), "%s", client_pk_b64);
+    snprintf(client_mem.device_type, sizeof(client_mem.device_type), "server");
+    snprintf(client_mem.roles[0], sizeof(client_mem.roles[0]), "music_server");
+    client_mem.role_count = 1;
+    snprintf(client_mem.issued_at, sizeof(client_mem.issued_at), "2026-10-04T12:00:00Z");
+    client_mem.serial = 1;
+
+    uint8_t mem_canon[512];
+    size_t mem_canon_len = michi_home_canonical_membership_bytes(
+        client_mem.home_id, client_mem.device_michi_id, client_mem.device_public_key,
+        client_mem.device_type, client_mem.roles, client_mem.role_count,
+        client_mem.issued_at, client_mem.serial, mem_canon, sizeof(mem_canon));
+    uint8_t mem_sig_raw[64];
+    crypto_ed25519_sign(mem_sig_raw, root_sk, mem_canon, mem_canon_len);
+    michi_identity_base64url_encode(mem_sig_raw, sizeof(mem_sig_raw), client_mem.signature, sizeof(client_mem.signature));
+
+    /* Check initial auth before revocation succeeds */
+    char cid[MICHI_AUTH_CHALLENGE_ID_LEN], nonce[MICHI_AUTH_NONCE_B64_LEN];
+    uint32_t exp = 0;
+    CHECK(michi_auth_create_challenge(client_michi_id, client_pk_b64, root_michi_id,
+                                      cid, sizeof(cid), nonce, sizeof(nonce), &exp) == ESP_OK,
+          "create challenge pre-revocation");
+
+    char server_id[MICHI_IDENTITY_MICHI_ID_LEN];
+    CHECK(michi_identity_michi_id(server_id, sizeof(server_id)) == ESP_OK, "get server michi_id");
+
+    uint8_t auth_payload[256];
+    size_t auth_payload_len = michi_home_device_auth_payload(
+        root_michi_id, server_id, client_michi_id, cid, nonce, auth_payload, sizeof(auth_payload));
+    uint8_t client_sig_raw[64];
+    crypto_ed25519_sign(client_sig_raw, client_sk, auth_payload, auth_payload_len);
+    char client_sig_b64[MICHI_HOME_SIG_B64_LEN];
+    michi_identity_base64url_encode(client_sig_raw, sizeof(client_sig_raw), client_sig_b64, sizeof(client_sig_b64));
+
+    char tok[MICHI_AUTH_TOKEN_B64_LEN], srv_sig[MICHI_HOME_SIG_B64_LEN];
+    uint32_t sess_exp = 0;
+    CHECK(michi_auth_verify_and_create_session(
+              cid, client_michi_id, &client_mem, client_sig_b64,
+              tok, sizeof(tok), srv_sig, sizeof(srv_sig), &sess_exp) == ESP_OK,
+          "pre-revocation auth succeeds");
+
+    /* Issue revocation for client */
+    michi_revocation_t rev;
+    memset(&rev, 0, sizeof(rev));
+    rev.version = 1;
+    snprintf(rev.home_id, sizeof(rev.home_id), "%s", root_michi_id);
+    snprintf(rev.revoked_device_michi_id, sizeof(rev.revoked_device_michi_id), "%s", client_michi_id);
+    snprintf(rev.revoked_at, sizeof(rev.revoked_at), "2026-10-04T15:00:00Z");
+    snprintf(rev.reason, sizeof(rev.reason), "Device compromised or retired");
+
+    uint8_t rev_canon[512];
+    size_t rev_canon_len = michi_home_canonical_revocation_bytes(
+        rev.home_id, rev.revoked_device_michi_id, rev.revoked_at, rev.reason, rev_canon, sizeof(rev_canon));
+    CHECK(rev_canon_len > 0, "canonical revocation bytes constructed");
+
+    uint8_t rev_sig_raw[64];
+    crypto_ed25519_sign(rev_sig_raw, root_sk, rev_canon, rev_canon_len);
+    michi_identity_base64url_encode(rev_sig_raw, sizeof(rev_sig_raw), rev.signature, sizeof(rev.signature));
+
+    /* Verify valid and tampered revocation */
+    CHECK(michi_home_verify_revocation(&rev, root_pk), "valid revocation verified");
+    rev.signature[10] ^= 0x01;
+    CHECK(!michi_home_verify_revocation(&rev, root_pk), "tampered revocation signature rejected");
+    rev.signature[10] ^= 0x01; /* restore */
+
+    CHECK(!michi_home_is_device_revoked(client_michi_id), "device not revoked before adding to roster");
+    CHECK(michi_home_add_revocation(&rev) == ESP_OK, "add revocation to roster");
+    CHECK(michi_home_is_device_revoked(client_michi_id), "device marked as revoked");
+
+    /* Now attempting auth session with the revoked client fails */
+    char cid_rev[MICHI_AUTH_CHALLENGE_ID_LEN], nonce_rev[MICHI_AUTH_NONCE_B64_LEN];
+    CHECK(michi_auth_create_challenge(client_michi_id, client_pk_b64, root_michi_id,
+                                      cid_rev, sizeof(cid_rev), nonce_rev, sizeof(nonce_rev), &exp) == ESP_OK,
+          "create challenge for revoked client");
+
+    auth_payload_len = michi_home_device_auth_payload(
+        root_michi_id, server_id, client_michi_id, cid_rev, nonce_rev, auth_payload, sizeof(auth_payload));
+    crypto_ed25519_sign(client_sig_raw, client_sk, auth_payload, auth_payload_len);
+    michi_identity_base64url_encode(client_sig_raw, sizeof(client_sig_raw), client_sig_b64, sizeof(client_sig_b64));
+
+    CHECK(michi_auth_verify_and_create_session(
+              cid_rev, client_michi_id, &client_mem, client_sig_b64,
+              tok, sizeof(tok), srv_sig, sizeof(srv_sig), &sess_exp) == ESP_ERR_INVALID_RESPONSE,
+          "auth session rejected for revoked client (401)");
 }
 
 int main(void)
@@ -477,6 +607,7 @@ int main(void)
     test_michi_auth_manager();
     test_challenge_dos_protection();
     test_factory_config();
+    test_revocation();
 
     if (failures == 0) {
         printf("PASS test_michi_home (all assertions passed)\n");
@@ -485,3 +616,4 @@ int main(void)
     printf("FAIL test_michi_home (%d failures)\n", failures);
     return 1;
 }
+

@@ -267,6 +267,11 @@ esp_err_t michi_auth_verify_and_create_session(
         return ESP_ERR_INVALID_RESPONSE; /* 401 Unauthorized */
     }
 
+    if (michi_home_is_device_revoked(client_michi_id)) {
+        ESP_LOGW(TAG, "Device %s is revoked in this home", client_michi_id);
+        return ESP_ERR_INVALID_RESPONSE; /* 401 Unauthorized */
+    }
+
     /* Enforce roles & compute permissions for receiver control */
     uint32_t perms = 0;
     for (size_t r = 0; r < membership->role_count; r++) {

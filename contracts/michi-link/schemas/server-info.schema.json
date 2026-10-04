@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://michi.link/schemas/server-info.schema.json",
   "title": "ServerInfo",
-  "description": "Server identity and capabilities payload, discriminated by service. api_version is 'v1' for full servers and 'v1-lite' for stream receivers (michi-stream-*). For michi-stream-* the identity group (identity_scheme, michi_id, public_key), server_id, the reproducible audio capabilities and the receiver role/auth/features are mandatory. The identity group is all-or-nothing for every service.",
+  "description": "Server identity and capabilities payload, discriminated by service. api_version is 'v1' for full servers and 'v1-lite' for stream receivers (michi-stream-*). For michi-stream-* the identity group (identity_scheme, michi_id, public_key), michi_home_id, server_id, the reproducible audio capabilities and the receiver role/auth/features are mandatory. The identity group is all-or-nothing for every service.",
   "type": "object",
   "required": [
     "service",
@@ -324,6 +324,7 @@
         "identity_scheme",
         "michi_id",
         "public_key",
+        "michi_home_id",
         "audio"
       ]
     },
@@ -424,6 +425,7 @@
         "identity_scheme",
         "michi_id",
         "public_key",
+        "michi_home_id",
         "audio"
       ]
     },
