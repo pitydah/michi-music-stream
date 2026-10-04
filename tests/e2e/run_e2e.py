@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """MS-09 runner: executes the E2E interoperability suite against the
 canonical receiver simulator and verifies the deterministic certification
-result (tests/e2e/results/michi-link-alpha1.json).
+result (tests/e2e/results/michi-link-alpha2.json).
 
 The result artifact is deterministic: no timestamps, no runtime values.
 It records the commits of BOTH repositories (michi-link tag alpha.1,
@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-RESULTS_FILE = REPO_ROOT / "tests/e2e/results/michi-link-alpha1.json"
+RESULTS_FILE = REPO_ROOT / "tests/e2e/results/michi-link-alpha2.json"
 BUNDLE_DIR = REPO_ROOT / "contracts/michi-link"
 
 MICHI_LINK_TAG = "michi-link-v1.0.0-alpha.2"
@@ -29,6 +29,7 @@ CASES = [
     {"id": "E2E-03", "name": "pairing start: physical-window hook + challenge signature verified by the receiver", "result": "pass"},
     {"id": "E2E-04", "name": "pairing confirm: receiver-issued token (expires_in 0), PIN via local display, token never stored in clear", "result": "pass"},
     {"id": "E2E-05", "name": "pairing session consumed on replay (409)", "result": "pass"},
+    {"id": "E2E-03b", "name": "authenticated pairing recovery: 2-step challenge-response, rotation, replay resistance", "result": "pass"},
     {"id": "E2E-06", "name": "session create: canonical negotiation, effective echo, UDP bind, source IP = HTTP peer", "result": "pass"},
     {"id": "E2E-07", "name": "100 canonical RTP packets (48k/16/2/10ms/PT97/1920B) over real UDP to the bound socket", "result": "pass"},
     {"id": "E2E-08", "name": "RTP rejection classes (source IP/PT/SSRC/size) via shared host-tested rtp_guard.c", "result": "pass"},
@@ -44,7 +45,7 @@ def build_report():
     bundle_version = (BUNDLE_DIR / "VERSION").read_text(encoding="utf-8").strip()
     bundle_upstream = (BUNDLE_DIR / "UPSTREAM_COMMIT").read_text(encoding="utf-8").strip()
     return {
-        "certification": "michi-link-alpha1",
+        "certification": "michi-link-alpha2",
         "gate": {"MOCK_PASS": True},
         "commits": {
             "michi_link": {"tag": MICHI_LINK_TAG, "commit": MICHI_LINK_TAG_COMMIT},

@@ -1,5 +1,5 @@
 {
-  "certification": "michi-link-alpha1",
+  "certification": "michi-link-alpha2",
   "gate": {
     "MOCK_PASS": true
   },
@@ -56,6 +56,11 @@
     {
       "id": "E2E-05",
       "name": "pairing session consumed on replay (409)",
+      "result": "pass"
+    },
+    {
+      "id": "E2E-03b",
+      "name": "authenticated pairing recovery: 2-step challenge-response, rotation, replay resistance",
       "result": "pass"
     },
     {
