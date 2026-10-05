@@ -466,14 +466,17 @@ def test_07_delete_and_lease_expiry(sim, bundle):
 
     assert state.stream_socket is None
     probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    probe.settimeout(0.1)
     probe.connect(("127.0.0.1", sim.stream_port))
     refused = False
-    for _ in range(10):
+    for _ in range(15):
         try:
             probe.send(b"late-rtp")
-        except OSError:
-            refused = True
-            break
+            probe.recv(1)
+        except (ConnectionRefusedError, OSError) as e:
+            if not isinstance(e, socket.timeout):
+                refused = True
+                break
         time.sleep(0.05)
     probe.close()
     assert refused, "closed RTP port still accepts datagrams"
