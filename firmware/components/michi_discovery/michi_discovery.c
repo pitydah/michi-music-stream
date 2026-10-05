@@ -43,6 +43,7 @@
 
 #include "discovery_nvs.h"
 #include "michi_discovery.h"
+#include "michi_home.h"
 #include "michi_identity.h"
 #include "michi_product_profile.h"
 #include "michi_time.h"
@@ -333,18 +334,57 @@ static void advertise_mdns_locked(void)
     snprintf(api_version, sizeof(api_version), "%s",
              MICHI_DISCOVERY_API_VERSION);
 
-    mdns_txt_item_t txt[] = {
-        {"device_id", s_server_id},
-        {"service", service},
-        {"api_version", api_version},
-        {"roles", MICHI_DISCOVERY_ROLE},
-        {"michi_id", michi_id},
-    };
+    char home_id[MICHI_HOME_ID_LEN] = {0};
+    char fp_b64[MICHI_IDENTITY_PUBLIC_KEY_B64_LEN] = {0};
+    mdns_txt_item_t txt[8];
+    size_t txt_count = 0;
+    txt[txt_count].key = "device_id";
+    txt[txt_count].value = s_server_id;
+    txt_count++;
+    txt[txt_count].key = "service";
+    txt[txt_count].value = service;
+    txt_count++;
+    txt[txt_count].key = "api_version";
+    txt[txt_count].value = api_version;
+    txt_count++;
+    txt[txt_count].key = "roles";
+    txt[txt_count].value = MICHI_DISCOVERY_ROLE;
+    txt_count++;
+    txt[txt_count].key = "michi_id";
+    txt[txt_count].value = michi_id;
+    txt_count++;
+
+    if (michi_home_is_provisioned() && michi_home_get_id(home_id, sizeof(home_id)) == ESP_OK) {
+        txt[txt_count].key = "michi_home_id";
+        txt[txt_count].value = home_id;
+        txt_count++;
+        txt[txt_count].key = "auth_strategy";
+        txt[txt_count].value = "HOME_MEMBERSHIP";
+        txt_count++;
+        michi_membership_t mem;
+        if (michi_home_get_device_membership(&mem) == ESP_OK) {
+            uint8_t canon[512];
+            size_t c_len = michi_home_canonical_membership_bytes(
+                mem.home_id, mem.device_michi_id, mem.device_public_key,
+                mem.device_type, mem.roles, mem.role_count,
+                mem.issued_at, mem.serial, canon, sizeof(canon));
+            if (c_len > 0) {
+                uint8_t hash[32];
+                if (michi_identity_blake3_hash(canon, c_len, hash) == ESP_OK &&
+                    michi_identity_base64url_encode(hash, sizeof(hash), fp_b64, sizeof(fp_b64)) == ESP_OK) {
+                    txt[txt_count].key = "membership_fingerprint";
+                    txt[txt_count].value = fp_b64;
+                    txt_count++;
+                }
+            }
+        }
+    }
+
     const esp_err_t err =
         mdns_service_add(p->product_name, MICHI_DISCOVERY_MDNS_SERVICE,
                          MICHI_DISCOVERY_MDNS_PROTO,
                          MICHI_DISCOVERY_HTTP_PORT, txt,
-                         sizeof(txt) / sizeof(txt[0]));
+                         txt_count);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "mdns: service_add failed: %s", esp_err_to_name(err));
         return;

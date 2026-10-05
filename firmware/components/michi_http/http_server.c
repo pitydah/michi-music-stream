@@ -454,6 +454,8 @@ static esp_err_t auth_session_handler(httpd_req_t *req)
         return michi_http_send_error(req, 400, "challenge parameters mismatch or malformed signature", NULL);
     } else if (auth_res == ESP_ERR_INVALID_RESPONSE) {
         return michi_http_send_error(req, 401, "membership or client signature verification failed", NULL);
+    } else if (auth_res == ESP_ERR_NO_MEM) {
+        return michi_http_send_error(req, 429, "too many active sessions", NULL);
     } else if (auth_res != ESP_OK) {
         return michi_http_send_error(req, 500, "internal authentication error", NULL);
     }

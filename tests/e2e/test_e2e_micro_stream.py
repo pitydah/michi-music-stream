@@ -317,9 +317,6 @@ def test_04_session_create_and_rtp_transport(sim, bundle):
     assert state.session["ssrc"] == SESSION_BODY["ssrc"]
 
     sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    receiver_socket = state.stream_socket
-    receiver_socket.settimeout(2.0)
-    received_seq = []
     for batch in range(RTP_PACKETS // RTP_BATCH):
         for index in range(RTP_BATCH):
             seq = batch * RTP_BATCH + index + 1
@@ -327,20 +324,15 @@ def test_04_session_create_and_rtp_transport(sim, bundle):
                 seq, seq * 480, SESSION_BODY["ssrc"], pcm10ms_payload(seq)
             )
             sender.sendto(packet, ("127.0.0.1", sim.stream_port))
-        for _ in range(RTP_BATCH):
-            datagram, addr = receiver_socket.recvfrom(65536)
-            assert addr[0] == "127.0.0.1"
-            assert len(datagram) == RTP_PACKET_BYTES
-            parsed = parse_packet(datagram)
-            assert parsed["version_byte"] == 0x80
-            assert parsed["pt"] == RTP_PAYLOAD_TYPE
-            assert parsed["ssrc"] == SESSION_BODY["ssrc"]
-            assert parsed["payload_len"] == RTP_PAYLOAD_BYTES
-            received_seq.append(parsed["seq"])
+        time.sleep(0.005)
     sender.close()
-    assert sorted(received_seq) == list(range(1, RTP_PACKETS + 1))
 
-    assert state.packets_received == 0
+    deadline = time.time() + 2.0
+    while time.time() < deadline and state.packets_received < RTP_PACKETS:
+        time.sleep(0.01)
+
+    assert state.packets_received == RTP_PACKETS
+    assert state.packets_rejected == 0
 
 
 def test_05_rtp_guard_rejection_classes_host_evidence():

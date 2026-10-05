@@ -219,21 +219,22 @@ void app_main(void)
         }
     }
 
+    /* Factory configuration partition (MICHI-F1): one-shot credentials import.
+     * Must run BEFORE michi_identity_init() so that if a factory device seed
+     * is provisioned, it is imported into NVS before identity generates a random seed. */
+    err = michi_factory_cfg_check_and_import();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "michi_factory_cfg_check_and_import notice: %s", esp_err_to_name(err));
+    }
+
     /* Device identity (MS-04): Ed25519 identity key + BLAKE3 michi_id.
-     * Mints seed on first boot or loads existing key from NVS. Must run
-     * before factory_cfg import so device identity coherence can be verified. */
+     * Loads imported seed from NVS or mints fresh seed on first boot. */
     err = michi_identity_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "michi_identity_init failed: %s", esp_err_to_name(err));
         ESP_LOGI(TAG, "subsystem=identity state=failed phase=ms04");
     } else {
         ESP_LOGI(TAG, "subsystem=identity state=ok phase=ms04");
-    }
-
-    /* Factory configuration partition (MICHI-F1): one-shot credentials import */
-    err = michi_factory_cfg_check_and_import();
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "michi_factory_cfg_check_and_import notice: %s", esp_err_to_name(err));
     }
 
     /* Michi Home membership & auth (phase 10 / Trust Architecture V2):

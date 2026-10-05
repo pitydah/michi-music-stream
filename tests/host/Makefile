@@ -321,12 +321,13 @@ test_michi_time: test_michi_time.c $(TIME_SRC) $(DISCOVERY_SRC) \
                  $(DISCOVERY_DIR)/discovery_nvs.h \
                  $(TIME_DIR)/include/michi_time.h \
                  $(FIRMWARE)/michi_product_profile/capabilities.c \
-                 $(IDENTITY_SRC) $(SHIMS)
+                 $(IDENTITY_SRC) $(SHIMS) shim/michi_home_fake.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(DISCOVERY_INC) $(IDENTITY_INC) \
 	    $(TIME_INC) $(IDENTITY_DEFS) $(CJSON_CFLAGS) -pthread -o $@ \
 	    test_michi_time.c $(TIME_SRC) $(DISCOVERY_SRC) \
 	    $(DISCOVERY_DIR)/michi_discovery.c \
 	    $(FIRMWARE)/michi_product_profile/capabilities.c \
+	    shim/michi_home_fake.c \
 	    $(IDENTITY_SRC) $(CJSON_LIBS)
 
 # P0-01 capability parity: compiles the SAME sources the firmware runs -

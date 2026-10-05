@@ -81,6 +81,17 @@ typedef enum {
 esp_err_t michi_identity_init(void);
 
 /**
+ * @brief Import a pre-provisioned identity seed (e.g. from factory configuration).
+ *
+ * Persists the seed to NVS and initializes the in-RAM keypair and michi_id.
+ * State becomes READY.
+ *
+ * @param seed 32-byte Ed25519 seed.
+ * @return ESP_OK on success; error code on failure.
+ */
+esp_err_t michi_identity_import_seed(const uint8_t seed[MICHI_IDENTITY_KEY_BYTES]);
+
+/**
  * @brief Current identity state.
  */
 michi_identity_state_t michi_identity_get_state(void);
@@ -157,6 +168,26 @@ bool michi_identity_verify(const uint8_t *msg, size_t msg_len,
  */
 esp_err_t michi_identity_derive_michi_id(const uint8_t pk[MICHI_IDENTITY_KEY_BYTES],
                                          char *out, size_t out_len);
+
+/**
+ * @brief Derive the Ed25519 public key from a 32-byte private seed.
+ *
+ * @param seed Raw 32-byte seed.
+ * @param out_pk Buffer of at least 32 bytes to receive the raw public key.
+ * @return ESP_OK on success, or ESP_ERR_INVALID_ARG if arguments are NULL.
+ */
+esp_err_t michi_identity_derive_public_key(const uint8_t seed[MICHI_IDENTITY_KEY_BYTES],
+                                           uint8_t out_pk[MICHI_IDENTITY_KEY_BYTES]);
+
+/**
+ * @brief Compute the standard 32-byte BLAKE3 hash over arbitrary data.
+ *
+ * @param data Input buffer.
+ * @param len  Length of data in bytes.
+ * @param out  Output buffer of at least 32 bytes.
+ * @return ESP_OK on success, or ESP_ERR_INVALID_ARG on NULL.
+ */
+esp_err_t michi_identity_blake3_hash(const uint8_t *data, size_t len, uint8_t out[32]);
 
 /**
  * @brief Encode bytes as base64url WITHOUT padding (RFC 4648 URL-safe

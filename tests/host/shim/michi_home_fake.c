@@ -30,3 +30,26 @@ __attribute__((weak)) esp_err_t michi_home_get_id(char *out, size_t out_len)
     snprintf(out, out_len, "%s", s_home_id);
     return ESP_OK;
 }
+
+__attribute__((weak)) esp_err_t michi_home_get_device_membership(michi_membership_t *out_membership)
+{
+    (void)out_membership;
+    return ESP_ERR_NOT_FOUND;
+}
+
+__attribute__((weak)) size_t michi_home_canonical_membership_bytes(
+    const char *home_id,
+    const char *device_michi_id,
+    const char *device_public_key,
+    const char *device_type,
+    const char roles[MICHI_MAX_MEMBERSHIP_ROLES][MICHI_MAX_ROLE_NAME_LEN],
+    size_t role_count,
+    const char *issued_at,
+    uint64_t serial,
+    uint8_t *out,
+    size_t out_len)
+{
+    (void)home_id; (void)device_michi_id; (void)device_public_key; (void)device_type;
+    (void)roles; (void)role_count; (void)issued_at; (void)serial; (void)out; (void)out_len;
+    return 0;
+}

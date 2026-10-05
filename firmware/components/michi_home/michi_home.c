@@ -48,6 +48,15 @@ esp_err_t michi_home_init(void)
 
     s_provisioned = true;
     ESP_LOGI(TAG, "Michi Home initialized: home_id=%s", s_home_id);
+
+    if (nvs_open(MICHI_HOME_NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+        size_t blob_len = sizeof(s_revocations);
+        if (nvs_get_blob(h, "revocations", s_revocations, &blob_len) == ESP_OK) {
+            s_revocation_count = blob_len / sizeof(michi_revocation_t);
+            ESP_LOGI(TAG, "Loaded %u revocations from NVS", (unsigned)s_revocation_count);
+        }
+        nvs_close(h);
+    }
     return ESP_OK;
 }
 
@@ -187,6 +196,7 @@ esp_err_t michi_home_erase(void)
         (void)nvs_erase_key(h, MICHI_HOME_NVS_KEY_ID);
         (void)nvs_erase_key(h, MICHI_HOME_NVS_KEY_ROOT_PK);
         (void)nvs_erase_key(h, MICHI_HOME_NVS_KEY_MEMBERSHIP);
+        (void)nvs_erase_key(h, "revocations");
         (void)nvs_commit(h);
         nvs_close(h);
     }
@@ -494,6 +504,25 @@ bool michi_home_verify_revocation(
     return michi_identity_verify(canon, canon_len, sig, root_pk);
 }
 
+static esp_err_t save_revocations_to_nvs(void)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(MICHI_HOME_NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (s_revocation_count > 0) {
+        err = nvs_set_blob(h, "revocations", s_revocations, s_revocation_count * sizeof(michi_revocation_t));
+    } else {
+        err = nvs_erase_key(h, "revocations");
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+    return err;
+}
+
 esp_err_t michi_home_add_revocation(const michi_revocation_t *revocation)
 {
     if (revocation == NULL) {
@@ -509,6 +538,7 @@ esp_err_t michi_home_add_revocation(const michi_revocation_t *revocation)
     for (size_t i = 0; i < s_revocation_count; i++) {
         if (strcmp(s_revocations[i].revoked_device_michi_id, revocation->revoked_device_michi_id) == 0) {
             s_revocations[i] = *revocation;
+            (void)save_revocations_to_nvs();
             return ESP_OK;
         }
     }
@@ -518,6 +548,7 @@ esp_err_t michi_home_add_revocation(const michi_revocation_t *revocation)
     }
 
     s_revocations[s_revocation_count++] = *revocation;
+    (void)save_revocations_to_nvs();
     ESP_LOGI(TAG, "Added revocation for device %s", revocation->revoked_device_michi_id);
     return ESP_OK;
 }

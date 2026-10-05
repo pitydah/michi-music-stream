@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,17 +12,46 @@
 #include "michi_home.h"
 #include "michi_identity.h"
 
+#ifndef ESP_ERR_INVALID_CRC
+#define ESP_ERR_INVALID_CRC 0x109
+#endif
+
 #ifndef MICHI_HOME_TESTING
 #include "esp_partition.h"
 #else
 static const char *s_test_factory_partition_data = NULL;
+static const uint8_t *s_test_factory_partition_bytes = NULL;
+static size_t s_test_factory_partition_len = 0;
+
 void michi_factory_cfg_set_test_partition_data(const char *data)
 {
     s_test_factory_partition_data = data;
+    s_test_factory_partition_bytes = NULL;
+    s_test_factory_partition_len = 0;
+}
+
+void michi_factory_cfg_set_test_partition_bytes(const uint8_t *data, size_t len)
+{
+    s_test_factory_partition_bytes = data;
+    s_test_factory_partition_len = len;
+    s_test_factory_partition_data = NULL;
 }
 #endif
 
 #define TAG "michi_factory_cfg"
+
+/* IEEE 802.3 CRC32 implementation */
+static uint32_t compute_crc32(const uint8_t *data, size_t len)
+{
+    uint32_t crc = 0xFFFFFFFF;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (int j = 0; j < 8; j++) {
+            crc = (crc >> 1) ^ (0xEDB88320u & (-(uint32_t)(crc & 1)));
+        }
+    }
+    return crc ^ 0xFFFFFFFF;
+}
 
 static void trim_whitespace(char *str)
 {
@@ -112,13 +142,8 @@ static bool parse_membership_json(const cJSON *mem, michi_membership_t *out_memb
     return true;
 }
 
-esp_err_t michi_factory_cfg_parse(const char *payload, size_t len, michi_factory_cfg_t *out_cfg)
+static esp_err_t parse_inner_payload(const char *payload, size_t len, michi_factory_cfg_t *out_cfg)
 {
-    if (payload == NULL || len == 0 || out_cfg == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    memset(out_cfg, 0, sizeof(*out_cfg));
-
     /* Attempt 1: Parse as JSON */
     cJSON *json = cJSON_ParseWithLength(payload, len);
     if (json != NULL) {
@@ -138,7 +163,23 @@ esp_err_t michi_factory_cfg_parse(const char *payload, size_t len, michi_factory
             }
         }
 
-        cJSON *mem_item = cJSON_GetObjectItem(json, "device_membership");
+        /* Check for device private identity seed */
+        const cJSON *seed_item = cJSON_GetObjectItem(json, "device_seed");
+        if (seed_item == NULL) {
+            seed_item = cJSON_GetObjectItem(json, "device_private_key");
+        }
+        if (seed_item == NULL) {
+            seed_item = cJSON_GetObjectItem(json, "device_identity");
+        }
+        if (seed_item != NULL && cJSON_IsString(seed_item) && seed_item->valuestring != NULL) {
+            size_t dec_len = 0;
+            if (michi_identity_base64url_decode(seed_item->valuestring, out_cfg->device_seed, sizeof(out_cfg->device_seed), &dec_len) == ESP_OK &&
+                dec_len == MICHI_IDENTITY_KEY_BYTES) {
+                out_cfg->has_device_seed = true;
+            }
+        }
+
+        const cJSON *mem_item = cJSON_GetObjectItem(json, "device_membership");
         if (mem_item == NULL) {
             mem_item = cJSON_GetObjectItem(json, "membership");
         }
@@ -191,6 +232,12 @@ esp_err_t michi_factory_cfg_parse(const char *payload, size_t len, michi_factory
                     snprintf(out_cfg->wifi_ssid, sizeof(out_cfg->wifi_ssid), "%s", val);
                 } else if (str_case_eq(key, "wifi_password")) {
                     snprintf(out_cfg->wifi_password, sizeof(out_cfg->wifi_password), "%s", val);
+                } else if (str_case_eq(key, "device_seed") || str_case_eq(key, "device_private_key")) {
+                    size_t dec_len = 0;
+                    if (michi_identity_base64url_decode(val, out_cfg->device_seed, sizeof(out_cfg->device_seed), &dec_len) == ESP_OK &&
+                        dec_len == MICHI_IDENTITY_KEY_BYTES) {
+                        out_cfg->has_device_seed = true;
+                    }
                 } else if (str_case_eq(key, "device_membership") || str_case_eq(key, "membership")) {
                     cJSON *sub = cJSON_Parse(val);
                     if (sub != NULL) {
@@ -207,6 +254,50 @@ esp_err_t michi_factory_cfg_parse(const char *payload, size_t len, michi_factory
     }
 
     return ESP_OK;
+}
+
+esp_err_t michi_factory_cfg_parse(const char *payload, size_t len, michi_factory_cfg_t *out_cfg)
+{
+    if (payload == NULL || len == 0 || out_cfg == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(out_cfg, 0, sizeof(*out_cfg));
+
+    /* Attempt 1: Byte-exact binary MICHI-F1 container */
+    if (len >= sizeof(michi_f1_header_t) + 4 &&
+        memcmp(payload, MICHI_F1_MAGIC, MICHI_F1_MAGIC_LEN) == 0 &&
+        payload[8] != '\n' && payload[8] != '\r' && payload[8] != '=') {
+
+        const michi_f1_header_t *hdr = (const michi_f1_header_t *)payload;
+        if (hdr->version != MICHI_F1_VERSION) {
+            ESP_LOGE(TAG, "factory_cfg: unsupported version %u", hdr->version);
+            return ESP_ERR_NOT_SUPPORTED;
+        }
+        if (hdr->nonce_len < MICHI_F1_NONCE_MIN_LEN || hdr->nonce_len > MICHI_F1_NONCE_MAX_LEN) {
+            ESP_LOGE(TAG, "factory_cfg: invalid nonce length %u", hdr->nonce_len);
+            return ESP_ERR_INVALID_SIZE;
+        }
+        if (hdr->payload_len == 0 || sizeof(michi_f1_header_t) + hdr->payload_len + 4 > len) {
+            ESP_LOGE(TAG, "factory_cfg: invalid payload length %u (container len %zu)", hdr->payload_len, len);
+            return ESP_ERR_INVALID_SIZE;
+        }
+
+        uint32_t stored_crc = 0;
+        memcpy(&stored_crc, payload + sizeof(michi_f1_header_t) + hdr->payload_len, 4);
+        uint32_t calc_crc = compute_crc32((const uint8_t *)payload, sizeof(michi_f1_header_t) + hdr->payload_len);
+        if (stored_crc != calc_crc) {
+            ESP_LOGE(TAG, "factory_cfg: CRC32 mismatch (stored=0x%08" PRIx32 ", calc=0x%08" PRIx32 ")",
+                     stored_crc, calc_crc);
+            return ESP_ERR_INVALID_CRC;
+        }
+
+        const char *inner_payload = payload + sizeof(michi_f1_header_t);
+        size_t inner_len = hdr->payload_len;
+        return parse_inner_payload(inner_payload, inner_len, out_cfg);
+    }
+
+    /* Fallback: Legacy line-delimited or plain JSON */
+    return parse_inner_payload(payload, len, out_cfg);
 }
 
 esp_err_t michi_home_import_factory_cfg(const char *payload, size_t len)
@@ -238,7 +329,7 @@ esp_err_t michi_home_import_factory_cfg(const char *payload, size_t len)
         return ESP_ERR_INVALID_ARG;
     }
 
-    /* Pre-verify device membership and identity coherence before modifying NVS */
+    /* Pre-verify device membership and identity coherence before modifying durable state */
     if (cfg.has_device_membership) {
         if (strcmp(cfg.device_membership.home_id, cfg.home_id) != 0) {
             ESP_LOGE(TAG, "factory_cfg: device membership home_id mismatch");
@@ -250,7 +341,27 @@ esp_err_t michi_home_import_factory_cfg(const char *payload, size_t len)
             return ESP_ERR_INVALID_ARG;
         }
 
-        if (michi_identity_get_state() == MICHI_IDENTITY_READY) {
+        if (cfg.has_device_seed) {
+            /* If factory configuration provides device private identity seed,
+             * verify it derives the exact device_michi_id and device_public_key in membership */
+            uint8_t dev_pk[MICHI_IDENTITY_KEY_BYTES];
+            if (michi_identity_derive_public_key(cfg.device_seed, dev_pk) != ESP_OK) {
+                return ESP_FAIL;
+            }
+
+            char seed_michi_id[MICHI_IDENTITY_MICHI_ID_LEN];
+            char seed_pk_b64[MICHI_IDENTITY_PUBLIC_KEY_B64_LEN];
+            if (michi_identity_derive_michi_id(dev_pk, seed_michi_id, sizeof(seed_michi_id)) != ESP_OK ||
+                michi_identity_base64url_encode(dev_pk, sizeof(dev_pk), seed_pk_b64, sizeof(seed_pk_b64)) != ESP_OK) {
+                return ESP_FAIL;
+            }
+            if (strcmp(seed_michi_id, cfg.device_membership.device_michi_id) != 0 ||
+                strcmp(seed_pk_b64, cfg.device_membership.device_public_key) != 0) {
+                ESP_LOGE(TAG, "factory_cfg: device seed does not match membership (%s vs %s)",
+                         seed_michi_id, cfg.device_membership.device_michi_id);
+                return ESP_ERR_INVALID_ARG;
+            }
+        } else if (michi_identity_get_state() == MICHI_IDENTITY_READY) {
             char local_michi_id[MICHI_IDENTITY_MICHI_ID_LEN] = {0};
             if (michi_identity_michi_id(local_michi_id, sizeof(local_michi_id)) == ESP_OK) {
                 if (strcmp(local_michi_id, cfg.device_membership.device_michi_id) != 0) {
@@ -262,10 +373,20 @@ esp_err_t michi_home_import_factory_cfg(const char *payload, size_t len)
         }
     }
 
-    /* Transactional commit: rollback everything if any write fails */
+    /* Atomic commit with rollback */
+    if (cfg.has_device_seed) {
+        err = michi_identity_import_seed(cfg.device_seed);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "factory_cfg: failed to import device seed: %s", esp_err_to_name(err));
+            return err;
+        }
+        ESP_LOGI(TAG, "factory_cfg: device private identity imported successfully");
+    }
+
     err = michi_home_set_credentials(cfg.home_id, root_pk);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "factory_cfg: failed to store home credentials: %s", esp_err_to_name(err));
+        if (cfg.has_device_seed) (void)michi_identity_factory_reset();
         return err;
     }
 
@@ -274,6 +395,7 @@ esp_err_t michi_home_import_factory_cfg(const char *payload, size_t len)
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "factory_cfg: failed to store device membership: %s (rolling back)", esp_err_to_name(err));
             (void)michi_home_erase();
+            if (cfg.has_device_seed) (void)michi_identity_factory_reset();
             return err;
         }
         ESP_LOGI(TAG, "factory_cfg: device membership stored and verified");
@@ -286,6 +408,7 @@ esp_err_t michi_home_import_factory_cfg(const char *payload, size_t len)
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "factory_cfg: failed to open wifi nvs: %s (rolling back)", esp_err_to_name(err));
             (void)michi_home_erase();
+            if (cfg.has_device_seed) (void)michi_identity_factory_reset();
             return err;
         }
         err = nvs_set_str(wh, "ssid", cfg.wifi_ssid);
@@ -299,9 +422,20 @@ esp_err_t michi_home_import_factory_cfg(const char *payload, size_t len)
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "factory_cfg: failed to write wifi credentials: %s (rolling back)", esp_err_to_name(err));
             (void)michi_home_erase();
+            if (cfg.has_device_seed) (void)michi_identity_factory_reset();
             return err;
         }
         ESP_LOGI(TAG, "factory_cfg: Wi-Fi credentials imported (SSID: %s)", cfg.wifi_ssid);
+    }
+
+    /* Verification: confirm home_id is readable and valid */
+    char verify_id[MICHI_HOME_ID_LEN] = {0};
+    if (michi_home_get_id(verify_id, sizeof(verify_id)) != ESP_OK ||
+        strcmp(verify_id, cfg.home_id) != 0) {
+        ESP_LOGE(TAG, "factory_cfg: verification of committed credentials failed (rolling back)");
+        (void)michi_home_erase();
+        if (cfg.has_device_seed) (void)michi_identity_factory_reset();
+        return ESP_FAIL;
     }
 
     ESP_LOGI(TAG, "factory_cfg: Home credentials imported successfully (home_id: %s)", cfg.home_id);
@@ -324,10 +458,17 @@ esp_err_t michi_factory_cfg_check_and_import(void)
     }
 
 #ifdef MICHI_HOME_TESTING
+    if (s_test_factory_partition_bytes != NULL && s_test_factory_partition_len > 0) {
+        esp_err_t res = michi_home_import_factory_cfg((const char *)s_test_factory_partition_bytes, s_test_factory_partition_len);
+        if (res == ESP_OK) {
+            s_test_factory_partition_bytes = NULL;
+            s_test_factory_partition_len = 0;
+        }
+        return res;
+    }
     if (s_test_factory_partition_data != NULL) {
         esp_err_t res = michi_home_import_factory_cfg(s_test_factory_partition_data, strlen(s_test_factory_partition_data));
         if (res == ESP_OK) {
-            /* Wipe test partition on successful import */
             s_test_factory_partition_data = NULL;
         }
         return res;
@@ -394,7 +535,7 @@ esp_err_t michi_factory_cfg_check_and_import(void)
             ESP_LOGW(TAG, "factory_cfg: warning, erase failed: %s", esp_err_to_name(erase_err));
         }
     } else {
-        ESP_LOGW(TAG, "factory_cfg: one-shot import failed: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "factory_cfg: one-shot import failed: %s (retaining partition for retry)", esp_err_to_name(err));
     }
     return err;
 #endif

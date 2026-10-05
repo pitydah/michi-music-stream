@@ -347,6 +347,18 @@ class SimulatorState:
         except Exception:
             return 400, error_body("INVALID_REQUEST", "Invalid client_public_key encoding", {"field": "client_public_key"})
 
+        # Idempotency: if client has active non-expired challenge, return it
+        for c in self.active_challenges.values():
+            if c["client_michi_id"] == payload["client_michi_id"] and self._now() - c["created_at"] <= c["expires_in"]:
+                rem = int(c["expires_in"] - (self._now() - c["created_at"]))
+                return 200, {
+                    "challenge_id": c["challenge_id"],
+                    "challenge_nonce": c["challenge_nonce"],
+                    "server_michi_id": self.michi_id,
+                    "server_public_key": self.public_key,
+                    "expires_in": max(rem, 1),
+                }
+
         challenge_id = str(uuid.uuid4())
         nonce_bytes = secrets.token_bytes(16)
         challenge_nonce = base64.urlsafe_b64encode(nonce_bytes).decode("ascii").rstrip("=")
@@ -376,11 +388,12 @@ class SimulatorState:
             return 400, error_body("INVALID_REQUEST", err.message, {"field": err.field})
 
         challenge_id = payload["challenge_id"]
-        challenge = self.active_challenges.pop(challenge_id, None)
+        challenge = self.active_challenges.get(challenge_id)
         if challenge is None:
             return 404, error_body("NOT_FOUND", "Challenge not found or already consumed")
 
         if self._now() - challenge["created_at"] > challenge["expires_in"]:
+            self.active_challenges.pop(challenge_id, None)
             return 401, error_body("UNAUTHORIZED", "Challenge has expired")
 
         client_michi_id = payload["client_michi_id"]
@@ -439,10 +452,18 @@ class SimulatorState:
         except Exception:
             return 401, error_body("UNAUTHORIZED", "Invalid client device auth signature")
 
+        # Deactivate challenge only after successful cryptographic verification
+        self.active_challenges.pop(challenge_id, None)
+
         raw_token = secrets.token_bytes(TOKEN_BYTES)
         session_token = base64.urlsafe_b64encode(raw_token).decode("ascii").rstrip("=")
         digest = hashlib.sha256(raw_token).hexdigest()
         expires_in = 3600
+
+        # Rotate existing session for this client
+        to_del = [k for k, v in self.ram_sessions.items() if v.get("client_michi_id") == client_michi_id]
+        for k in to_del:
+            del self.ram_sessions[k]
 
         self.ram_sessions[digest] = {
             "token": session_token,

@@ -349,7 +349,7 @@ static void test_challenge_dos_protection(void)
     CHECK(michi_auth_create_challenge(ca_id, ca_pk_b64, home_id,
                                       cid2, sizeof(cid2), nonce2, sizeof(nonce2), &exp) == ESP_OK,
           "client-A creates challenge 2 (reuses slot)");
-    CHECK(strcmp(cid1, cid2) != 0, "new challenge ID generated on client slot refresh");
+    CHECK(strcmp(cid1, cid2) == 0, "existing challenge ID returned on client slot (idempotency)");
 
     /* Fill remaining slots up to capacity 16 */
     for (int i = 1; i < 16; i++) {
@@ -486,6 +486,46 @@ static void test_factory_config(void)
     CHECK(michi_factory_cfg_check_and_import() == ESP_OK, "one-shot check_and_import succeeds");
     CHECK(michi_home_is_provisioned(), "home is now provisioned");
     CHECK(michi_home_has_device_membership(), "device membership imported from partition");
+
+    /* Binary MICHI-F1 container parsing and CRC verification */
+    michi_f1_header_t f1_hdr;
+    memset(&f1_hdr, 0, sizeof(f1_hdr));
+    memcpy(f1_hdr.magic, MICHI_F1_MAGIC, MICHI_F1_MAGIC_LEN);
+    f1_hdr.version = MICHI_F1_VERSION;
+    f1_hdr.nonce_len = 16;
+    memset(f1_hdr.nonce, 0x42, 16);
+    const char *f1_json = "{\"home_id\":\"FU1FL-wFLfsfew3qpbR7XjDkmStWZY4g84MyW-zXPOs\","
+                          "\"root_public_key\":\"SSUmCh_mEGLUkwz9IJyZVv9MapeD_PCkKI17twD3c_g\","
+                          "\"wifi_ssid\":\"BinaryWiFi\",\"wifi_password\":\"secret\"}";
+    f1_hdr.payload_len = (uint32_t)strlen(f1_json);
+
+    uint8_t bin_buf[1024];
+    memcpy(bin_buf, &f1_hdr, sizeof(f1_hdr));
+    memcpy(bin_buf + sizeof(f1_hdr), f1_json, f1_hdr.payload_len);
+    size_t data_len = sizeof(f1_hdr) + f1_hdr.payload_len;
+
+    /* Compute CRC32 (polynomial 0xEDB88320) */
+    uint32_t crc = 0xFFFFFFFF;
+    for (size_t i = 0; i < data_len; i++) {
+        crc ^= bin_buf[i];
+        for (int k = 0; k < 8; k++) {
+            crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
+        }
+    }
+    uint32_t good_crc = ~crc;
+    memcpy(bin_buf + data_len, &good_crc, 4);
+    size_t total_bin_len = data_len + 4;
+
+    michi_factory_cfg_t bin_cfg;
+    CHECK(michi_factory_cfg_parse((const char *)bin_buf, total_bin_len, &bin_cfg) == ESP_OK,
+          "parse binary MICHI-F1 container with valid CRC32");
+    CHECK(strcmp(bin_cfg.wifi_ssid, "BinaryWiFi") == 0, "binary wifi_ssid parsed");
+
+    /* Corrupt CRC */
+    uint32_t bad_crc = good_crc ^ 0xFF;
+    memcpy(bin_buf + data_len, &bad_crc, 4);
+    CHECK(michi_factory_cfg_parse((const char *)bin_buf, total_bin_len, &bin_cfg) == ESP_ERR_INVALID_CRC,
+          "reject binary MICHI-F1 container with bad CRC32");
 }
 
 /* ── 8. Revocation Verification & Enforcement ── */
@@ -596,6 +636,13 @@ static void test_revocation(void)
               cid_rev, client_michi_id, &client_mem, client_sig_b64,
               tok, sizeof(tok), srv_sig, sizeof(srv_sig), &sess_exp) == ESP_ERR_INVALID_RESPONSE,
           "auth session rejected for revoked client (401)");
+
+    /* Verify revocation persistence across simulated restart */
+    michi_home_init();
+    CHECK(michi_home_is_device_revoked(client_michi_id), "revocation loaded from NVS on restart");
+
+    michi_home_erase();
+    CHECK(!michi_home_is_device_revoked(client_michi_id), "revocations erased on home erase");
 }
 
 int main(void)

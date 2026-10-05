@@ -134,11 +134,27 @@ esp_err_t michi_home_add_revocation(const michi_revocation_t *revocation);
 bool michi_home_is_device_revoked(const char *device_michi_id);
 
 /* Factory configuration MICHI-F1 */
+#define MICHI_F1_MAGIC "MICHI-F1"
+#define MICHI_F1_MAGIC_LEN 8
+#define MICHI_F1_VERSION 1
+#define MICHI_F1_NONCE_MIN_LEN 16
+#define MICHI_F1_NONCE_MAX_LEN 32
+
+typedef struct __attribute__((packed)) {
+    char magic[8];            /* "MICHI-F1" */
+    uint16_t version;         /* 1 */
+    uint16_t nonce_len;       /* 16..32 */
+    uint8_t nonce[32];
+    uint32_t payload_len;
+} michi_f1_header_t;
+
 typedef struct {
     char home_id[MICHI_HOME_ID_LEN];
     char root_public_key[MICHI_HOME_PUBKEY_B64_LEN];
     char wifi_ssid[64];
     char wifi_password[64];
+    bool has_device_seed;
+    uint8_t device_seed[MICHI_HOME_KEY_BYTES];
     bool has_device_membership;
     michi_membership_t device_membership;
 } michi_factory_cfg_t;
@@ -150,6 +166,7 @@ esp_err_t michi_factory_cfg_check_and_import(void);
 #ifdef MICHI_HOME_TESTING
 void michi_home_test_reset(void);
 void michi_factory_cfg_set_test_partition_data(const char *data);
+void michi_factory_cfg_set_test_partition_bytes(const uint8_t *data, size_t len);
 #endif
 
 #ifdef __cplusplus

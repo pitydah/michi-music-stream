@@ -151,7 +151,7 @@ esp_err_t michi_auth_create_challenge(
     purge_expired_locked(now_us);
 
     /* DoS-safe slot allocation:
-     * 1. If this client already has an active challenge, reuse their slot (refreshes nonce)
+     * 1. If this client already has an active, non-expired challenge, return it (idempotency)
      * 2. Otherwise allocate the first available inactive slot
      * 3. If table is full of other clients' in-flight challenges, reject with ESP_ERR_NO_MEM
      *    (never evict other clients' active challenges) */
@@ -161,6 +161,17 @@ esp_err_t michi_auth_create_challenge(
             strcmp(s_challenges[i].client_michi_id, client_michi_id) == 0) {
             slot = (int)i;
             break;
+        }
+    }
+    if (slot != -1) {
+        int64_t remaining_us = s_challenges[slot].expires_mono_us - now_us;
+        if (remaining_us > 0) {
+            snprintf(out_challenge_id, challenge_id_len, "%s", s_challenges[slot].challenge_id);
+            snprintf(out_nonce, nonce_len, "%s", s_challenges[slot].nonce);
+            uint32_t rem_sec = (uint32_t)(remaining_us / 1000000LL);
+            *out_expires_in = rem_sec > 0 ? rem_sec : 1;
+            (void)xSemaphoreGive(s_mutex);
+            return ESP_OK;
         }
     }
     if (slot == -1) {
@@ -243,9 +254,7 @@ esp_err_t michi_auth_verify_and_create_session(
     }
 
     auth_challenge_entry_t ch = s_challenges[challenge_slot];
-    /* Single-use consumption (anti-replay): remove challenge immediately! */
-    s_challenges[challenge_slot].active = false;
-
+    /* Do NOT deactivate challenge yet: verify membership, revocation, and signature first */
     (void)xSemaphoreGive(s_mutex);
 
     /* Check client_michi_id matches challenge */
@@ -343,18 +352,42 @@ esp_err_t michi_auth_verify_and_create_session(
         return ESP_FAIL;
     }
 
-    /* Record session in RAM */
+    /* All verifications passed. Re-acquire lock to consume challenge atomically and allocate session */
     (void)xSemaphoreTake(s_mutex, portMAX_DELAY);
     const int64_t session_now_us = esp_timer_get_time();
+    purge_expired_locked(session_now_us);
+
+    /* Verify challenge is still active in slot */
+    if (!s_challenges[challenge_slot].active ||
+        strcmp(s_challenges[challenge_slot].challenge_id, challenge_id) != 0) {
+        (void)xSemaphoreGive(s_mutex);
+        return ESP_ERR_NOT_FOUND;
+    }
+    s_challenges[challenge_slot].active = false;
+
+    /* Session table:
+     * 1. If this client already has an active session, rotate it (reuse slot)
+     * 2. Otherwise find a free slot
+     * 3. If full: return ESP_ERR_NO_MEM (HTTP 429), NEVER arbitrarily evict slot 0 */
     int session_slot = -1;
     for (size_t i = 0; i < MAX_ACTIVE_SESSIONS; i++) {
-        if (!s_sessions[i].active) {
+        if (s_sessions[i].active &&
+            strcmp(s_sessions[i].client_michi_id, client_michi_id) == 0) {
             session_slot = (int)i;
             break;
         }
     }
     if (session_slot == -1) {
-        session_slot = 0;
+        for (size_t i = 0; i < MAX_ACTIVE_SESSIONS; i++) {
+            if (!s_sessions[i].active) {
+                session_slot = (int)i;
+                break;
+            }
+        }
+    }
+    if (session_slot == -1) {
+        (void)xSemaphoreGive(s_mutex);
+        return ESP_ERR_NO_MEM;
     }
 
     s_sessions[session_slot].active = true;

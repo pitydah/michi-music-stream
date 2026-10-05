@@ -273,6 +273,34 @@ static esp_err_t generate_and_persist(void)
     return ESP_OK;
 }
 
+esp_err_t michi_identity_import_seed(const uint8_t seed[MICHI_IDENTITY_KEY_BYTES])
+{
+    if (seed == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!seed_has_entropy(seed, MICHI_IDENTITY_KEY_BYTES)) {
+        ESP_LOGE(TAG, "identity: imported seed has insufficient entropy");
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err = derive_from_seed(seed);
+    if (err != ESP_OK) {
+        return err;
+    }
+    michi_identity_blob_t blob = {
+        .version = MICHI_IDENTITY_BLOB_VERSION,
+        .reserved = {0},
+    };
+    memcpy(blob.seed, seed, sizeof(blob.seed));
+    err = michi_identity_nvs_store(&blob);
+    if (err != ESP_OK) {
+        wipe_ram_identity();
+        return err;
+    }
+    s_state = MICHI_IDENTITY_READY;
+    ESP_LOGI(TAG, "identity: imported factory seed, michi_id=%s", s_michi_id);
+    return ESP_OK;
+}
+
 /* --- state machine ----------------------------------------------------- */
 
 esp_err_t michi_identity_init(void)
@@ -395,6 +423,33 @@ bool michi_identity_verify(const uint8_t *msg, size_t msg_len,
      * non-canonical S are rejected - matches ed25519-dalek's
      * verify_strict semantics used by the Rust implementation. */
     return crypto_ed25519_check(sig, pk, msg, msg_len) == 0;
+}
+
+esp_err_t michi_identity_derive_public_key(const uint8_t seed[MICHI_IDENTITY_KEY_BYTES],
+                                           uint8_t out_pk[MICHI_IDENTITY_KEY_BYTES])
+{
+    if (seed == NULL || out_pk == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint8_t secret[MICHI_IDENTITY_SIGNATURE_BYTES];
+    uint8_t seed_copy[MICHI_IDENTITY_KEY_BYTES];
+    memcpy(seed_copy, seed, sizeof(seed_copy));
+    crypto_ed25519_key_pair(secret, out_pk, seed_copy);
+    crypto_wipe(secret, sizeof(secret));
+    crypto_wipe(seed_copy, sizeof(seed_copy));
+    return ESP_OK;
+}
+
+esp_err_t michi_identity_blake3_hash(const uint8_t *data, size_t len, uint8_t out[32])
+{
+    if (out == NULL || (data == NULL && len != 0)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    blake3_hasher hasher;
+    blake3_hasher_init(&hasher);
+    blake3_hasher_update(&hasher, data, len);
+    blake3_hasher_finalize(&hasher, out, 32);
+    return ESP_OK;
 }
 
 #ifdef MICHI_IDENTITY_TESTING
