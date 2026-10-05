@@ -2955,14 +2955,76 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/SyncDeltaRequest"
+              $ref: "#/components/schemas/SyncDelta"
       responses:
         "200":
           description: Delta of changes
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SyncDelta"
+                type: object
+                properties:
+                  cursor:
+                    type: string
+                    description: Opaque cursor for subsequent delta requests
+                  added:
+                    type: object
+                    properties:
+                      tracks:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Track"
+                      albums:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Album"
+                      artists:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Artist"
+                  updated:
+                    type: object
+                    properties:
+                      tracks:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Track"
+                      albums:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Album"
+                      artists:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Artist"
+                  deleted:
+                    type: object
+                    properties:
+                      track_ids:
+                        type: array
+                        items:
+                          type: string
+                          format: uuid
+                      album_ids:
+                        type: array
+                        items:
+                          type: string
+                          format: uuid
+                      artist_ids:
+                        type: array
+                        items:
+                          type: string
+                          format: uuid
+                  playlists_updated:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Playlist"
+                    description: Playlists that were added or updated since the cursor
+                required:
+                  - cursor
+                  - added
+                  - updated
+                  - deleted
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -5260,9 +5322,9 @@ components:
         - playlists_checksum
 
     # --------------------------------------------------------------------------
-    # SYNC DELTA REQUEST
+    # SYNC DELTA
     # --------------------------------------------------------------------------
-    SyncDeltaRequest:
+    SyncDelta:
       type: object
       properties:
         cursor:
@@ -5270,120 +5332,6 @@ components:
           description: Opaque cursor from a previous SyncManifest or delta response
       required:
         - cursor
-
-    # --------------------------------------------------------------------------
-    # SYNC DELTA
-    # --------------------------------------------------------------------------
-    SyncDelta:
-      type: object
-      description: Incremental sync delta response. Cursor is the official field; since/manifest_id are legacy.
-      properties:
-        cursor:
-          type: string
-          description: Opaque cursor token for the next delta request
-          minLength: 1
-          example: cursor_delta_001_a1b2c3d4
-        added:
-          type: array
-          description: Entities added since the cursor
-          items:
-            $ref: "#/components/schemas/SyncDeltaEntity"
-        updated:
-          type: array
-          description: Entities modified since the cursor
-          items:
-            $ref: "#/components/schemas/SyncDeltaEntity"
-        deleted:
-          type: array
-          description: Entities removed since the cursor
-          items:
-            $ref: "#/components/schemas/SyncDeltaDeletedEntity"
-        playlists_updated:
-          type: array
-          description: Playlists whose track ordering changed
-          items:
-            $ref: "#/components/schemas/SyncDeltaPlaylistUpdate"
-      required:
-        - cursor
-        - added
-        - updated
-        - deleted
-        - playlists_updated
-
-    SyncDeltaEntity:
-      type: object
-      description: Entity added or updated in sync delta
-      properties:
-        type:
-          type: string
-          enum:
-            - track
-            - album
-            - artist
-            - playlist
-            - home
-            - device
-            - home_roster
-            - home_revocation
-          description: Entity type
-        id:
-          type: string
-          minLength: 1
-          description: Entity ID
-        data:
-          type: object
-          description: Full entity data (free-form map)
-      required:
-        - type
-        - id
-        - data
-
-    SyncDeltaDeletedEntity:
-      type: object
-      description: Entity removed in sync delta
-      properties:
-        type:
-          type: string
-          enum:
-            - track
-            - album
-            - artist
-            - playlist
-            - home
-            - device
-            - home_roster
-            - home_revocation
-          description: Entity type
-        id:
-          type: string
-          minLength: 1
-          description: Removed entity ID
-      required:
-        - type
-        - id
-
-    SyncDeltaPlaylistUpdate:
-      type: object
-      description: Playlist track ordering change in sync delta
-      properties:
-        playlist_id:
-          type: string
-          minLength: 1
-          description: Playlist ID
-        added:
-          type: array
-          items:
-            type: string
-            minLength: 1
-          description: Track IDs added
-        removed:
-          type: array
-          items:
-            type: string
-            minLength: 1
-          description: Track IDs removed
-      required:
-        - playlist_id
 
     # --------------------------------------------------------------------------
     # SYNC STATE REQUEST
