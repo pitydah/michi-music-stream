@@ -526,6 +526,14 @@ static void test_factory_config(void)
     memcpy(bin_buf + data_len, &bad_crc, 4);
     CHECK(michi_factory_cfg_parse((const char *)bin_buf, total_bin_len, &bin_cfg) == ESP_ERR_INVALID_CRC,
           "reject binary MICHI-F1 container with bad CRC32");
+
+    /* Test michi_factory_cfg_check_and_import() with binary MICHI-F1 container containing zeros */
+    michi_home_erase();
+    memcpy(bin_buf + data_len, &good_crc, 4);
+    michi_factory_cfg_set_test_partition_bytes(bin_buf, total_bin_len);
+    CHECK(michi_factory_cfg_check_and_import() == ESP_OK,
+          "check_and_import succeeds with binary MICHI-F1 partition without premature zero termination");
+    CHECK(michi_home_is_provisioned(), "home is provisioned after binary MICHI-F1 partition import");
 }
 
 /* ── 8. Revocation Verification & Enforcement ── */

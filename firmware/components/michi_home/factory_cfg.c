@@ -458,22 +458,49 @@ esp_err_t michi_factory_cfg_check_and_import(void)
     }
 
 #ifdef MICHI_HOME_TESTING
+    const char *buf = NULL;
+    size_t to_read = 0;
     if (s_test_factory_partition_bytes != NULL && s_test_factory_partition_len > 0) {
-        esp_err_t res = michi_home_import_factory_cfg((const char *)s_test_factory_partition_bytes, s_test_factory_partition_len);
-        if (res == ESP_OK) {
-            s_test_factory_partition_bytes = NULL;
-            s_test_factory_partition_len = 0;
-        }
-        return res;
+        buf = (const char *)s_test_factory_partition_bytes;
+        to_read = s_test_factory_partition_len;
+    } else if (s_test_factory_partition_data != NULL) {
+        buf = s_test_factory_partition_data;
+        to_read = strlen(s_test_factory_partition_data);
+    } else {
+        return ESP_OK;
     }
-    if (s_test_factory_partition_data != NULL) {
-        esp_err_t res = michi_home_import_factory_cfg(s_test_factory_partition_data, strlen(s_test_factory_partition_data));
-        if (res == ESP_OK) {
-            s_test_factory_partition_data = NULL;
-        }
-        return res;
+
+    if ((uint8_t)buf[0] == 0xFF || buf[0] == '\0') {
+        ESP_LOGD(TAG, "factory_cfg: partition empty or unprogrammed");
+        return ESP_OK;
     }
-    return ESP_OK;
+
+    size_t content_len = 0;
+    if (to_read >= sizeof(michi_f1_header_t) + 4 && memcmp(buf, MICHI_F1_MAGIC, MICHI_F1_MAGIC_LEN) == 0) {
+        const michi_f1_header_t *hdr = (const michi_f1_header_t *)buf;
+        size_t total_len = sizeof(michi_f1_header_t) + hdr->payload_len + 4;
+        if (total_len > to_read) {
+            ESP_LOGE(TAG, "factory_cfg: MICHI-F1 container length %zu exceeds available %zu", total_len, to_read);
+            return ESP_ERR_INVALID_SIZE;
+        }
+        content_len = total_len;
+    } else {
+        while (content_len < to_read && (uint8_t)buf[content_len] != 0xFF && buf[content_len] != '\0') {
+            content_len++;
+        }
+    }
+    if (content_len == 0) {
+        return ESP_OK;
+    }
+
+    ESP_LOGI(TAG, "factory_cfg: found config in test partition (%zu bytes), importing...", content_len);
+    esp_err_t res = michi_home_import_factory_cfg(buf, content_len);
+    if (res == ESP_OK) {
+        s_test_factory_partition_bytes = NULL;
+        s_test_factory_partition_len = 0;
+        s_test_factory_partition_data = NULL;
+    }
+    return res;
 #else
     /* 2. Locate factory_cfg partition */
     const esp_partition_t *part = esp_partition_find_first(
@@ -517,13 +544,23 @@ esp_err_t michi_factory_cfg_check_and_import(void)
     }
 
     size_t content_len = 0;
-    while (content_len < to_read && (uint8_t)buf[content_len] != 0xFF && buf[content_len] != '\0') {
-        content_len++;
+    if (to_read >= sizeof(michi_f1_header_t) + 4 && memcmp(buf, MICHI_F1_MAGIC, MICHI_F1_MAGIC_LEN) == 0) {
+        const michi_f1_header_t *hdr = (const michi_f1_header_t *)buf;
+        size_t total_len = sizeof(michi_f1_header_t) + hdr->payload_len + 4;
+        if (total_len > to_read || total_len > part->size) {
+            ESP_LOGE(TAG, "factory_cfg: MICHI-F1 container length %zu exceeds available %zu", total_len, to_read);
+            return ESP_ERR_INVALID_SIZE;
+        }
+        content_len = total_len;
+    } else {
+        while (content_len < to_read && (uint8_t)buf[content_len] != 0xFF && buf[content_len] != '\0') {
+            content_len++;
+        }
+        if (content_len == 0) {
+            return ESP_OK;
+        }
+        buf[content_len] = '\0';
     }
-    if (content_len == 0) {
-        return ESP_OK;
-    }
-    buf[content_len] = '\0';
 
     ESP_LOGI(TAG, "factory_cfg: found config in partition (%zu bytes), importing...", content_len);
     err = michi_home_import_factory_cfg(buf, content_len);
@@ -532,7 +569,9 @@ esp_err_t michi_factory_cfg_check_and_import(void)
         /* Securely erase partition to avoid retaining credentials */
         esp_err_t erase_err = esp_partition_erase_range(part, 0, part->size);
         if (erase_err != ESP_OK) {
-            ESP_LOGW(TAG, "factory_cfg: warning, erase failed: %s", esp_err_to_name(erase_err));
+            ESP_LOGE(TAG, "factory_cfg: critical error, erase failed: %s (initiating rollback to prevent credential retention)", esp_err_to_name(erase_err));
+            (void)michi_home_erase();
+            return erase_err;
         }
     } else {
         ESP_LOGW(TAG, "factory_cfg: one-shot import failed: %s (retaining partition for retry)", esp_err_to_name(err));

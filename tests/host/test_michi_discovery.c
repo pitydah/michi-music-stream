@@ -141,6 +141,30 @@ static void test_canonical_golden(void)
           "timestamp change alters the canonical payload");
 }
 
+static void test_canonical_with_home_metadata(void)
+{
+    printf("canonical: home metadata serialized in strict lexicographic order\n");
+    michi_discovery_announce_t a = vec_announce();
+    a.michi_home_id = "HOME123456789012345678901234567890123456789";
+    a.membership_fingerprint = "FP123456789012345678901234567890123456789";
+
+    char out[768];
+    CHECK(michi_discovery_canonical_json(&a, out, sizeof(out)) == ESP_OK,
+          "canonical build with home metadata succeeds");
+    CHECK(strstr(out, "\"membership_fingerprint\":\"FP123456789012345678901234567890123456789\"") != NULL,
+          "membership_fingerprint present in canonical payload");
+    CHECK(strstr(out, "\"michi_home_id\":\"HOME123456789012345678901234567890123456789\"") != NULL,
+          "michi_home_id present in canonical payload");
+
+    /* Verify lexicographical order: host < membership_fingerprint < michi_home_id < michi_id */
+    char *p_host = strstr(out, "\"host\":");
+    char *p_mf = strstr(out, "\"membership_fingerprint\":");
+    char *p_hid = strstr(out, "\"michi_home_id\":");
+    char *p_mid = strstr(out, "\"michi_id\":");
+    CHECK(p_host != NULL && p_mf != NULL && p_hid != NULL && p_mid != NULL, "all keys present");
+    CHECK(p_host < p_mf && p_mf < p_hid && p_hid < p_mid, "exact lexicographical key ordering maintained");
+}
+
 static void test_canonical_rejects_invalid(void)
 {
     printf("canonical: invalid fields rejected\n");
@@ -516,6 +540,7 @@ int main(void)
 {
     test_constants();
     test_canonical_golden();
+    test_canonical_with_home_metadata();
     test_canonical_rejects_invalid();
     test_canonical_serializes_false_flags();
     test_datagram_golden_signature();

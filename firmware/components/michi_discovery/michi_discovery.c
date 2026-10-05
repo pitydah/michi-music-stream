@@ -255,6 +255,31 @@ static void announce_now_locked(void)
      * (now_playing/diagnostics/ota) belong to /server/info. */
     const michi_product_capabilities_t caps =
         michi_product_profile_capabilities_for(p);
+
+    char home_id[MICHI_HOME_ID_LEN] = {0};
+    char fp_b64[MICHI_IDENTITY_PUBLIC_KEY_B64_LEN] = {0};
+    const char *p_home_id = NULL;
+    const char *p_fp = NULL;
+
+    if (michi_home_is_provisioned() && michi_home_get_id(home_id, sizeof(home_id)) == ESP_OK) {
+        p_home_id = home_id;
+        michi_membership_t mem;
+        if (michi_home_get_device_membership(&mem) == ESP_OK) {
+            uint8_t canon[512];
+            size_t c_len = michi_home_canonical_membership_bytes(
+                mem.home_id, mem.device_michi_id, mem.device_public_key,
+                mem.device_type, mem.roles, mem.role_count,
+                mem.issued_at, mem.serial, canon, sizeof(canon));
+            if (c_len > 0) {
+                uint8_t hash[32];
+                if (michi_identity_blake3_hash(canon, c_len, hash) == ESP_OK &&
+                    michi_identity_base64url_encode(hash, sizeof(hash), fp_b64, sizeof(fp_b64)) == ESP_OK) {
+                    p_fp = fp_b64;
+                }
+            }
+        }
+    }
+
     const michi_discovery_announce_t announce = {
         .device_id = s_server_id,
         .name = p->product_name,
@@ -271,6 +296,8 @@ static void announce_now_locked(void)
          * above, so this is never a silently invalid 0. */
         .timestamp_ms = michi_time_unix_ms(),
         .nonce = nonce_b64,
+        .michi_home_id = p_home_id,
+        .membership_fingerprint = p_fp,
     };
 
     char datagram[MICHI_DISCOVERY_MAX_DATAGRAM_BYTES + 1];

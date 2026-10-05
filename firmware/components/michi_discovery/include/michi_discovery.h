@@ -104,6 +104,8 @@ typedef struct {
                                   the runtime never signs with an
                                   unsynchronized clock - P0-02) */
     const char *nonce;       /*!< base64url-nopad, >= 22 chars (16 bytes) */
+    const char *michi_home_id;          /*!< base64url-nopad, 43 chars, or NULL if unprovisioned */
+    const char *membership_fingerprint; /*!< base64url-nopad, 16..43 chars, or NULL if none */
 } michi_discovery_announce_t;
 
 /**

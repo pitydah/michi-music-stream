@@ -29,12 +29,23 @@
 static int append_canonical(const michi_discovery_announce_t *a,
                             char *out, size_t out_len)
 {
+    char home_fields[256] = "";
+    if (a->membership_fingerprint != NULL && a->membership_fingerprint[0] != '\0') {
+        snprintf(home_fields + strlen(home_fields), sizeof(home_fields) - strlen(home_fields),
+                 ",\"membership_fingerprint\":\"%s\"", a->membership_fingerprint);
+    }
+    if (a->michi_home_id != NULL && a->michi_home_id[0] != '\0') {
+        snprintf(home_fields + strlen(home_fields), sizeof(home_fields) - strlen(home_fields),
+                 ",\"michi_home_id\":\"%s\"", a->michi_home_id);
+    }
+
     return snprintf(
         out, out_len,
         "{\"api_version\":\"%s\","
         "\"device_id\":\"%s\","
         "\"features\":{\"heartbeat\":%s,\"session\":%s,\"volume\":%s},"
-        "\"host\":\"%s\","
+        "\"host\":\"%s\""
+        "%s,"
         "\"michi_id\":\"%s\","
         "\"name\":\"%s\","
         "\"nonce\":\"%s\","
@@ -47,7 +58,7 @@ static int append_canonical(const michi_discovery_announce_t *a,
         a->feature_heartbeat ? "true" : "false",
         a->feature_session ? "true" : "false",
         a->feature_volume ? "true" : "false",
-        a->host, a->michi_id, a->name, a->nonce, (unsigned)a->port,
+        a->host, home_fields, a->michi_id, a->name, a->nonce, (unsigned)a->port,
         a->public_key, MICHI_DISCOVERY_ROLE, a->service, a->timestamp_ms);
 }
 
@@ -140,6 +151,10 @@ esp_err_t michi_discovery_build_announce(const michi_discovery_announce_t *a,
         cJSON_AddBoolToObject(features, "volume", a->feature_volume) !=
             NULL &&
         cJSON_AddStringToObject(root, "host", a->host) != NULL &&
+        (a->membership_fingerprint == NULL ||
+         cJSON_AddStringToObject(root, "membership_fingerprint", a->membership_fingerprint) != NULL) &&
+        (a->michi_home_id == NULL ||
+         cJSON_AddStringToObject(root, "michi_home_id", a->michi_home_id) != NULL) &&
         cJSON_AddStringToObject(root, "michi_id", a->michi_id) != NULL &&
         cJSON_AddStringToObject(root, "name", a->name) != NULL &&
         cJSON_AddStringToObject(root, "nonce", a->nonce) != NULL &&
