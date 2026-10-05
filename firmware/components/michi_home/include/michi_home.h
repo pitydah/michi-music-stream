@@ -140,6 +140,14 @@ bool michi_home_is_device_revoked(const char *device_michi_id);
 #define MICHI_F1_NONCE_MIN_LEN 16
 #define MICHI_F1_NONCE_MAX_LEN 32
 
+/* Canonical Ecosystem wire format (27 bytes header: magic[8] | schema(u8) | nonce[16] | payload_len(u16be)) */
+typedef struct __attribute__((packed)) {
+    char magic[8];        /* "MICHI-F1" */
+    uint8_t schema;       /* 1 */
+    uint8_t nonce[16];    /* 16 bytes */
+    uint16_t payload_len; /* Big-endian */
+} michi_f1_ecosystem_header_t;
+
 typedef struct __attribute__((packed)) {
     char magic[8];            /* "MICHI-F1" */
     uint16_t version;         /* 1 */
