@@ -278,7 +278,7 @@ esp_err_t michi_factory_cfg_parse(const char *payload, size_t len, michi_factory
             return ESP_ERR_INVALID_SIZE;
         }
         if (hdr->payload_len == 0 || sizeof(michi_f1_header_t) + hdr->payload_len + 4 > len) {
-            ESP_LOGE(TAG, "factory_cfg: invalid payload length %u (container len %zu)", hdr->payload_len, len);
+            ESP_LOGE(TAG, "factory_cfg: invalid payload length %" PRIu32 " (container len %zu)", hdr->payload_len, len);
             return ESP_ERR_INVALID_SIZE;
         }
 
