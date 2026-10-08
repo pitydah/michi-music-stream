@@ -246,6 +246,7 @@ class SimulatorState:
 
         self.home_id = config.get("michi_home_id", VECTOR_HOME_ID)
         self.active_challenges = {}
+        self.ram_sessions = {}
         self.revoked_devices = set(config.get("revoked_devices", []))
         self.revocations = {}
         self.session_owner = None
