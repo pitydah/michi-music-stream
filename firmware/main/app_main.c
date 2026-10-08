@@ -126,6 +126,21 @@ static void init_dac(void)
     }
     ESP_LOGI(TAG, "dac=ok");
     ESP_LOGI(TAG, "subsystem=dac state=initialized phase=2");
+static void on_device_revoked(const char *revoked_device_michi_id)
+{
+    if (revoked_device_michi_id == NULL) {
+        return;
+    }
+    if (michi_session_active()) {
+        michi_session_info_t info;
+        if (michi_session_get_info(&info) == ESP_OK) {
+            if (strcmp(info.owner_controller_id, revoked_device_michi_id) == 0) {
+                ESP_LOGW(TAG, "Revoked device %s holds active session, aborting session",
+                         revoked_device_michi_id);
+                (void)michi_session_abort("controller revoked");
+            }
+        }
+    }
 }
 
 void app_main(void)
@@ -356,6 +371,8 @@ void app_main(void)
         ESP_LOGE(TAG, "michi_session_init failed: %s (no sessions)",
                  esp_err_to_name(err));
         ESP_LOGI(TAG, "subsystem=session state=failed phase=12");
+    } else {
+        michi_home_set_revocation_callback(on_device_revoked);
     }
 
     /* OTA subsystem (phase 13): signed updates with A/B rollback. Runs

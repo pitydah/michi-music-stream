@@ -130,6 +130,9 @@ bool michi_home_verify_revocation(
     const uint8_t root_pk[MICHI_HOME_KEY_BYTES]);
 
 /* Revocation list management */
+typedef void (*michi_home_revocation_cb_t)(const char *revoked_device_michi_id);
+void michi_home_set_revocation_callback(michi_home_revocation_cb_t cb);
+size_t michi_home_get_revocations(michi_revocation_t *out_revocations, size_t max_count);
 esp_err_t michi_home_add_revocation(const michi_revocation_t *revocation);
 bool michi_home_is_device_revoked(const char *device_michi_id);
 

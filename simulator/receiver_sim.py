@@ -246,8 +246,9 @@ class SimulatorState:
 
         self.home_id = config.get("michi_home_id", VECTOR_HOME_ID)
         self.active_challenges = {}
-        self.ram_sessions = {}
         self.revoked_devices = set(config.get("revoked_devices", []))
+        self.revocations = {}
+        self.session_owner = None
         server_seed = blake3.blake3(b"michi-link contract vectors v1" + b"receiver").digest()
         self.server_private_key = Ed25519PrivateKey.from_private_bytes(server_seed)
         root_seed = blake3.blake3(b"michi-link contract vectors v1" + b"home-root").digest()
@@ -1153,6 +1154,26 @@ def create_app(state: SimulatorState) -> Flask:
             return jsonify(error_body("INVALID_REQUEST", "request body must be a JSON object", {"field": "body"})), 400
         status, body = state.auth_session(payload)
         return jsonify(body), status
+
+    @app.route("/api/v1/home/revocations", methods=["GET"])
+    def home_revocations_get():
+        return jsonify({"revocations": list(state.revocations.values())}), 200
+
+    @app.route("/api/v1/home/revocations", methods=["POST"])
+    def home_revocations_post():
+        payload = json_payload()
+        if payload is None:
+            return jsonify(error_body("INVALID_REQUEST", "request body must be a JSON object", {"field": "body"})), 400
+        required = ["version", "home_id", "revoked_device_michi_id", "revoked_at", "reason", "signature"]
+        for f in required:
+            if f not in payload:
+                return jsonify(error_body("INVALID_REQUEST", f"missing required field: {f}", {"field": f})), 400
+        revoked_id = payload["revoked_device_michi_id"]
+        state.revocations[revoked_id] = payload
+        state.revoked_devices.add(revoked_id)
+        if state.session_id is not None and getattr(state, "session_owner", None) == revoked_id:
+            state.session_delete()
+        return jsonify({"status": "accepted", "revoked_device_michi_id": revoked_id}), 200
 
     @app.route("/api/v1/receiver-lite/session", methods=["POST"])
     def session_create():

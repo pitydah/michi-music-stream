@@ -523,6 +523,23 @@ static esp_err_t save_revocations_to_nvs(void)
     return err;
 }
 
+static michi_home_revocation_cb_t s_revocation_cb = NULL;
+
+void michi_home_set_revocation_callback(michi_home_revocation_cb_t cb)
+{
+    s_revocation_cb = cb;
+}
+
+size_t michi_home_get_revocations(michi_revocation_t *out_revocations, size_t max_count)
+{
+    if (out_revocations == NULL || max_count == 0) {
+        return s_revocation_count;
+    }
+    size_t count = (s_revocation_count < max_count) ? s_revocation_count : max_count;
+    memcpy(out_revocations, s_revocations, count * sizeof(michi_revocation_t));
+    return count;
+}
+
 esp_err_t michi_home_add_revocation(const michi_revocation_t *revocation)
 {
     if (revocation == NULL) {
@@ -537,8 +554,16 @@ esp_err_t michi_home_add_revocation(const michi_revocation_t *revocation)
 
     for (size_t i = 0; i < s_revocation_count; i++) {
         if (strcmp(s_revocations[i].revoked_device_michi_id, revocation->revoked_device_michi_id) == 0) {
+            michi_revocation_t old_rev = s_revocations[i];
             s_revocations[i] = *revocation;
-            (void)save_revocations_to_nvs();
+            esp_err_t err = save_revocations_to_nvs();
+            if (err != ESP_OK) {
+                s_revocations[i] = old_rev;
+                return err;
+            }
+            if (s_revocation_cb != NULL) {
+                s_revocation_cb(revocation->revoked_device_michi_id);
+            }
             return ESP_OK;
         }
     }
@@ -547,9 +572,19 @@ esp_err_t michi_home_add_revocation(const michi_revocation_t *revocation)
         return ESP_ERR_NO_MEM;
     }
 
-    s_revocations[s_revocation_count++] = *revocation;
-    (void)save_revocations_to_nvs();
+    s_revocations[s_revocation_count] = *revocation;
+    s_revocation_count++;
+    esp_err_t err = save_revocations_to_nvs();
+    if (err != ESP_OK) {
+        s_revocation_count--;
+        memset(&s_revocations[s_revocation_count], 0, sizeof(michi_revocation_t));
+        return err;
+    }
+
     ESP_LOGI(TAG, "Added revocation for device %s", revocation->revoked_device_michi_id);
+    if (s_revocation_cb != NULL) {
+        s_revocation_cb(revocation->revoked_device_michi_id);
+    }
     return ESP_OK;
 }
 
@@ -565,3 +600,4 @@ bool michi_home_is_device_revoked(const char *device_michi_id)
     }
     return false;
 }
+

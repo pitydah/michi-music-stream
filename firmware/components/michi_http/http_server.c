@@ -1342,10 +1342,102 @@ static esp_err_t diagnostics_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t home_revocations_get_handler(httpd_req_t *req)
+{
+    michi_revocation_t revs[MICHI_MAX_REVOCATIONS];
+    size_t count = michi_home_get_revocations(revs, MICHI_MAX_REVOCATIONS);
+
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) {
+        return michi_http_send_error(req, 500, "out of memory while building response", NULL);
+    }
+    cJSON *arr = cJSON_CreateArray();
+    if (arr == NULL) {
+        cJSON_Delete(root);
+        return michi_http_send_error(req, 500, "out of memory while building response", NULL);
+    }
+    cJSON_AddItemToObject(root, "revocations", arr);
+
+    for (size_t i = 0; i < count; i++) {
+        cJSON *item = cJSON_CreateObject();
+        if (item == NULL) {
+            cJSON_Delete(root);
+            return michi_http_send_error(req, 500, "out of memory while building response", NULL);
+        }
+        cJSON_AddNumberToObject(item, "version", (double)revs[i].version);
+        cJSON_AddStringToObject(item, "home_id", revs[i].home_id);
+        cJSON_AddStringToObject(item, "revoked_device_michi_id", revs[i].revoked_device_michi_id);
+        cJSON_AddStringToObject(item, "revoked_at", revs[i].revoked_at);
+        cJSON_AddStringToObject(item, "reason", revs[i].reason);
+        cJSON_AddStringToObject(item, "signature", revs[i].signature);
+        cJSON_AddItemToArray(arr, item);
+    }
+
+    esp_err_t send_err = michi_http_send_json(req, 200, root);
+    cJSON_Delete(root);
+    return send_err;
+}
+
+static esp_err_t home_revocations_post_handler(httpd_req_t *req)
+{
+    cJSON *root = read_json_body(req);
+    if (root == NULL) {
+        return ESP_OK; /* 400 already sent */
+    }
+
+    cJSON *v_item = cJSON_GetObjectItem(root, "version");
+    cJSON *hid_item = cJSON_GetObjectItem(root, "home_id");
+    cJSON *dev_item = cJSON_GetObjectItem(root, "revoked_device_michi_id");
+    cJSON *at_item = cJSON_GetObjectItem(root, "revoked_at");
+    cJSON *reas_item = cJSON_GetObjectItem(root, "reason");
+    cJSON *sig_item = cJSON_GetObjectItem(root, "signature");
+
+    if (!cJSON_IsNumber(v_item) || !cJSON_IsString(hid_item) ||
+        !cJSON_IsString(dev_item) || !cJSON_IsString(at_item) ||
+        !cJSON_IsString(reas_item) || !cJSON_IsString(sig_item)) {
+        cJSON_Delete(root);
+        return michi_http_send_error(req, 400, "missing or invalid required revocation fields", NULL);
+    }
+
+    michi_revocation_t rev;
+    memset(&rev, 0, sizeof(rev));
+    rev.version = (uint32_t)v_item->valueint;
+    snprintf(rev.home_id, sizeof(rev.home_id), "%s", hid_item->valuestring);
+    snprintf(rev.revoked_device_michi_id, sizeof(rev.revoked_device_michi_id), "%s", dev_item->valuestring);
+    snprintf(rev.revoked_at, sizeof(rev.revoked_at), "%s", at_item->valuestring);
+    snprintf(rev.reason, sizeof(rev.reason), "%s", reas_item->valuestring);
+    snprintf(rev.signature, sizeof(rev.signature), "%s", sig_item->valuestring);
+    cJSON_Delete(root);
+
+    esp_err_t err = michi_home_add_revocation(&rev);
+    if (err == ESP_ERR_INVALID_RESPONSE) {
+        return michi_http_send_error(req, 400, "invalid revocation signature or parameters", NULL);
+    } else if (err == ESP_ERR_INVALID_STATE) {
+        return michi_http_send_error(req, 409, "receiver not provisioned to a home", NULL);
+    } else if (err == ESP_ERR_NO_MEM) {
+        return michi_http_send_error(req, 507, "revocation table full", NULL);
+    } else if (err != ESP_OK) {
+        return michi_http_send_error(req, 500, "failed to persist revocation", NULL);
+    }
+
+    cJSON *resp = cJSON_CreateObject();
+    if (resp == NULL) {
+        return michi_http_send_error(req, 500, "out of memory while building response", NULL);
+    }
+    cJSON_AddStringToObject(resp, "status", "accepted");
+    cJSON_AddStringToObject(resp, "revoked_device_michi_id", rev.revoked_device_michi_id);
+
+    esp_err_t send_err = michi_http_send_json(req, 200, resp);
+    cJSON_Delete(resp);
+    return send_err;
+}
+
 static const httpd_uri_t s_endpoints[] = {
     {.uri = "/api/v1/server/info",               .method = HTTP_GET,    .handler = info_get_handler},
     {.uri = "/api/v1/auth/challenge",            .method = HTTP_POST,   .handler = auth_challenge_handler},
     {.uri = "/api/v1/auth/session",              .method = HTTP_POST,   .handler = auth_session_handler},
+    {.uri = "/api/v1/home/revocations",          .method = HTTP_GET,    .handler = home_revocations_get_handler},
+    {.uri = "/api/v1/home/revocations",          .method = HTTP_POST,   .handler = home_revocations_post_handler},
     {.uri = "/api/v1/receiver-lite/session",     .method = HTTP_POST,   .handler = session_start_handler},
     {.uri = "/api/v1/receiver-lite/session",     .method = HTTP_GET,    .handler = session_current_get_handler},
     {.uri = "/api/v1/receiver-lite/session",     .method = HTTP_PATCH,  .handler = session_patch_handler},

@@ -592,6 +592,14 @@ static void test_factory_config(void)
     CHECK(strcmp(bin_cfg.wifi_ssid, "BinaryWiFi") == 0, "binary wifi_ssid parsed");
 }
 
+static char s_cb_revoked[MICHI_HOME_ID_LEN] = {0};
+static void on_test_revoked(const char *dev)
+{
+    if (dev) {
+        snprintf(s_cb_revoked, sizeof(s_cb_revoked), "%s", dev);
+    }
+}
+
 /* ── 8. Revocation Verification & Enforcement ── */
 static void test_revocation(void)
 {
@@ -681,9 +689,18 @@ static void test_revocation(void)
     CHECK(!michi_home_verify_revocation(&rev, root_pk), "tampered revocation signature rejected");
     rev.signature[10] ^= 0x01; /* restore */
 
+    s_cb_revoked[0] = '\0';
+    michi_home_set_revocation_callback(on_test_revoked);
+
     CHECK(!michi_home_is_device_revoked(client_michi_id), "device not revoked before adding to roster");
     CHECK(michi_home_add_revocation(&rev) == ESP_OK, "add revocation to roster");
     CHECK(michi_home_is_device_revoked(client_michi_id), "device marked as revoked");
+    CHECK(strcmp(s_cb_revoked, client_michi_id) == 0, "revocation callback invoked with revoked michi_id");
+
+    michi_revocation_t rev_list[MICHI_MAX_REVOCATIONS];
+    size_t rev_cnt = michi_home_get_revocations(rev_list, MICHI_MAX_REVOCATIONS);
+    CHECK(rev_cnt == 1, "revocation count is 1");
+    CHECK(strcmp(rev_list[0].revoked_device_michi_id, client_michi_id) == 0, "retrieved revocation matches");
 
     /* Now attempting auth session with the revoked client fails */
     char cid_rev[MICHI_AUTH_CHALLENGE_ID_LEN], nonce_rev[MICHI_AUTH_NONCE_B64_LEN];
