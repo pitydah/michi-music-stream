@@ -126,6 +126,8 @@ static void init_dac(void)
     }
     ESP_LOGI(TAG, "dac=ok");
     ESP_LOGI(TAG, "subsystem=dac state=initialized phase=2");
+}
+
 static void on_device_revoked(const char *revoked_device_michi_id)
 {
     if (revoked_device_michi_id == NULL) {
