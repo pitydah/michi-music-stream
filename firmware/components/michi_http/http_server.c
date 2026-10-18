@@ -1399,6 +1399,15 @@ static esp_err_t home_revocations_post_handler(httpd_req_t *req)
         return michi_http_send_error(req, 400, "missing or invalid required revocation fields", NULL);
     }
 
+    if (strlen(hid_item->valuestring) >= sizeof(((michi_revocation_t *)0)->home_id) ||
+        strlen(dev_item->valuestring) >= sizeof(((michi_revocation_t *)0)->revoked_device_michi_id) ||
+        strlen(at_item->valuestring) >= sizeof(((michi_revocation_t *)0)->revoked_at) ||
+        strlen(reas_item->valuestring) >= sizeof(((michi_revocation_t *)0)->reason) ||
+        strlen(sig_item->valuestring) >= sizeof(((michi_revocation_t *)0)->signature)) {
+        cJSON_Delete(root);
+        return michi_http_send_error(req, 400, "revocation field exceeds maximum length", NULL);
+    }
+
     michi_revocation_t rev;
     memset(&rev, 0, sizeof(rev));
     rev.version = (uint32_t)v_item->valueint;
