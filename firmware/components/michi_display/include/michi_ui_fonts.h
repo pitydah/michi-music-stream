@@ -35,6 +35,9 @@ extern "C" {
 typedef enum michi_ui_font_id {
     MICHI_FONT_XS = 0,
     MICHI_FONT_SM,
+    /* BODY: 15 px Medium, the legibility tier for instructions/copy on the
+     * 2" panel. SM (13 px) is reserved for dense status labels. */
+    MICHI_FONT_BODY,
     MICHI_FONT_MD,
     MICHI_FONT_LG,
     MICHI_FONT_PIN,

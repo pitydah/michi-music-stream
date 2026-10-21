@@ -201,10 +201,23 @@ static esp_err_t init_display(void)
         return err;
     }
 
+    /* Pixel byte order. The banded framebuffer holds native little-endian
+     * uint16 RGB565 values, but the ST7789 driver defaults RAMCTRL to
+     * big-endian, so every pixel was byte-swapped on the wire: near-black
+     * #080A0F (0x0842) arrived as 0x4208 and the canvas rendered violet, with
+     * light text washing out. Declare the buffer's real order instead of
+     * swapping bytes in the blit path (one conversion, one source of truth).
+     * The calibration build can force the old value to A/B the difference. */
+#ifdef CONFIG_MICHI_UI_CAL_FORCE_BIG_ENDIAN
+#define MICHI_LCD_DATA_ENDIAN LCD_RGB_DATA_ENDIAN_BIG
+#else
+#define MICHI_LCD_DATA_ENDIAN LCD_RGB_DATA_ENDIAN_LITTLE
+#endif
     esp_lcd_panel_dev_config_t panel_config = {
         .reset_gpio_num = bi->lcd_rst,
         .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
         .bits_per_pixel = 16,
+        .data_endian = MICHI_LCD_DATA_ENDIAN,
     };
     err = esp_lcd_new_panel_st7789(s_panel_io, &panel_config, &s_panel);
     if (err != ESP_OK) {

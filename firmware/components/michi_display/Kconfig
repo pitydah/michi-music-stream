@@ -52,6 +52,25 @@ menu "Michi Music Stream Display"
           Minimum delay between animation-only redraws. Higher values reduce
           LCD bus traffic; the session observer remains event-driven.
 
+    config MICHI_UI_CALIBRATION
+        bool "Show the colour calibration card instead of the UI (lab builds)"
+        default n
+        help
+          Replaces every screen with a known-colour card: the eight RGB565
+          anchors, a 16-step grey ramp, R/G/B ramps, near-black samples and
+          two text samples. Used to verify LCD colour fidelity on real
+          hardware. Not for production: the device shows no product UI.
+
+    config MICHI_UI_CAL_FORCE_BIG_ENDIAN
+        bool "Calibration: keep the old big-endian pixel order"
+        default n
+        depends on MICHI_UI_CALIBRATION
+        help
+          A/B control for the calibration card. The production fix declares
+          the framebuffer's real little-endian RGB565 order to the ST7789;
+          enabling this forces the previous big-endian RAMCTRL value so both
+          variants can be compared changing exactly one variable.
+
     config MICHI_DISPLAY_RASTER_2BIT
         bool "Enable 2-bit anti-aliased raster mode"
         default n

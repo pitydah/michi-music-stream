@@ -94,6 +94,17 @@ void michi_ui_render_screen(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
 
 /* Specific screen drawing functions (also exposed for tests and modularity) */
 void michi_ui_draw_screen_boot(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin);
+
+#if CONFIG_MICHI_UI_CALIBRATION
+/**
+ * @brief Known-colour calibration card (lab builds only).
+ *
+ * Pure RGB565 anchors, a grey ramp, R/G/B ramps, near-black samples and two
+ * text samples, drawn in absolute coordinates and clipped to the current band.
+ * Used to verify the panel's colour fidelity and byte order physically.
+ */
+void michi_ui_draw_calibration(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin);
+#endif
 void michi_ui_draw_screen_ready(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin, const michi_ui_screen_ctx_t *ctx);
 void michi_ui_draw_screen_unprovisioned(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin);
 void michi_ui_draw_screen_provisioning(uint16_t *fb, uint16_t fb_w, uint16_t fb_h, uint16_t y_origin);

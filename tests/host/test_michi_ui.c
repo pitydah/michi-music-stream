@@ -21,6 +21,7 @@
 #include "michi_ui.h"
 #include "michi_ui_components.h"
 #include "michi_ui_screens.h"
+#include "michi_ui_theme.h"
 #include "michi_ui_strings.h"
 
 #define PANEL_W 320
@@ -869,8 +870,60 @@ static void test_network_truth_pairing_and_diagnostics(void)
     free(fb2);
 }
 
+/* H23-UI: colour fidelity. The panel byte order bug turned the near-black
+ * canvas violet; these assert the conversion the firmware relies on, and that
+ * every semantic token really is the documented RGB888. */
+static void test_theme_palette_exact(void)
+{
+    printf("ui: RGB565 anchors and palette fidelity\n");
+
+    CHECK(michi_ui_rgb888_to_rgb565(0x00, 0x00, 0x00) == 0x0000, "UI-COLOR-01: #000000 -> 0x0000");
+    CHECK(michi_ui_rgb888_to_rgb565(0xFF, 0xFF, 0xFF) == 0xFFFF, "UI-COLOR-02: #FFFFFF -> 0xFFFF");
+    CHECK(michi_ui_rgb888_to_rgb565(0xFF, 0x00, 0x00) == 0xF800, "UI-COLOR-03: #FF0000 -> 0xF800");
+    CHECK(michi_ui_rgb888_to_rgb565(0x00, 0xFF, 0x00) == 0x07E0, "UI-COLOR-04: #00FF00 -> 0x07E0");
+    CHECK(michi_ui_rgb888_to_rgb565(0x00, 0x00, 0xFF) == 0x001F, "UI-COLOR-05: #0000FF -> 0x001F");
+
+    static const struct {
+        const char *name;
+        uint8_t r, g, b;
+    } doc[] = {
+        { "bg", 0x08, 0x0A, 0x0F },
+        { "surface", 0x10, 0x14, 0x1A },
+        { "surface_elevated", 0x15, 0x1A, 0x24 },
+        { "text_primary", 0xF5, 0xF6, 0xF8 },
+        { "text_secondary", 0x9A, 0xA3, 0xB3 },
+        { "text_tertiary", 0x76, 0x80, 0x8F },
+        { "accent", 0xFF, 0x5C, 0x8A },
+        { "accent_soft", 0xE8, 0x4F, 0x7B },
+        { "success", 0x5A, 0xD6, 0xA0 },
+        { "warning", 0xF2, 0xB8, 0x5B },
+        { "error", 0xFF, 0x62, 0x62 },
+        { "info", 0x68, 0xA8, 0xFF },
+        { "muted", 0x50, 0x57, 0x65 },
+    };
+    CHECK(MICHI_UI_THEME_ENTRY_COUNT == (int)(sizeof(doc) / sizeof(doc[0])),
+          "UI-COLOR-06: palette table and documented tokens agree in count");
+    for (size_t i = 0; i < sizeof(doc) / sizeof(doc[0]); i++) {
+        uint16_t found = 0;
+        bool ok = false;
+        for (int j = 0; j < MICHI_UI_THEME_ENTRY_COUNT; j++) {
+            if (strcmp(michi_ui_theme_palette[j].name, doc[i].name) == 0) {
+                found = michi_ui_theme_palette[j].value;
+                ok = true;
+                break;
+            }
+        }
+        CHECK(ok && found == michi_ui_rgb888_to_rgb565(doc[i].r, doc[i].g, doc[i].b),
+              "UI-COLOR-06: token matches its documented RGB888");
+    }
+    /* The historical drift: #080A0F must quantise to 0x0842, never 0x0861. */
+    CHECK(michi_ui_theme_palette[0].value == 0x0842,
+          "UI-COLOR-07: BG #080A0F quantises to 0x0842 (no violet drift)");
+}
+
 int main(void)
 {
+    test_theme_palette_exact();
     test_wrap();
     test_utf8_decoding();
     test_wrap_truncation_ex();

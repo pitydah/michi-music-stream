@@ -29,6 +29,12 @@ static const michi_ui_font_t s_fonts[MICHI_FONT_COUNT] = {
         michi_ui_sm_bitmap, michi_ui_sm_width, michi_ui_sm_advance,
         michi_ui_sm_offset, MICHI_UI_SM_RASTER_BITS, MICHI_UI_SM_BYTES_PER_COL, NULL,
     },
+    [MICHI_FONT_BODY] = {
+        "body", MICHI_UI_BODY_HEIGHT, MICHI_UI_BODY_BASELINE, MICHI_UI_BODY_LINE_HEIGHT,
+        MICHI_UI_FONT_GLYPH_COUNT,
+        michi_ui_body_bitmap, michi_ui_body_width, michi_ui_body_advance,
+        michi_ui_body_offset, MICHI_UI_BODY_RASTER_BITS, MICHI_UI_BODY_BYTES_PER_COL, NULL,
+    },
     [MICHI_FONT_MD] = {
         "md", MICHI_UI_MD_HEIGHT, MICHI_UI_MD_BASELINE, MICHI_UI_MD_LINE_HEIGHT,
         MICHI_UI_FONT_GLYPH_COUNT,

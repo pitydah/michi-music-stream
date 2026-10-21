@@ -18,21 +18,23 @@ extern "C" {
  * (tools/gen_michi_ui_assets.py) and by the host smoke test.
  */
 
-#define MICHI_UI_BG                0x0861u /* #080A0F background            */
-#define MICHI_UI_SURFACE           0x10A3u /* #10141A cards/panels          */
-#define MICHI_UI_SURFACE_ELEVATED  0x18C4u /* #151A24 raised surfaces       */
-#define MICHI_UI_TEXT_PRIMARY      0xF7BEu /* #F5F6F8 headings/values       */
-#define MICHI_UI_TEXT_SECONDARY    0x9D16u /* #9AA3B3 body text             */
-#define MICHI_UI_TEXT_TERTIARY     0x6390u /* #667080 captions/hints        */
-#define MICHI_UI_ACCENT            0xFAF1u /* #FF5C8A Michi pink            */
-#define MICHI_UI_ACCENT_SOFT       0xE28Fu /* #E84F7B pressed/soft pink     */
-#define MICHI_UI_SUCCESS           0x5EB3u /* #5AD6A0 ok/playing            */
-#define MICHI_UI_WARNING           0xEDABu /* #F2B85B warn/degraded         */
-#define MICHI_UI_ERROR             0xFB0Cu /* #FF6262 fatal/rejected        */
-#define MICHI_UI_INFO              0x6D5Fu /* #68A8FF neutral info          */
-#define MICHI_UI_MUTED             0x52ACu /* #505765 disabled/inactive     */
+#define MICHI_UI_BG                MICHI_UI_RGB565(0x08, 0x0A, 0x0F) /* near-black canvas */
+#define MICHI_UI_SURFACE           MICHI_UI_RGB565(0x10, 0x14, 0x1A) /* cards/panels     */
+#define MICHI_UI_SURFACE_ELEVATED  MICHI_UI_RGB565(0x15, 0x1A, 0x24) /* raised surfaces  */
+#define MICHI_UI_TEXT_PRIMARY      MICHI_UI_RGB565(0xF5, 0xF6, 0xF8) /* headings/values  */
+#define MICHI_UI_TEXT_SECONDARY    MICHI_UI_RGB565(0x9A, 0xA3, 0xB3) /* body text        */
+/* Tertiary was #667080 (3.95:1 on the canvas, below the WCAG 4.5 target for
+ * informative text). #76808F keeps the same hue family and reaches 4.95:1 on
+ * the canvas and 4.62:1 on a surface. */
+#define MICHI_UI_TEXT_TERTIARY     MICHI_UI_RGB565(0x76, 0x80, 0x8F) /* captions/hints   */
+#define MICHI_UI_ACCENT            MICHI_UI_RGB565(0xFF, 0x5C, 0x8A) /* Michi pink       */
+#define MICHI_UI_ACCENT_SOFT       MICHI_UI_RGB565(0xE8, 0x4F, 0x7B) /* pressed/soft     */
+#define MICHI_UI_SUCCESS           MICHI_UI_RGB565(0x5A, 0xD6, 0xA0) /* ok/playing       */
+#define MICHI_UI_WARNING           MICHI_UI_RGB565(0xF2, 0xB8, 0x5B) /* warn/degraded    */
+#define MICHI_UI_ERROR             MICHI_UI_RGB565(0xFF, 0x62, 0x62) /* fatal/rejected   */
+#define MICHI_UI_INFO              MICHI_UI_RGB565(0x68, 0xA8, 0xFF) /* neutral info     */
+#define MICHI_UI_MUTED             MICHI_UI_RGB565(0x50, 0x57, 0x65) /* disabled (exempt from 4.5) */
 
-/*!< Panel dimensions in pixels (Landscape 320 x 240). */
 #define MICHI_UI_PANEL_W           320
 #define MICHI_UI_PANEL_H           240
 
@@ -53,11 +55,14 @@ extern "C" {
  *
  * channel5 = (c * 31 + 127) / 255; channel6 = (c * 63 + 127) / 255.
  */
+#define MICHI_UI_RGB565(r, g, b)                                             \
+    ((uint16_t)(((((uint16_t)(r) * 31u + 127u) / 255u) << 11) |              \
+                ((((uint16_t)(g) * 63u + 127u) / 255u) << 5) |               \
+                ((((uint16_t)(b) * 31u + 127u) / 255u))))
+
 static inline uint16_t michi_ui_rgb888_to_rgb565(uint8_t r, uint8_t g, uint8_t b)
 {
-    return (uint16_t)((((uint16_t)r * 31u + 127u) / 255u) << 11) |
-           (uint16_t)((((uint16_t)g * 63u + 127u) / 255u) << 5) |
-           (uint16_t)(((uint16_t)b * 31u + 127u) / 255u);
+    return MICHI_UI_RGB565(r, g, b);
 }
 
 /*!< Palette entry: name/value pair (tests iterate this table). */

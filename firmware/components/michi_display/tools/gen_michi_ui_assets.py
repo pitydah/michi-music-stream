@@ -388,6 +388,10 @@ PIN_CHARS = "0123456789 ."
 FONT_SPECS = {
     "xs":  ("medium",  6, 8,  10, 1),
     "sm":  ("medium",  9, 13, 16, 1),
+    # BODY: the legibility tier for instructions on the 2" panel. 13 px rounded
+    # out too small at arm's length; 15 px in Medium keeps strokes solid while
+    # still fitting four short lines in a 288x92 card.
+    "body": ("medium", 11, 15, 19, 2),
     "md":  ("regular",12, 17, 20, 1),
     "lg":  ("medium", 18, 26, 30, 1),
     "pin": ("regular",38, 41, 46, 1),

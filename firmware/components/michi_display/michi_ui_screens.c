@@ -264,12 +264,20 @@ void michi_ui_draw_screen_boot(uint16_t *fb, uint16_t fw, uint16_t fh, uint16_t 
 
 void michi_ui_draw_screen_unprovisioned(uint16_t *fb,uint16_t fw,uint16_t fh,uint16_t oy)
 {
-    ui_kicker(fb,fw,fh,oy,18,16,"CONFIGURACION INICIAL",MICHI_UI_WARNING);
-    michi_ui_draw_brand(fb,fw,fh,oy,140,48,40);
-    ui_draw_text_centered(fb,fw,fh,oy,105,"Prepara tu Michi",michi_ui_font_get(MICHI_FONT_LG),MICHI_UI_TEXT_PRIMARY);
-    ui_panel(fb,fw,fh,oy,16,155,288,50,MICHI_UI_SURFACE,MICHI_UI_SURFACE_ELEVATED);
-    ui_text_fit(fb,fw,fh,oy,27,163,262,"Conecta por USB desde Michi Ecosystem",MICHI_FONT_SM,MICHI_UI_TEXT_SECONDARY);
-    ui_text_fit(fb,fw,fh,oy,27,181,262,"Wi-Fi e identidad se configuran al flashear",MICHI_FONT_XS,MICHI_UI_TEXT_TERTIARY);
+    /* Composition: the chrome (brand + status + divider) already owns the top
+     * band, so this screen starts below it. The old kicker at y=16 drew over
+     * the header, and the second instruction used the 8 px XS face, which is
+     * unreadable at arm's length on a 2" panel. Everything essential is SM
+     * (13 px) now, in short lines instead of one long truncated sentence. */
+    michi_ui_draw_brand(fb,fw,fh,oy,144,54,32);
+    ui_draw_text_centered(fb,fw,fh,oy,94,"Prepara tu Michi",michi_ui_font_get(MICHI_FONT_LG),MICHI_UI_TEXT_PRIMARY);
+
+    ui_panel(fb,fw,fh,oy,16,136,288,92,MICHI_UI_SURFACE,MICHI_UI_SURFACE_ELEVATED);
+    /* BODY (15 px): SM measured too small at arm's length on the real panel. */
+    ui_text_fit(fb,fw,fh,oy,28,145,264,"Conecta el dispositivo por USB",MICHI_FONT_BODY,MICHI_UI_TEXT_PRIMARY);
+    ui_text_fit(fb,fw,fh,oy,28,164,264,"y configúralo en Michi Ecosystem.",MICHI_FONT_BODY,MICHI_UI_TEXT_PRIMARY);
+    ui_text_fit(fb,fw,fh,oy,28,183,264,"Wi-Fi e identidad se configuran",MICHI_FONT_BODY,MICHI_UI_TEXT_SECONDARY);
+    ui_text_fit(fb,fw,fh,oy,28,202,264,"desde tu computador.",MICHI_FONT_BODY,MICHI_UI_TEXT_SECONDARY);
 }
 
 
@@ -292,13 +300,13 @@ void michi_ui_draw_screen_ready(uint16_t *fb,uint16_t fw,uint16_t fh,uint16_t oy
     const bool mdns=ctx && ctx->mdns_running;
     const bool announced=ctx && ctx->announces_sent_session>0 && clock;
     michi_ui_draw_circle_filled(fb,fw,fh,oy,21,221,2,ip?MICHI_UI_SUCCESS:MICHI_UI_WARNING);
-    ui_text_fit(fb,fw,fh,oy,28,216,46,"IP",MICHI_FONT_XS,MICHI_UI_TEXT_TERTIARY);
+    ui_text_fit(fb,fw,fh,oy,28,214,46,"IP",MICHI_FONT_SM,MICHI_UI_TEXT_TERTIARY);
     michi_ui_draw_circle_filled(fb,fw,fh,oy,79,221,2,clock?MICHI_UI_SUCCESS:MICHI_UI_WARNING);
-    ui_text_fit(fb,fw,fh,oy,86,216,48,"SNTP",MICHI_FONT_XS,MICHI_UI_TEXT_TERTIARY);
+    ui_text_fit(fb,fw,fh,oy,86,214,48,"SNTP",MICHI_FONT_SM,MICHI_UI_TEXT_TERTIARY);
     michi_ui_draw_circle_filled(fb,fw,fh,oy,156,221,2,mdns?MICHI_UI_SUCCESS:MICHI_UI_WARNING);
-    ui_text_fit(fb,fw,fh,oy,163,216,49,"mDNS",MICHI_FONT_XS,MICHI_UI_TEXT_TERTIARY);
+    ui_text_fit(fb,fw,fh,oy,163,214,49,"mDNS",MICHI_FONT_SM,MICHI_UI_TEXT_TERTIARY);
     michi_ui_draw_circle_filled(fb,fw,fh,oy,240,221,2,announced?MICHI_UI_SUCCESS:MICHI_UI_WARNING);
-    ui_text_fit(fb,fw,fh,oy,247,216,56,"Whisker",MICHI_FONT_XS,MICHI_UI_TEXT_TERTIARY);
+    ui_text_fit(fb,fw,fh,oy,247,214,56,"Whisker",MICHI_FONT_SM,MICHI_UI_TEXT_TERTIARY);
 }
 
 
@@ -309,7 +317,7 @@ void michi_ui_draw_screen_provisioning(uint16_t *fb,uint16_t fw,uint16_t fh,uint
     ui_draw_text_centered(fb,fw,fh,oy,122,"Configurando",michi_ui_font_get(MICHI_FONT_LG),MICHI_UI_TEXT_PRIMARY);
     ui_panel(fb,fw,fh,oy,16,165,288,44,MICHI_UI_SURFACE,MICHI_UI_SURFACE_ELEVATED);
     ui_text_fit(fb,fw,fh,oy,28,174,260,"Importando red e identidad Michi Home",MICHI_FONT_SM,MICHI_UI_TEXT_SECONDARY);
-    ui_text_fit(fb,fw,fh,oy,28,192,260,"No desconectes la alimentación",MICHI_FONT_XS,MICHI_UI_TEXT_TERTIARY);
+    ui_text_fit(fb,fw,fh,oy,28,192,260,"No desconectes la alimentación",MICHI_FONT_SM,MICHI_UI_TEXT_TERTIARY);
 }
 
 
@@ -589,6 +597,12 @@ void michi_ui_render_screen(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
         return;
     }
 
+#if CONFIG_MICHI_UI_CALIBRATION
+    /* Lab build: every band renders the calibration card instead of the UI. */
+    michi_ui_draw_calibration(fb, fb_w, fb_h, y_origin);
+    return;
+#endif
+
     /* Every band is cleared to the canonical RGB565 background. */
     ui_clear_band(fb, fb_w, fb_h, MICHI_UI_BG);
 
@@ -696,3 +710,103 @@ void michi_ui_render_screen(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
         break;
     }
 }
+
+#if CONFIG_MICHI_UI_CALIBRATION
+/* ---------------------------------------------------------------------------
+ * Colour calibration card (lab builds only).
+ *
+ * Deliberately independent of the Michi palette: the values here are the
+ * RGB565 anchors the panel must reproduce, so a wrong byte order or a wrong
+ * colour mode is visible at a glance instead of being masked by theme colours.
+ * ------------------------------------------------------------------------- */
+
+static void cal_rect(uint16_t *fb, uint16_t fw, uint16_t fh, uint16_t oy,
+                     int x, int y, int w, int h, uint16_t color)
+{
+    if (fb == NULL) {
+        return;
+    }
+    int y0 = y < (int)oy ? (int)oy : y;
+    int y1 = y + h;
+    if (y1 > (int)oy + (int)fh) {
+        y1 = (int)oy + (int)fh;
+    }
+    if (x < 0) {
+        w += x;
+        x = 0;
+    }
+    if (x + w > (int)fw) {
+        w = (int)fw - x;
+    }
+    if (w <= 0 || y1 <= y0) {
+        return;
+    }
+    for (int row = y0; row < y1; row++) {
+        uint16_t *dst = fb + (size_t)(row - (int)oy) * fw + x;
+        for (int i = 0; i < w; i++) {
+            dst[i] = color;
+        }
+    }
+}
+
+void michi_ui_draw_calibration(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                               uint16_t y_origin)
+{
+    ui_clear_band(fb, fb_w, fb_h, 0x0000); /* true black canvas */
+
+    /* Anchors: #FF0000 #00FF00 #0000FF #FFFFFF #808080 */
+    cal_rect(fb, fb_w, fb_h, y_origin, 8, 30, 58, 34, 0xF800);
+    cal_rect(fb, fb_w, fb_h, y_origin, 70, 30, 58, 34, 0x07E0);
+    cal_rect(fb, fb_w, fb_h, y_origin, 132, 30, 58, 34, 0x001F);
+    cal_rect(fb, fb_w, fb_h, y_origin, 194, 30, 58, 34, 0xFFFF);
+    cal_rect(fb, fb_w, fb_h, y_origin, 256, 30, 56, 34, 0x8410);
+
+    /* #FFFF00 #00FFFF #FF00FF + near-black #080A0F framed on grey */
+    cal_rect(fb, fb_w, fb_h, y_origin, 8, 68, 58, 30, 0xFFE0);
+    cal_rect(fb, fb_w, fb_h, y_origin, 70, 68, 58, 30, 0x07FF);
+    cal_rect(fb, fb_w, fb_h, y_origin, 132, 68, 58, 30, 0xF81F);
+    cal_rect(fb, fb_w, fb_h, y_origin, 194, 68, 62, 30, 0x8410);
+    cal_rect(fb, fb_w, fb_h, y_origin, 196, 70, 58, 26, 0x0000);
+
+    /* 16-step grey ramp */
+    for (int i = 0; i < 16; i++) {
+        const int v = (i * 255) / 15;
+        uint16_t c = (uint16_t)(((v >> 3) << 11) | ((v >> 2) << 5) | (v >> 3));
+        cal_rect(fb, fb_w, fb_h, y_origin, 8 + i * 19, 104, 19, 22, c);
+    }
+
+    /* R, G, B ramps (0 -> full) */
+    for (int i = 0; i < 24; i++) {
+        const int v = (i * 255) / 23;
+        uint16_t r = (uint16_t)(((v >> 3) << 11));
+        uint16_t g = (uint16_t)(((v >> 2) << 5));
+        uint16_t b = (uint16_t)(v >> 3);
+        cal_rect(fb, fb_w, fb_h, y_origin, 8 + i * 12, 132, 12, 10, r);
+        cal_rect(fb, fb_w, fb_h, y_origin, 8 + i * 12, 144, 12, 10, g);
+        cal_rect(fb, fb_w, fb_h, y_origin, 8 + i * 12, 156, 12, 10, b);
+    }
+
+    /* Near-black ladder: the violet cast is most visible here */
+    static const uint16_t darks[8] = {0x0000, 0x0020, 0x0841, 0x0842,
+                                      0x1000, 0x1800, 0x2000, 0x2945};
+    for (int i = 0; i < 8; i++) {
+        cal_rect(fb, fb_w, fb_h, y_origin, 8 + i * 38, 172, 38, 18, darks[i]);
+    }
+
+    /* Text samples: light on black and light on surface */
+    ui_draw_text(fb, fb_w, fb_h, y_origin, 8, 12, "CAL 320x240",
+                 michi_ui_font_get(MICHI_FONT_MD), 0xFFFF);
+#ifdef CONFIG_MICHI_UI_CAL_FORCE_BIG_ENDIAN
+    ui_draw_text(fb, fb_w, fb_h, y_origin, 210, 16, "BIG endian",
+                 michi_ui_font_get(MICHI_FONT_SM), 0xFFE0);
+#else
+    ui_draw_text(fb, fb_w, fb_h, y_origin, 210, 16, "LITTLE endian",
+                 michi_ui_font_get(MICHI_FONT_SM), 0x07E0);
+#endif
+    cal_rect(fb, fb_w, fb_h, y_origin, 8, 196, 304, 40, 0x0861);
+    ui_draw_text(fb, fb_w, fb_h, y_origin, 16, 204, "Texto claro sobre superficie",
+                 michi_ui_font_get(MICHI_FONT_SM), 0xF7BE);
+    ui_draw_text(fb, fb_w, fb_h, y_origin, 16, 222, "Acentos: á é í ó ú ñ ¿? ¡!",
+                 michi_ui_font_get(MICHI_FONT_SM), 0xFFFF);
+}
+#endif
