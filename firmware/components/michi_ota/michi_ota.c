@@ -74,6 +74,7 @@
 #include "michi_ota_pubkey.h"
 #include "semver.h"
 #include "michi_ota_logic.h"
+#include "michi_ops_gate.h"
 #include "michi_product_profile.h"
 #include "michi_sd.h"
 #include "michi_session.h"
@@ -1530,6 +1531,16 @@ esp_err_t michi_ota_start(const char *url)
     if (s_ctx.mutex == NULL) {
         return ESP_ERR_INVALID_STATE; /* init never succeeded */
     }
+    /* H23 Phase 1: never write firmware while the receiver is restricted or
+     * fatal. Updating an image whose state cannot be proven is how a
+     * diagnosable unit becomes a bricked one; BOOT_PENDING means the health
+     * gates have not finished, so the update path is not trustworthy yet.
+     * A diagnostic board (no DAC) may still be updated. */
+    if (!michi_ops_ota_allowed()) {
+        ESP_LOGW(TAG, "ota: start_rejected reason=ops_%s",
+                 michi_ops_state_name(michi_ops_get()));
+        return ESP_ERR_INVALID_STATE;
+    }
 
     const esp_err_t sess_err = ota_force_close_session();
     if (sess_err != ESP_OK) {
@@ -1578,6 +1589,16 @@ esp_err_t michi_ota_start_local(void)
 #else
     if (s_ctx.mutex == NULL) {
         return ESP_ERR_INVALID_STATE; /* init never succeeded */
+    }
+    /* H23 Phase 1: never write firmware while the receiver is restricted or
+     * fatal. Updating an image whose state cannot be proven is how a
+     * diagnosable unit becomes a bricked one; BOOT_PENDING means the health
+     * gates have not finished, so the update path is not trustworthy yet.
+     * A diagnostic board (no DAC) may still be updated. */
+    if (!michi_ops_ota_allowed()) {
+        ESP_LOGW(TAG, "ota: start_rejected reason=ops_%s",
+                 michi_ops_state_name(michi_ops_get()));
+        return ESP_ERR_INVALID_STATE;
     }
     if (!file_name_ok(CONFIG_MICHI_SD_UPDATE_MANIFEST) ||
         !file_name_ok(CONFIG_MICHI_SD_UPDATE_FILE)) {
