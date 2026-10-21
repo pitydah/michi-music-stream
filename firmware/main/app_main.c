@@ -24,6 +24,7 @@
 #include "michi_led.h"
 #include "michi_log.h"
 #include "michi_ota.h"
+#include "michi_audio_output.h"
 #include "michi_ota_logic.h"
 #include "michi_ops_gate.h"
 #include "michi_product_profile.h"
@@ -578,6 +579,45 @@ void app_main(void)
     }
 
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(10000));
+        /* H23 closure P1: keep the authority in step with reality.
+         *
+         * 1. A real I2S fault must stop the receiver from advertising playback.
+         *    Without this, a FAULTED pipeline left capabilities/HTTP claiming a
+         *    session was possible while every write failed.
+         * 2. The mirror case: a pipeline that recovered (stop/deinit/init) must
+         *    re-open playback without a reboot.
+         * 3. Authorised recovery out of RESTRICTED: only when the boot state
+         *    becomes provable again (NORMAL/UNINITIALIZED - a PENDING image
+         *    needs a reboot to be confirmed or rolled back) and identity is
+         *    still READY. */
+        const michi_ops_state_t ops = michi_ops_get();
+        const michi_audio_output_state_t out = michi_audio_output_get_state();
+
+        if (ops == MICHI_OPS_READY && out == MICHI_AUDIO_STATE_FAULTED) {
+            if (michi_ops_set(MICHI_OPS_DIAGNOSTIC) == 0) {
+                ESP_LOGE(TAG, "ops: audio output FAULTED -> diagnostic, playback denied");
+            }
+        } else if (ops == MICHI_OPS_DIAGNOSTIC &&
+                   out != MICHI_AUDIO_STATE_FAULTED &&
+                   profile->audio_available) {
+            if (michi_ops_set(MICHI_OPS_READY) == 0) {
+                ESP_LOGI(TAG, "ops: audio output healthy -> ready, playback allowed");
+            }
+        } else if (ops == MICHI_OPS_RESTRICTED &&
+                   michi_identity_get_state() == MICHI_IDENTITY_READY) {
+            michi_boot_ota_state_t cls = MICHI_BOOT_OTA_UNKNOWN_ERROR;
+            (void)michi_ota_classify_boot(&cls);
+            if (cls == MICHI_BOOT_OTA_NORMAL || cls == MICHI_BOOT_OTA_UNINITIALIZED) {
+                const michi_ops_state_t target = profile->audio_available
+                                                     ? MICHI_OPS_READY
+                                                     : MICHI_OPS_DIAGNOSTIC;
+                if (michi_ops_recover(target) == 0) {
+                    ESP_LOGW(TAG, "ops: recovery complete (boot_class=%s) -> %s",
+                             michi_boot_ota_state_name(cls),
+                             michi_ops_state_name(target));
+                }
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }

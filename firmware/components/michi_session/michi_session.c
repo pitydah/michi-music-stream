@@ -409,10 +409,14 @@ static esp_err_t session_teardown_locked(bool by_lease)
  * stale track info). Runs with the mutex HELD (the event post under the
  * lock follows the dead-engine reconciliation precedent; the display
  * clear is best-effort, bounded I/O). */
-static void lease_close_duties(void)
+/* H23 closure P2: the teardown is shared, but the CAUSE is not always a lease
+ * expiry. Logging every close as "lease expired" misattributes a security
+ * stop or an audio fault in the field. The caller passes the real cause; the
+ * teardown path itself stays single-sourced. */
+static void lease_close_duties(const char *cause)
 {
-    ESP_LOGW(TAG, "session: lease expired - closed (expirations=%" PRIu32 ")",
-             s_lease_expirations);
+    ESP_LOGW(TAG, "session: closed by %s (expirations=%" PRIu32 ")",
+             cause, s_lease_expirations);
     post_event(MICHI_EVENT_SESSION_CLOSED);
     /* Already cleared atomically by session_teardown_locked(). */
 }
@@ -433,7 +437,7 @@ static bool session_expire_if_needed_locked(void)
         }
         return false;
     }
-    lease_close_duties();
+    lease_close_duties("lease_expired");
     return true;
 }
 
@@ -454,7 +458,10 @@ static bool session_enforce_ops_locked(void)
         }
         return false;
     }
-    lease_close_duties();
+    /* Report the authority state that revoked playback (restricted /
+     * diagnostic / fatal / updating) instead of a lease expiry that did not
+     * happen. */
+    lease_close_duties(michi_ops_state_name(michi_ops_get()));
     return true;
 }
 
