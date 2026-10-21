@@ -70,6 +70,7 @@ bool michi_ota_decide_expected_audio(bool sku_expects_audio,
 }
 
 ota_selftest_res_t evaluate_trial_boot_gate(bool critical_checks_ok,
+                                            bool trial_boot,
                                             bool expected_audio,
                                             bool audio_available)
 {
@@ -77,7 +78,10 @@ ota_selftest_res_t evaluate_trial_boot_gate(bool critical_checks_ok,
         return OTA_SELFTEST_FATAL;
     }
     if (!audio_available) {
-        if (expected_audio) {
+        /* FATAL only where it buys a rollback. Outside a trial boot a restart
+         * loops forever with nothing to fall back to, so a DAC-less unit would
+         * never reach diagnostics: degrade honestly instead. */
+        if (expected_audio && trial_boot) {
             return OTA_SELFTEST_FATAL;
         }
         return OTA_SELFTEST_DEGRADED;

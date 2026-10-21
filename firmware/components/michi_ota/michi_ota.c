@@ -1782,6 +1782,24 @@ bool michi_ota_busy(void)
     return busy;
 }
 
+esp_err_t michi_ota_running_image_pending_verify(bool *out_pending)
+{
+    if (out_pending == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (running == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_ota_img_states_t st = ESP_OTA_IMG_UNDEFINED;
+    const esp_err_t err = esp_ota_get_state_partition(running, &st);
+    if (err != ESP_OK) {
+        return err;
+    }
+    *out_pending = (st == ESP_OTA_IMG_PENDING_VERIFY);
+    return ESP_OK;
+}
+
 esp_err_t michi_ota_boot_selftest_done(michi_selftest_result_t selftest_result)
 {
     const esp_partition_t *running = esp_ota_get_running_partition();

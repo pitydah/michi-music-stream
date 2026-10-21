@@ -257,6 +257,23 @@ typedef enum {
 
 esp_err_t michi_ota_boot_selftest_done(michi_selftest_result_t selftest_result);
 
+/**
+ * @brief Reports whether the running image is awaiting OTA verification.
+ *
+ * True means this boot is a trial boot: the image is in
+ * ESP_OTA_IMG_PENDING_VERIFY and a FATAL self-test has a rollback target. The
+ * trial-boot gate uses this to tell "refuse to cancel verification so the
+ * bootloader rolls back" apart from "restart a normal boot forever".
+ *
+ * Independent of michi_ota_init(): safe to call at any point of app_main.
+ *
+ * @param out_pending Receives true when the running image is PENDING_VERIFY.
+ * @return ESP_OK; ESP_ERR_INVALID_ARG on NULL; ESP_ERR_INVALID_STATE (or the
+ *         esp_ota_get_state_partition error) when it cannot be determined -
+ *         callers must treat an error as "unknown" and stay on the strict path.
+ */
+esp_err_t michi_ota_running_image_pending_verify(bool *out_pending);
+
 #ifdef __cplusplus
 }
 #endif

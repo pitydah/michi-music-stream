@@ -312,42 +312,65 @@ static void test_boot_latch_decision(void)
  *               configured_profile="pcm5102a", source=NVS, audio_available=false)
  *               -> expected_audio=true -> FATAL (triggers rollback)
  * OTA-AUDIO-05: Critical checks fail (critical_checks_ok=false) -> FATAL regardless of audio state
+ * OTA-AUDIO-06: Audio expected, missing, and NOT a trial boot (no pending OTA)
+ *               -> DEGRADED: no rollback target exists, so a DAC-less diagnostic
+ *               board must stay up instead of restarting forever
+ * OTA-AUDIO-07: The same missing audio on a trial boot stays FATAL so the
+ *               bootloader rolls back; critical failures remain FATAL on any boot
  * ======================================================================= */
 
 static void test_trial_boot_audio_health_gate(void)
 {
-    printf("trial_boot_gate: OTA audio health evaluation (OTA-AUDIO-01..OTA-AUDIO-05)\n");
+    printf("trial_boot_gate: OTA audio health evaluation (OTA-AUDIO-01..OTA-AUDIO-07)\n");
 
     /* OTA-AUDIO-01: Audio SKU with working audio passes trial boot gate */
     const bool exp1 = michi_ota_decide_expected_audio(true, "pcm5102a", MICHI_DAC_PROFILE_SOURCE_KCONFIG);
     CHECK(exp1 == true, "OTA-AUDIO-01: expected_audio is true for audio SKU");
-    CHECK(evaluate_trial_boot_gate(true, exp1, true) == OTA_TEST_SELFTEST_PASS,
+    CHECK(evaluate_trial_boot_gate(true, true, exp1, true) == OTA_TEST_SELFTEST_PASS,
           "OTA-AUDIO-01: expected_audio=true && audio_available=true -> PASS");
 
     /* OTA-AUDIO-02: Hi-Fi SKU where autodetect resolves to empty because probe broke:
      * expected_audio must NOT collapse to false! */
     const bool exp2 = michi_ota_decide_expected_audio(true, "", MICHI_DAC_PROFILE_SOURCE_AUTODETECT);
     CHECK(exp2 == true, "OTA-AUDIO-02: expected_audio is true despite empty autodetect profile");
-    CHECK(evaluate_trial_boot_gate(true, exp2, false) == OTA_TEST_SELFTEST_FATAL,
+    CHECK(evaluate_trial_boot_gate(true, true, exp2, false) == OTA_TEST_SELFTEST_FATAL,
           "OTA-AUDIO-02: broken autodetect audio evaluates to FATAL (triggers rollback)");
 
     /* OTA-AUDIO-03: Pure diagnostic SKU (no audio expected, no profile) with audio_available=false accepts DEGRADED */
     const bool exp3 = michi_ota_decide_expected_audio(false, "", MICHI_DAC_PROFILE_SOURCE_NONE);
     CHECK(exp3 == false, "OTA-AUDIO-03: expected_audio is false for diagnostic SKU");
-    CHECK(evaluate_trial_boot_gate(true, exp3, false) == OTA_TEST_SELFTEST_DEGRADED,
+    CHECK(evaluate_trial_boot_gate(true, true, exp3, false) == OTA_TEST_SELFTEST_DEGRADED,
           "OTA-AUDIO-03: expected_audio=false && audio_available=false -> DEGRADED");
 
     /* OTA-AUDIO-04: Diagnostic SKU with explicit profile override in NVS/HW-ID expects audio */
     const bool exp4 = michi_ota_decide_expected_audio(false, "pcm5122", MICHI_DAC_PROFILE_SOURCE_NVS);
     CHECK(exp4 == true, "OTA-AUDIO-04: explicit NVS profile forces expected_audio=true");
-    CHECK(evaluate_trial_boot_gate(true, exp4, false) == OTA_TEST_SELFTEST_FATAL,
+    CHECK(evaluate_trial_boot_gate(true, true, exp4, false) == OTA_TEST_SELFTEST_FATAL,
           "OTA-AUDIO-04: NVS-configured audio failing evaluates to FATAL (triggers rollback)");
 
     /* OTA-AUDIO-05: Critical check failure always results in FATAL regardless of audio */
-    CHECK(evaluate_trial_boot_gate(false, true, true) == OTA_TEST_SELFTEST_FATAL,
+    CHECK(evaluate_trial_boot_gate(false, true, true, true) == OTA_TEST_SELFTEST_FATAL,
           "OTA-AUDIO-05: critical failure with audio -> FATAL");
-    CHECK(evaluate_trial_boot_gate(false, false, false) == OTA_TEST_SELFTEST_FATAL,
+    CHECK(evaluate_trial_boot_gate(false, true, false, false) == OTA_TEST_SELFTEST_FATAL,
           "OTA-AUDIO-05: critical failure without audio -> FATAL");
+
+    /* OTA-AUDIO-06: the DAC-less boot loop. An audio-expecting SKU that boots
+     * with no DAC on a NORMAL boot must degrade, not restart forever: outside a
+     * pending OTA verification there is no image to roll back to, so FATAL only
+     * hides the diagnostics of an otherwise healthy board. */
+    CHECK(evaluate_trial_boot_gate(true, false, true, false) == OTA_TEST_SELFTEST_DEGRADED,
+          "OTA-AUDIO-06: audio expected but missing on a normal boot -> DEGRADED (no reboot loop)");
+
+    /* OTA-AUDIO-07: the same condition on a trial boot must stay FATAL so the
+     * bootloader rolls back - the degradation above must not weaken OTA. */
+    CHECK(evaluate_trial_boot_gate(true, true, true, false) == OTA_TEST_SELFTEST_FATAL,
+          "OTA-AUDIO-07: audio expected but missing on a trial boot -> FATAL (rollback)");
+    CHECK(evaluate_trial_boot_gate(true, false, true, true) == OTA_TEST_SELFTEST_PASS,
+          "OTA-AUDIO-07: audio present on a normal boot -> PASS");
+    /* Critical failures are still fatal without a rollback target: a unit whose
+     * core subsystems failed must not advertise itself as serviceable. */
+    CHECK(evaluate_trial_boot_gate(false, false, false, true) == OTA_TEST_SELFTEST_FATAL,
+          "OTA-AUDIO-07: critical failure on a normal boot -> FATAL (fail closed)");
 }
 
 /* =========================================================================

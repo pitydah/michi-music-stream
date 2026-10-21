@@ -491,16 +491,36 @@ void app_main(void)
                              (http_err == ESP_OK) &&
                              state_ok &&
                              boot_events_ok;
+
+    /* A FATAL verdict only buys anything when an OTA update is awaiting
+     * verification: refusing to cancel it makes the bootloader roll back. On a
+     * normal boot there is no rollback target, so halting just restarts forever
+     * - that is what a DAC-less diagnostic board used to hit. Unknown state
+     * stays on the strict path (fail-closed). */
+    bool trial_boot = true;
+    const esp_err_t trial_err = michi_ota_running_image_pending_verify(&trial_boot);
+    if (trial_err != ESP_OK) {
+        ESP_LOGW(TAG, "trial boot state unreadable (%s): treating as trial boot",
+                 esp_err_to_name(trial_err));
+        trial_boot = true;
+    }
+    ESP_LOGI(TAG, "trial_boot=%d expected_audio=%d audio_available=%d",
+             (int)trial_boot, (int)expected_audio, (int)profile->audio_available);
+
     const ota_selftest_res_t trial_res = evaluate_trial_boot_gate(
-        critical_ok, expected_audio, profile->audio_available);
+        critical_ok, trial_boot, expected_audio, profile->audio_available);
     michi_selftest_result_t st_res;
     if (trial_res == OTA_SELFTEST_FATAL) {
         if (critical_ok && expected_audio && !profile->audio_available) {
-            ESP_LOGE(TAG, "trial boot gate: audio expected (profile='%s', source=%d) but audio_available=false -> FATAL (triggers rollback)",
+            ESP_LOGE(TAG, "trial boot gate: audio expected (profile='%s', source=%d) but audio_available=false on a trial boot -> FATAL (triggers rollback)",
                      dac_prof, (int)dac_src);
         }
         st_res = MICHI_SELFTEST_FATAL;
     } else if (trial_res == OTA_SELFTEST_DEGRADED) {
+        if (critical_ok && expected_audio && !profile->audio_available) {
+            ESP_LOGW(TAG, "trial boot gate: audio expected (profile='%s', source=%d) but audio_available=false on a normal boot -> DEGRADED (no rollback target, diagnostics stay up)",
+                     dac_prof, (int)dac_src);
+        }
         st_res = MICHI_SELFTEST_DEGRADED;
     } else {
         st_res = MICHI_SELFTEST_PASS;
