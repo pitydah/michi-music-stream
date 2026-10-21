@@ -1076,6 +1076,69 @@ static void test_h8_complete_frame_boundary(void)
 
 /* H9: consecutive failed DMA writes must surface a fault, never an
  * endless lie that the audio output remains RUNNING. */
+/* H23-C: a faulted output must recover through the documented route
+ * (stop -> deinit -> init -> start) and accept PCM again, with no leaked
+ * resources or zombie worker. FAULTED is only a terminal state until the owner
+ * reconciles the channel - this proves that reconciliation actually works. */
+static void test_h23_recovery_after_fault(void)
+{
+    test_i2s_reset();
+    michi_audio_output_config_t cfg = default_cfg();
+    uint8_t pcm[1920] = {0};
+
+    CHECK(michi_audio_output_init(&cfg) == ESP_OK, "H23-RECOVERY: init");
+    CHECK(michi_audio_output_start() == ESP_OK, "H23-RECOVERY: start");
+
+    /* Drive it into FAULTED with a sticky write failure. */
+    test_i2s_set_write_fail(ESP_FAIL);
+    for (int i = 0; i < 9; i++) {
+        CHECK(michi_audio_output_write(pcm, sizeof(pcm)) == ESP_OK,
+              "H23-RECOVERY: queue PCM into a failing pipeline");
+    }
+    bool faulted = false;
+    for (int i = 0; i < 100; i++) {
+        if (michi_audio_output_get_state() == MICHI_AUDIO_STATE_FAULTED) {
+            faulted = true;
+            break;
+        }
+        usleep(10000);
+    }
+    CHECK(faulted, "H23-RECOVERY: repeated DMA failures latch FAULTED");
+    CHECK(michi_audio_output_write(pcm, sizeof(pcm)) == ESP_ERR_INVALID_STATE,
+          "H23-RECOVERY: faulted pipeline rejects PCM");
+
+    /* Heal the driver, then reconcile through the legal route. */
+    test_i2s_set_write_fail(ESP_OK);
+    CHECK(michi_audio_output_stop() == ESP_OK, "H23-RECOVERY: stop from FAULTED");
+    CHECK(michi_audio_output_deinit() == ESP_OK, "H23-RECOVERY: deinit from FAULTED");
+    CHECK(michi_audio_output_init(&cfg) == ESP_OK, "H23-RECOVERY: re-init after fault");
+    CHECK(michi_audio_output_start() == ESP_OK, "H23-RECOVERY: restart after fault");
+    CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_RUNNING,
+          "H23-RECOVERY: pipeline is RUNNING again");
+
+    /* Fresh PCM must reach the driver again (the real measure of recovery).
+     * The worker deliberately waits for the 80 ms prefill before its first
+     * write, so queue the full prefill depth - one packet would only prove that
+     * the ring accepted bytes, not that the pipeline resumed. */
+    const size_t before = test_i2s_get_bytes_written();
+    for (int i = 0; i < 9; i++) {
+        CHECK(michi_audio_output_write(pcm, sizeof(pcm)) == ESP_OK,
+              "H23-RECOVERY: recovered pipeline accepts PCM");
+    }
+    bool delivered = false;
+    for (int i = 0; i < 100; i++) {
+        if (test_i2s_get_bytes_written() > before) {
+            delivered = true;
+            break;
+        }
+        usleep(10000);
+    }
+    CHECK(delivered, "H23-RECOVERY: recovered pipeline writes to I2S again");
+
+    CHECK(michi_audio_output_stop() == ESP_OK, "H23-RECOVERY: clean stop");
+    CHECK(michi_audio_output_deinit() == ESP_OK, "H23-RECOVERY: clean deinit");
+}
+
 static void test_h9_dma_fault_latches_and_can_stop(void)
 {
     test_i2s_reset();
@@ -1405,6 +1468,7 @@ int main(void)
     test_h10_start_rollback_disable_failure();
     test_h10_deinit_delete_failure_retains_resources();
     test_h8_complete_frame_boundary();
+    test_h23_recovery_after_fault();
     test_h9_dma_fault_latches_and_can_stop();
 
     printf("=== michi_audio_output quiesce tests (AUDIO-Q-01..10) ===\n");
