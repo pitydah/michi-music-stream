@@ -103,6 +103,15 @@ bool michi_ops_ota_allowed(void);
 /** Short name for logs and diagnostics. Never NULL. */
 const char *michi_ops_state_name(michi_ops_state_t state);
 
+#ifdef MICHI_HOST_TEST
+/**
+ * @brief Host-only hook: runs between validation and the swap in
+ *        michi_ops_set(). Lets a test force the lost-update window that
+ *        compare-and-swap is there to close. Not compiled into the firmware.
+ */
+void test_ops_set_between_validate_and_swap(void (*fn)(void));
+#endif
+
 #ifdef __cplusplus
 }
 #endif

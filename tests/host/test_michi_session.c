@@ -37,6 +37,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <unistd.h>
+#include <pthread.h>
 #include "freertos/queue.h"
 
 #include "esp_timer.h"
@@ -1006,8 +1007,97 @@ static void test_ops_runtime_authority(void)
     CHECK(!michi_session_active(), "H23-OPS-08: no zombie session survives");
 }
 
+/* H23 closure P1: the authority must not lose a tightening to a concurrent
+ * relax. Without compare-and-swap, a set() that read READY just before another
+ * task tightened to RESTRICTED would store READY afterwards, silently dropping
+ * the restriction. This hammers that window from a second thread. */
+typedef struct {
+    volatile int stop;
+} relax_ctx_t;
+
+static void *relax_worker(void *arg)
+{
+    relax_ctx_t *c = (relax_ctx_t *)arg;
+    while (!c->stop) {
+        (void)michi_ops_set(MICHI_OPS_READY);
+        (void)michi_ops_set(MICHI_OPS_DIAGNOSTIC);
+    }
+    return NULL;
+}
+
+static void test_ops_transitions_are_atomic(void)
+{
+    printf("michi_session: authority transitions survive contention\n");
+
+    for (int round = 0; round < 200; round++) {
+        michi_ops_init(); /* BOOT_PENDING: both RELAX and TIGHTEN are valid */
+        relax_ctx_t ctx = {0};
+        pthread_t th;
+        CHECK(pthread_create(&th, NULL, relax_worker, &ctx) == 0,
+              "H23-ATOMIC: spawn contending relaxer");
+        CHECK(michi_ops_set(MICHI_OPS_RESTRICTED) == 0, "H23-ATOMIC: tighten");
+        /* Give the relaxer many chances to overwrite the restriction. */
+        usleep(2000);
+        ctx.stop = 1;
+        pthread_join(th, NULL);
+        CHECK(michi_ops_get() == MICHI_OPS_RESTRICTED,
+              "H23-ATOMIC: RESTRICTED is never lost to a concurrent relax");
+    }
+
+    /* And FATAL is terminal under the same contention. */
+    michi_ops_init();
+    CHECK(michi_ops_set(MICHI_OPS_FATAL) == 0, "H23-ATOMIC: fatal");
+    relax_ctx_t ctx = {0};
+    pthread_t th;
+    CHECK(pthread_create(&th, NULL, relax_worker, &ctx) == 0, "H23-ATOMIC: respawn");
+    usleep(5000);
+    ctx.stop = 1;
+    pthread_join(th, NULL);
+    CHECK(michi_ops_get() == MICHI_OPS_FATAL, "H23-ATOMIC: FATAL stays terminal");
+
+    michi_ops_init();
+    (void)michi_ops_set(MICHI_OPS_READY);
+}
+
+/* Deterministic proof of the CAS: force the exact window (validate as
+ * BOOT_PENDING -> another tightening lands -> the stale relax tries to store).
+ * Naive read-validate-write loses the restriction here; CAS re-validates and
+ * refuses. */
+static bool g_tighten_armed;
+
+static void tighten_from_hook(void)
+{
+    if (!g_tighten_armed) {
+        return;
+    }
+    g_tighten_armed = false; /* one-shot: no recursion */
+    (void)michi_ops_set(MICHI_OPS_RESTRICTED);
+}
+
+static void test_ops_transition_race_is_closed(void)
+{
+    printf("michi_session: a stale relax cannot overwrite a tightening\n");
+
+    michi_ops_init(); /* BOOT_PENDING: READY and RESTRICTED are both valid */
+    g_tighten_armed = true;
+    test_ops_set_between_validate_and_swap(tighten_from_hook);
+    const int rc = michi_ops_set(MICHI_OPS_READY); /* outer relax, validated as BOOT_PENDING */
+    test_ops_set_between_validate_and_swap(NULL);
+
+    CHECK(rc != 0, "H23-RACE: the stale relax is refused, not applied");
+    CHECK(michi_ops_get() == MICHI_OPS_RESTRICTED,
+          "H23-RACE: the tightening survives the race");
+
+    michi_ops_init();
+    (void)michi_ops_set(MICHI_OPS_READY);
+}
+
 int main(void)
 {
+    reset_all();
+    test_ops_transition_race_is_closed();
+    reset_all();
+    test_ops_transitions_are_atomic();
     reset_all();
     test_ops_runtime_authority();
     reset_all();

@@ -8,10 +8,22 @@
 #include "michi_ops_gate.h"
 
 #include <stdatomic.h>
+#include <stddef.h>
 
 /* Zero == MICHI_OPS_BOOT_PENDING, so static initialisation already denies
  * playback before michi_ops_init() ever runs. */
 static atomic_int s_ops = MICHI_OPS_BOOT_PENDING;
+
+#ifdef MICHI_HOST_TEST
+/* Host-only instrumentation: lets a test widen the validate -> swap window so a
+ * lost update becomes observable deterministically. Never compiled into the
+ * firmware. */
+static void (*s_test_between_validate_and_swap)(void);
+void test_ops_set_between_validate_and_swap(void (*fn)(void))
+{
+    s_test_between_validate_and_swap = fn;
+}
+#endif
 
 const char *michi_ops_state_name(michi_ops_state_t state)
 {
@@ -96,12 +108,26 @@ int michi_ops_set(michi_ops_state_t state)
     if (state < MICHI_OPS_BOOT_PENDING || state > MICHI_OPS_UPDATING) {
         return -1;
     }
-    const michi_ops_state_t from = michi_ops_get();
-    if (!ops_transition_valid(from, state)) {
-        return -2;
+    /* Compare-and-swap, not read-validate-write: two tasks tightening and
+     * relaxing at the same time must not be able to lose the stronger verdict
+     * (e.g. a FATAL overwritten by a relax that validated against a stale
+     * READY). On failure the CAS hands back the value that won, and the
+     * transition is re-validated against it. */
+    int expected = atomic_load(&s_ops);
+    for (;;) {
+        if (!ops_transition_valid((michi_ops_state_t)expected, state)) {
+            return -2;
+        }
+#ifdef MICHI_HOST_TEST
+        if (s_test_between_validate_and_swap != NULL) {
+            s_test_between_validate_and_swap();
+        }
+#endif
+        if (atomic_compare_exchange_weak(&s_ops, &expected, (int)state)) {
+            return 0;
+        }
+        /* expected now holds the current value; loop and re-validate. */
     }
-    atomic_store(&s_ops, state);
-    return 0;
 }
 
 int michi_ops_recover(michi_ops_state_t target)
@@ -109,9 +135,11 @@ int michi_ops_recover(michi_ops_state_t target)
     if (target != MICHI_OPS_READY && target != MICHI_OPS_DIAGNOSTIC) {
         return -1;
     }
-    if (michi_ops_get() != MICHI_OPS_RESTRICTED) {
-        return -2;
+    /* Atomic exit: only succeeds if the gate is RESTRICTED at the instant of
+     * the swap, so a concurrent tightening cannot be overwritten. */
+    int expected = MICHI_OPS_RESTRICTED;
+    if (atomic_compare_exchange_strong(&s_ops, &expected, (int)target)) {
+        return 0;
     }
-    atomic_store(&s_ops, target);
-    return 0;
+    return -2;
 }
