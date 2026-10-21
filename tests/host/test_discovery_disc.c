@@ -60,6 +60,7 @@
 #include "michi_time.h"
 #include "nvs.h"
 #include "time_shim.h"
+#include "michi_ops_gate.h"
 
 static int failures = 0;
 
@@ -1369,6 +1370,12 @@ static void test_disc_concur_05_task_self_deletion_invariant(void)
 
 int main(void)
 {
+    /* H23 Phase 1: capabilities now also depend on the runtime authority, which
+     * denies playback until a boot is validated. These suites exercise the
+     * advertisement/builders, so they declare a validated boot explicitly. */
+    michi_ops_init();
+    (void)michi_ops_set(MICHI_OPS_READY);
+
     disc01_unsynced_clock_no_announce();
     disc02_synced_clock_announce_emitted();
     disc03_timestamp_within_90s();

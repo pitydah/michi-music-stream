@@ -84,6 +84,7 @@
 #include "michi_auth.h"
 #include "validators.h"
 #include "michi_product_profile.h"
+#include "michi_ops_gate.h"
 #include "michi_sd.h"
 #include "michi_session.h"
 #include "michi_state.h"
@@ -652,12 +653,24 @@ static esp_err_t session_start_handler(httpd_req_t *req)
      * never hear - for instance on a diagnostic board with no DAC. Same 409
      * the OTA gate uses, with a distinct reason token so the contract shape and
      * status codes stay unchanged. */
-    if (!michi_product_profile_session_allowed(michi_product_profile_get())) {
-        ESP_LOGW(TAG, "session start rejected: no usable audio output (tier=%s)",
-                 michi_product_profile_tier_name());
-        return michi_http_send_error(req, 409,
-                                     "no usable audio output is available",
-                                     "audio_output_unavailable");
+    {
+        const michi_product_profile_t *prof = michi_product_profile_get();
+        if (!michi_product_profile_session_allowed(prof)) {
+            /* Two independent causes, one contract status. Distinguishing them
+             * in the reason token is what lets Micro Server tell "this board has
+             * no DAC" apart from "this boot is not trusted" without parsing
+             * logs - and without inventing a new status code. */
+            const bool no_audio = (prof == NULL) || !prof->audio_available;
+            ESP_LOGW(TAG, "session start rejected: %s (tier=%s ops=%s)",
+                     no_audio ? "no usable audio output" : "receiver restricted",
+                     michi_product_profile_tier_name(),
+                     michi_ops_state_name(michi_ops_get()));
+            return michi_http_send_error(
+                req, 409,
+                no_audio ? "no usable audio output is available"
+                         : "the receiver is not permitted to play audio now",
+                no_audio ? "audio_output_unavailable" : "receiver_restricted");
+        }
     }
 
     /* The RTP source IP is the TCP peer of THIS request - never JSON. */

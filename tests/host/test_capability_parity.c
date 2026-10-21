@@ -22,6 +22,7 @@
 #include "michi_identity.h"
 #include "michi_product_profile.h"
 #include "sdkconfig.h"
+#include "michi_ops_gate.h"
 
 static int failures = 0;
 
@@ -243,10 +244,72 @@ static void test_host_kconfig_parity(void)
           "DAC default profile == pcm5102a");
 }
 
+/* H23 Phase 1: a restricted boot with a perfectly good DAC must still publish
+ * session=false. This is the contract-facing half of the runtime authority: the
+ * capability tables and the REAL /server/info builder, not a reimplementation. */
+static void test_restricted_boot_hides_playback(void)
+{
+    printf("capabilities: restricted boot hides playback despite audio\n");
+
+    michi_product_profile_t p;
+    fill_profile(&p); /* audio_available = true */
+    CHECK(michi_product_profile_session_allowed(&p), "prerequisite: ready boot allows session");
+
+    CHECK(michi_ops_set(MICHI_OPS_RESTRICTED) == 0, "authority moved to restricted");
+
+    CHECK(!michi_product_profile_session_allowed(&p),
+          "H23-RESTRICT-01: session gate closed despite usable audio");
+    const michi_product_capabilities_t caps =
+        michi_product_profile_capabilities_for(&p);
+    CHECK(!caps.session && !caps.heartbeat && !caps.volume,
+          "H23-RESTRICT-02: session/heartbeat/volume advertised false");
+    CHECK(caps.diagnostics, "H23-RESTRICT-03: diagnostics still advertised");
+
+    /* /server/info is built from the REAL identity-backed builder, so the
+     * identity must be initialised first (test_runtime_parity does the same). */
+    michi_identity_init();
+
+    /* The published document must carry it, not just the in-memory table. */
+    cJSON *info = cJSON_CreateObject();
+    CHECK(info != NULL && build_info_json(info, &p) == ESP_OK,
+          "H23-RESTRICT-04: /server/info builds while restricted");
+    if (info != NULL) {
+        const cJSON *feat = cJSON_GetObjectItem(info, "features");
+        bool session = true;
+        CHECK(feat != NULL && json_feature(feat, "session", &session) && !session,
+              "H23-RESTRICT-04: /server/info publishes features.session=false");
+        bool diag = false;
+        CHECK(feat != NULL && json_feature(feat, "diagnostics", &diag) && diag,
+              "H23-RESTRICT-04: /server/info keeps diagnostics=true");
+        cJSON_Delete(info);
+    }
+
+    /* OTA is refused only while the image state is unprovable or the unit is
+     * fatal: a diagnostic board must stay updatable. */
+    CHECK(!michi_ops_ota_allowed(), "H23-RESTRICT-06: restricted blocks OTA writes");
+
+    /* Authorised recovery restores service without a reboot. */
+    CHECK(michi_ops_recover(MICHI_OPS_READY) == 0, "authorised recovery");
+    CHECK(michi_product_profile_session_allowed(&p),
+          "H23-RESTRICT-05: recovery re-opens the gate");
+    CHECK(michi_ops_ota_allowed(), "H23-RESTRICT-07: ready allows OTA writes");
+    CHECK(michi_ops_set(MICHI_OPS_DIAGNOSTIC) == 0, "diagnostic");
+    CHECK(michi_ops_ota_allowed(), "H23-RESTRICT-07: diagnostic board stays updatable");
+    CHECK(!michi_ops_playback_allowed(), "H23-RESTRICT-07: but it cannot play");
+    CHECK(michi_ops_set(MICHI_OPS_READY) == 0, "back to ready");
+}
+
 int main(void)
 {
+    /* H23 Phase 1: capabilities now also depend on the runtime authority, which
+     * denies playback until a boot is validated. These suites exercise the
+     * advertisement/builders, so they declare a validated boot explicitly. */
+    michi_ops_init();
+    (void)michi_ops_set(MICHI_OPS_READY);
+
     test_canonical_capability_table();
     test_session_capability_matches_enforcement();
+    test_restricted_boot_hides_playback();
     test_announce_feature_group();
     test_runtime_parity();
     test_host_kconfig_parity();

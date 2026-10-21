@@ -25,6 +25,7 @@
 #include "michi_log.h"
 #include "michi_ota.h"
 #include "michi_ota_logic.h"
+#include "michi_ops_gate.h"
 #include "michi_product_profile.h"
 #include "michi_sd.h"
 #include "michi_session.h"
@@ -139,6 +140,11 @@ static void on_device_revoked(const char *revoked_device_michi_id)
 void app_main(void)
 {
 #define MICHI_BOOT_TRUTHFULNESS_ASSERT(condition) do { if (!(condition)) { ESP_LOGE(TAG, "Boot truthfulness violation"); esp_restart(); } } while(0)
+
+    /* H23 Phase 1: deny playback until the boot decision below says otherwise.
+     * Subsystems initialise (and HTTP starts serving) before that point, so the
+     * default must be deny - not "allow and restrict later". */
+    michi_ops_init();
 
 #ifdef CONFIG_MICHI_DAC_MOCK
     ESP_LOGW(TAG, "MICHI_DAC_MOCK is ENABLED - this build fakes a DAC and "
@@ -513,6 +519,26 @@ void app_main(void)
         michi_ota_boot_selftest_done(boot_dec.verdict);
     }
     const michi_selftest_result_t st_res = boot_dec.verdict;
+
+    /* Publish the operational authority. From here on the HTTP handlers, the
+     * session subsystem, the audio engine and the OTA start path all consult
+     * the same predicate instead of re-deriving it. */
+    michi_ops_state_t ops_target;
+    if (boot_dec.restricted) {
+        /* Unprovable OTA metadata: diagnostics only, no playback, no OTA. */
+        ops_target = MICHI_OPS_RESTRICTED;
+    } else if (boot_dec.verdict == OTA_SELFTEST_FATAL) {
+        ops_target = MICHI_OPS_FATAL;
+    } else if (!profile->audio_available) {
+        ops_target = MICHI_OPS_DIAGNOSTIC;
+    } else {
+        ops_target = MICHI_OPS_READY;
+    }
+    const int ops_err = michi_ops_set(ops_target);
+    ESP_LOGI(TAG, "ops=%s playback_allowed=%d%s",
+             michi_ops_state_name(michi_ops_get()),
+             (int)michi_ops_playback_allowed(),
+             ops_err == 0 ? "" : " (transition refused, gate stays closed)");
 
     /* Local (SD) update check (phase 17, review F2): NOT called directly
      * anymore. The FSM observer registered by michi_ota_init triggers

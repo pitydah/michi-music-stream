@@ -486,6 +486,7 @@ static void test_info_fail_closed_diagnostic(void)
 /* Duplicate of request_id_generate to test formatting logic on host */
 #include "esp_random.h"
 #include <inttypes.h>
+#include "michi_ops_gate.h"
 
 static void test_request_id_generate(char *out, size_t out_len)
 {
@@ -526,6 +527,12 @@ static void test_uuid_format(void)
 
 int main(void)
 {
+    /* H23 Phase 1: capabilities now also depend on the runtime authority, which
+     * denies playback until a boot is validated. These suites exercise the
+     * advertisement/builders, so they declare a validated boot explicitly. */
+    michi_ops_init();
+    (void)michi_ops_set(MICHI_OPS_READY);
+
     test_error_envelope();
     test_error_envelope_no_field();
     test_error_envelope_invalid_args();

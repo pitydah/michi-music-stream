@@ -65,6 +65,7 @@
 #include "michi_audio.h"
 #include "michi_display.h"
 #include "michi_ota.h"
+#include "michi_ops_gate.h"
 #include "michi_session.h"
 #include "michi_state.h"
 #include "michi_volume.h"
@@ -436,6 +437,27 @@ static bool session_expire_if_needed_locked(void)
     return true;
 }
 
+/* H23 Phase 1: a playback restriction applied while a session is running must
+ * stop the session, not merely block new ones. Uses the same teardown as
+ * DELETE/lease expiry, and runs from the session worker so it is bounded by the
+ * lease poll period even if the FSM queue or the timer is wedged. */
+static bool session_enforce_ops_locked(void)
+{
+    if (!s_active || michi_ops_playback_allowed()) {
+        return false;
+    }
+    ESP_LOGW(TAG, "session: playback no longer permitted (ops=%s) - stopping",
+             michi_ops_state_name(michi_ops_get()));
+    if (session_teardown_locked(false) != ESP_OK) {
+        if (s_active) {
+            ESP_LOGW(TAG, "session: restricted teardown pending, retrying next poll");
+        }
+        return false;
+    }
+    lease_close_duties();
+    return true;
+}
+
 /* H16: even if the esp_timer callback, queue or retry start fails, the
  * session worker must independently observe the monotonic lease deadline.
  * This is a defensive autonomous watchdog, not a replacement for the
@@ -487,6 +509,7 @@ static void session_task_func(void *arg)
              * failed timer retry cannot make a session immortal. Do not
              * hold the queue mutex while joining/tearing down RTP. */
             xSemaphoreTake(s_mutex, portMAX_DELAY);
+            (void)session_enforce_ops_locked();
             if (s_active && esp_timer_get_time() >= s_session.lease_deadline_us) {
 #ifdef MICHI_HOST_TEST
                 atomic_fetch_add(&s_test_lease_poll_expiry_count, 1u);
@@ -630,6 +653,17 @@ esp_err_t michi_session_start(const michi_session_start_params_t *params,
     }
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
+    /* H23 Phase 1 second control: the HTTP handler is not the only way in.
+     * Any internal caller must pass the same runtime authority, evaluated after
+     * taking the mutex so a restriction applied concurrently cannot slip past a
+     * stale pre-check. Denies: boot not yet validated, unprovable OTA state,
+     * diagnostic (no audio at boot), fatal, and update-in-progress. */
+    if (!michi_ops_playback_allowed()) {
+        xSemaphoreGive(s_mutex);
+        ESP_LOGW(TAG, "start: rejected (ops=%s, playback not permitted)",
+                 michi_ops_state_name(michi_ops_get()));
+        return ESP_ERR_INVALID_STATE;
+    }
     /* OTA gate (phase 13): while an OTA is busy or the FSM is UPDATING no new session
      * may start. Checked directly at the subsystem level to prevent race conditions. */
     if (michi_ota_busy() || michi_state_get() == MICHI_STATE_UPDATING) {

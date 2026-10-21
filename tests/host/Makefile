@@ -32,6 +32,9 @@ CPPFLAGS = -Ishim -DMICHI_HOST_TEST \
            -I../../firmware/components/michi_dac/include
 
 FIRMWARE = ../../firmware/components
+# H23 Phase 1: pure runtime authority, linked by every target that compiles
+# the capability tables or the session subsystem.
+OPS_GATE = $(FIRMWARE)/michi_product_profile/ops_gate.c
 
 export PKG_CONFIG_PATH := $(HOME)/.local/cjson/lib/pkgconfig:$(PKG_CONFIG_PATH)
 
@@ -133,10 +136,10 @@ test_json_helpers: test_json_helpers.c $(FIRMWARE)/michi_http/json_helpers.c \
 
 test_http_canonical: test_http_canonical.c $(FIRMWARE)/michi_http/canonical_json.c \
                      $(FIRMWARE)/michi_http/include/michi_http.h \
-                     $(FIRMWARE)/michi_product_profile/capabilities.c $(SHIMS)
+                     $(FIRMWARE)/michi_product_profile/capabilities.c $(OPS_GATE) $(SHIMS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CJSON_CFLAGS) -o $@ test_http_canonical.c \
 	    $(FIRMWARE)/michi_http/canonical_json.c \
-	    $(FIRMWARE)/michi_product_profile/capabilities.c $(CJSON_LIBS)
+	    $(FIRMWARE)/michi_product_profile/capabilities.c $(OPS_GATE) $(CJSON_LIBS)
 
 test_auth_http: test_auth_http.c $(FIRMWARE)/michi_http/json_helpers.c \
                 $(FIRMWARE)/michi_http/include/michi_http.h \
@@ -163,7 +166,7 @@ test_michi_identity: test_michi_identity.c $(IDENTITY_SRC) \
 # The REAL public headers (michi_audio.h/michi_volume.h/michi_display.h)
 # are compiled in - no struct drift.
 SESSION_DIR = $(FIRMWARE)/michi_session
-SESSION_SRC = $(SESSION_DIR)/michi_session.c shim/esp_timer.c \
+SESSION_SRC = $(SESSION_DIR)/michi_session.c $(OPS_GATE) shim/esp_timer.c \
               shim/michi_state.c shim/michi_audio_fake.c \
               shim/michi_volume_fake.c shim/michi_display_fake.c \
               shim/michi_ota_fake.c \
@@ -334,11 +337,11 @@ DISCOVERY_INC = -I$(DISCOVERY_DIR) -I$(DISCOVERY_DIR)/include
 test_michi_discovery: test_michi_discovery.c $(DISCOVERY_SRC) \
                       $(DISCOVERY_DIR)/include/michi_discovery.h \
                       $(DISCOVERY_DIR)/discovery_nvs.h \
-                      $(FIRMWARE)/michi_product_profile/capabilities.c \
+                      $(FIRMWARE)/michi_product_profile/capabilities.c $(OPS_GATE) \
                       $(IDENTITY_SRC) $(SHIMS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(DISCOVERY_INC) $(IDENTITY_INC) \
 	    $(IDENTITY_DEFS) $(CJSON_CFLAGS) -o $@ test_michi_discovery.c \
-	    $(DISCOVERY_SRC) $(FIRMWARE)/michi_product_profile/capabilities.c \
+	    $(DISCOVERY_SRC) $(FIRMWARE)/michi_product_profile/capabilities.c $(OPS_GATE) \
 	    $(IDENTITY_SRC) $(CJSON_LIBS)
 
 # michi_time + the michi_discovery RUNTIME (P0-02 clock gate): compiles
@@ -360,13 +363,13 @@ test_michi_time: test_michi_time.c $(TIME_SRC) $(DISCOVERY_SRC) \
                  $(DISCOVERY_DIR)/include/michi_discovery.h \
                  $(DISCOVERY_DIR)/discovery_nvs.h \
                  $(TIME_DIR)/include/michi_time.h \
-                 $(FIRMWARE)/michi_product_profile/capabilities.c \
+                 $(FIRMWARE)/michi_product_profile/capabilities.c $(OPS_GATE) \
                  $(IDENTITY_SRC) $(SHIMS) shim/michi_home_fake.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(DISCOVERY_INC) $(IDENTITY_INC) \
 	    $(TIME_INC) $(IDENTITY_DEFS) $(CJSON_CFLAGS) -pthread -o $@ \
 	    test_michi_time.c $(TIME_SRC) $(DISCOVERY_SRC) \
 	    $(DISCOVERY_DIR)/michi_discovery.c \
-	    $(FIRMWARE)/michi_product_profile/capabilities.c \
+	    $(FIRMWARE)/michi_product_profile/capabilities.c $(OPS_GATE) \
 	    shim/michi_home_fake.c \
 	    $(IDENTITY_SRC) $(CJSON_LIBS)
 
@@ -375,7 +378,7 @@ test_michi_time: test_michi_time.c $(TIME_SRC) $(DISCOVERY_SRC) \
 # HTTP /server/info builder - and asserts the shared feature subset
 # (session/heartbeat/volume) agrees across both surfaces.
 test_capability_parity: test_capability_parity.c \
-                        $(FIRMWARE)/michi_product_profile/capabilities.c \
+                        $(FIRMWARE)/michi_product_profile/capabilities.c $(OPS_GATE) \
                         $(FIRMWARE)/michi_http/canonical_json.c \
                         $(FIRMWARE)/michi_http/include/michi_http.h \
                         $(DISCOVERY_DIR)/announce.c \
@@ -383,7 +386,7 @@ test_capability_parity: test_capability_parity.c \
                         $(IDENTITY_SRC) $(SHIMS) shim/michi_home_fake.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(DISCOVERY_INC) $(IDENTITY_INC) \
 	    $(IDENTITY_DEFS) $(CJSON_CFLAGS) -o $@ test_capability_parity.c \
-	    $(FIRMWARE)/michi_product_profile/capabilities.c \
+	    $(FIRMWARE)/michi_product_profile/capabilities.c $(OPS_GATE) \
 	    $(FIRMWARE)/michi_http/canonical_json.c \
 	    shim/michi_home_fake.c \
 	    $(DISCOVERY_DIR)/announce.c $(IDENTITY_SRC) $(CJSON_LIBS)
@@ -396,7 +399,7 @@ test_capability_parity: test_capability_parity.c \
 # /server/info builder (canonical_json.c) for the DISC-05 parity check.
 DISC_SRC = test_discovery_disc.c $(TIME_SRC) $(DISCOVERY_SRC) \
            $(DISCOVERY_DIR)/michi_discovery.c \
-           $(FIRMWARE)/michi_product_profile/capabilities.c \
+           $(FIRMWARE)/michi_product_profile/capabilities.c $(OPS_GATE) \
            $(FIRMWARE)/michi_http/canonical_json.c \
            shim/michi_home_fake.c
 

@@ -42,6 +42,8 @@
 #include "esp_timer.h"
 #include "michi_audio_fake.h"
 #include "michi_session.h"
+#include "michi_ops_gate.h"
+#include <unistd.h>
 #include "michi_state.h"
 #include "michi_volume_fake.h"
 #include "michi_display_fake.h"
@@ -84,6 +86,11 @@ static michi_session_start_params_t make_params(void)
 
 static void reset_all(void)
 {
+    /* H23 Phase 1: the runtime authority denies playback by default, so the
+     * session engine tests must declare a validated boot first. The dedicated
+     * gate test below drives the other states explicitly. */
+    michi_ops_init();
+    (void)michi_ops_set(MICHI_OPS_READY);
     test_michi_audio_reset();
     test_volume_reset();
     test_display_reset();
@@ -941,8 +948,68 @@ static void test_h15_failed_startup_rollback_retried(void)
     cleanup_session();
 }
 
+/* H23 Phase 1: the runtime authority is the second control behind the HTTP
+ * handler. These cases drive the real michi_session_start() - not a mock - for
+ * every operational state, and prove that an active session is torn down when a
+ * restriction appears mid-stream. */
+static void test_ops_runtime_authority(void)
+{
+    printf("michi_session: runtime authority gates start and stops active audio\n");
+
+    CHECK(michi_session_init() == ESP_OK, "init ok");
+
+    michi_session_start_params_t p = make_params();
+    char token[64];
+
+    michi_ops_init(); /* BOOT_PENDING */
+    CHECK(!michi_ops_playback_allowed(), "boot pending is not playback-allowed");
+    CHECK(michi_session_start(&p, token, sizeof(token)) != ESP_OK,
+          "H23-OPS-01: session rejected before the boot decision");
+    CHECK(!michi_session_active(), "H23-OPS-01: nothing was created");
+
+    CHECK(michi_ops_set(MICHI_OPS_DIAGNOSTIC) == 0, "set diagnostic");
+    CHECK(michi_session_start(&p, token, sizeof(token)) != ESP_OK,
+          "H23-OPS-02: diagnostic receiver (no audio) rejects the session");
+
+    CHECK(michi_ops_set(MICHI_OPS_RESTRICTED) == 0, "set restricted");
+    CHECK(michi_session_start(&p, token, sizeof(token)) != ESP_OK,
+          "H23-OPS-03: restricted boot rejects the session");
+
+    /* Leaving RESTRICTED requires the authorised recovery path. */
+    CHECK(michi_ops_set(MICHI_OPS_READY) != 0, "H23-OPS-04: restricted cannot be cleared by set()");
+    CHECK(michi_ops_recover(MICHI_OPS_FATAL) != 0, "H23-OPS-04: recover only targets ready/diagnostic");
+    CHECK(michi_ops_recover(MICHI_OPS_READY) == 0, "H23-OPS-05: authorised recovery re-enables");
+    CHECK(michi_ops_playback_allowed(), "H23-OPS-05: playback allowed after recovery");
+
+    CHECK(michi_ops_set(MICHI_OPS_FATAL) == 0, "set fatal");
+    CHECK(michi_session_start(&p, token, sizeof(token)) != ESP_OK,
+          "H23-OPS-06: fatal receiver rejects the session");
+    CHECK(michi_ops_set(MICHI_OPS_READY) != 0, "H23-OPS-06: fatal is terminal until reboot");
+
+    /* The happy path, then a restriction while audio is running. */
+    michi_ops_init();
+    CHECK(michi_ops_set(MICHI_OPS_READY) == 0, "set ready");
+    CHECK(michi_session_start(&p, token, sizeof(token)) == ESP_OK,
+          "H23-OPS-07: validated boot with audio starts the session");
+    CHECK(michi_session_active(), "H23-OPS-07: session active");
+
+    CHECK(michi_ops_set(MICHI_OPS_RESTRICTED) == 0, "restrict during playback");
+    bool stopped = false;
+    for (int i = 0; i < 200; i++) {
+        if (!michi_session_active()) {
+            stopped = true;
+            break;
+        }
+        usleep(5000);
+    }
+    CHECK(stopped, "H23-OPS-08: restriction tears down the active session");
+    CHECK(!michi_session_active(), "H23-OPS-08: no zombie session survives");
+}
+
 int main(void)
 {
+    reset_all();
+    test_ops_runtime_authority();
     reset_all();
     test_init_and_token_shape();
     test_start_success();

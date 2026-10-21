@@ -22,6 +22,7 @@
 #include "michi_identity.h"
 #include "michi_product_profile.h"
 #include "nvs.h" /* fake NVS shim: test hooks only */
+#include "michi_ops_gate.h"
 
 static int failures = 0;
 
@@ -557,6 +558,12 @@ static void test_server_id_read_error(void)
 
 int main(void)
 {
+    /* H23 Phase 1: capabilities now also depend on the runtime authority, which
+     * denies playback until a boot is validated. These suites exercise the
+     * advertisement/builders, so they declare a validated boot explicitly. */
+    michi_ops_init();
+    (void)michi_ops_set(MICHI_OPS_READY);
+
     test_constants();
     test_canonical_golden();
     test_canonical_with_home_metadata();

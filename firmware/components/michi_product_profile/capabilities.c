@@ -45,6 +45,7 @@
  */
 
 #include "michi_product_profile.h"
+#include "michi_ops_gate.h"
 
 static const michi_product_capabilities_t s_capabilities = {
     .session = true,
@@ -62,8 +63,13 @@ const michi_product_capabilities_t *michi_product_profile_capabilities(void)
 
 bool michi_product_profile_session_allowed(const michi_product_profile_t *p)
 {
-    /* No profile means no proof that audio works: fail closed. */
-    return p != NULL && p->audio_available;
+    /* Two independent conditions, both required:
+     *   - hardware truth: a usable audio output (no profile == no proof);
+     *   - operational trust: the boot validated and nothing restricts us.
+     * Keeping them separate means a board with a DAC is still refused while
+     * the running image is unproven, and a trusted boot without a DAC is still
+     * refused because there is nothing to play through. */
+    return p != NULL && p->audio_available && michi_ops_playback_allowed();
 }
 
 michi_product_capabilities_t michi_product_profile_capabilities_for(const michi_product_profile_t *p)
