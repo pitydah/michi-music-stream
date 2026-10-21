@@ -7,6 +7,8 @@ extern "C" {
 
 void test_display_reset(void);
 int test_display_clear_count(void);
+int test_display_update_count(void);
+const char *test_display_last_title(void);
 
 #ifdef __cplusplus
 }

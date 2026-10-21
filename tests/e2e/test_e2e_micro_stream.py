@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """MS-09 cross-repo E2E: Michi Micro Server (controller) against the
-canonical Michi Music Stream receiver simulator, certified against the
-vendored michi-link alpha.1 bundle.
+canonical Michi Music Stream receiver simulator, evaluated against the
+currently vendored Michi Link contract bundle. Simulator coverage is not a
+certification of on-device playback or remote Micro Server interoperability.
 
 Flow (contract sections 2.2-2.6, plan section 6 MS-09): signed discovery
-vector; server info; physical pairing window via the internal hook; full
-pairing (start/status/confirm) with real Ed25519 verification; canonical
+vector; server info; device Home Membership auth (challenge/session)
+with real Ed25519 verification; canonical
 session creation; 100 canonical RTP packets over real UDP to the socket
 the simulator binds; RTP rejection classes evidenced through the shared
 host-tested rtp_guard.c; heartbeat + replay; volume/pause/resume; DELETE;
@@ -528,3 +529,40 @@ def test_07_delete_and_lease_expiry(sim, bundle):
 
 if __name__ == "__main__":
     sys.exit(pytest.main([str(Path(__file__).resolve()), "-q"]))
+
+
+def test_home_revocation_signature_fail_closed(sim):
+    """Simulator cannot accept a forged revocation without the Home root key."""
+    state = sim.state
+    target = state.michi_id
+    record = {
+        "version": 1,
+        "home_id": state.home_id,
+        "revoked_device_michi_id": target,
+        "revoked_at": "2026-10-18T12:00:00Z",
+        "reason": "device removed by home administrator",
+        "signature": b64url_nopad(bytes(64)),
+    }
+    before = set(state.revoked_devices)
+    status, response = sim.client.request("POST", "/api/v1/home/revocations", record)
+    assert status == 400
+    assert response["error"]["code"] == "INVALID_REQUEST"
+    assert state.revoked_devices == before
+    assert target not in state.revocations
+
+    record["signature"] = b64url_nopad(state.home_root_private_key.sign(
+        b"michi-link-revocation-v1"
+        + record["home_id"].encode("ascii")
+        + record["revoked_device_michi_id"].encode("ascii")
+        + b":" + record["revoked_at"].encode("utf-8")
+        + b":" + record["reason"].encode("utf-8")
+    ))
+    status, response = sim.client.request("POST", "/api/v1/home/revocations", record)
+    assert status == 200
+    assert response["status"] == "accepted"
+    assert target in state.revoked_devices
+
+    record["home_id"] = "A" * 43
+    status, response = sim.client.request("POST", "/api/v1/home/revocations", record)
+    assert status == 409
+    assert state.revocations[target]["home_id"] == state.home_id

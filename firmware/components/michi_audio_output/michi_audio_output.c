@@ -47,6 +47,13 @@
 #define MICHI_AUDIO_I2S_WRITE_TIMEOUT_MS 100  /* bounded: task always wakes (ms) */
 #define MICHI_AUDIO_I2S_SILENCE_TIMEOUT_MS 50 /* explicit ms (not ticks) */
 #define MICHI_AUDIO_JOIN_TIMEOUT_MS 2000
+/* H9: producer must never block forever if the I2S worker stops consuming.
+ * The bound is spent across the whole write (not reset on occasional progress).
+ * It does not impose a timeout on OTA, pairing, or other control operations. */
+#define MICHI_AUDIO_BACKPRESSURE_MAX_MS 1500
+/* H9: transient DMA errors are counted, consecutive failures are fatal.
+ * A stream that cannot reach the DAC must not advertise active output. */
+#define MICHI_AUDIO_DMA_FATAL_STREAK 3
 
 typedef enum {
     MICHI_AUDIO_CMD_NONE = 0,
@@ -72,6 +79,47 @@ static TaskHandle_t s_task = NULL;
 static bool s_inited = false;
 static bool s_run = false;       /* cooperative: read by the task */
 static bool s_task_done = false; /* set by the task before self-delete */
+/* H10: if channel deletion fails, the channel and ring are still owned here.
+ * Do not allow start() until a retry deinit successfully releases them. */
+static bool s_channel_delete_failed = false;
+/* H11: Lifecycle operations are serialized by a non-blocking lease. This
+ * protects driver ownership across calls that release s_state_lock while
+ * invoking ESP-IDF (enable/disable/delete), without holding a spinlock during
+ * potentially blocking driver calls. A concurrent lifecycle request fails
+ * explicitly instead of racing the I2S handle or semaphores. */
+static portMUX_TYPE s_lifecycle_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool s_lifecycle_busy = false;
+/* Accessed only by the current lifecycle lease holder. Distinguishes a
+ * stopped worker from a genuinely DISABLED hardware channel, including
+ * STOP timeout/retry and start rollback paths. */
+static bool s_channel_enabled = false;
+/* Producers can outlive a STOP request. Prevent DEINIT or a new START
+ * from freeing/reusing the ring while a previously admitted write still
+ * owns its memory. Protected by s_state_lock, not the lifecycle lease. */
+static uint32_t s_write_inflight = 0;
+/* H13: a control caller may be between checking a command semaphore and
+ * acquiring it. STOP can finish while such a caller still holds a reference.
+ * Deinit must never delete either semaphore until every admitted caller has
+ * returned. Protected by s_state_lock; no locks are held while waiting. */
+static uint32_t s_control_inflight = 0;
+
+static bool lifecycle_try_enter(void)
+{
+    portENTER_CRITICAL(&s_lifecycle_lock);
+    bool acquired = !s_lifecycle_busy;
+    if (acquired) {
+        s_lifecycle_busy = true;
+    }
+    portEXIT_CRITICAL(&s_lifecycle_lock);
+    return acquired;
+}
+
+static void lifecycle_leave(void)
+{
+    portENTER_CRITICAL(&s_lifecycle_lock);
+    s_lifecycle_busy = false;
+    portEXIT_CRITICAL(&s_lifecycle_lock);
+}
 
 static michi_audio_output_state_t s_state = MICHI_AUDIO_STATE_UNINITIALIZED;
 static portMUX_TYPE s_state_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -89,11 +137,18 @@ static SemaphoreHandle_t s_cmd_ack_sem = NULL;
 static uint32_t s_cmd_timeout_override_ms = 0;
 static uint32_t s_join_timeout_override_ms = 0;
 static _Atomic bool s_test_hold_worker = false;
+static _Atomic bool s_test_hold_producer = false;
+/* Deterministic race gate: retain control ownership after command ACK and
+ * before wrapper releases its reference (not in production firmware). */
+static _Atomic bool s_test_hold_control_exit = false;
+static _Atomic bool s_test_control_exit_entered = false;
+static _Atomic bool s_test_producer_in_hold = false;
 static _Atomic uint32_t s_test_quiesce_barrier_race_count = 0;
 #endif
 
 static size_t s_prefill_bytes = 0;
 static uint8_t s_bit_depth = 16;
+static size_t s_frame_bytes = 4; /* interleaved PCM frame (sample bytes * channels) */
 
 /* Single I2S owner contract (Wave B):
  * s_chunk is strictly owned by the i2s_task worker.
@@ -106,12 +161,36 @@ static uint8_t s_chunk[MICHI_AUDIO_CHUNK_BYTES] __attribute__((aligned(4)));
  * stop()). Written from two contexts (task + caller), read from any task:
  * every access runs under s_err_lock. */
 static uint32_t s_error_count = 0;
+static uint32_t s_short_write_count = 0;
+static uint32_t s_backpressure_timeout_count = 0;
+static uint32_t s_dma_fault_count = 0;
 static portMUX_TYPE s_err_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static void err_count_inc(void)
 {
     portENTER_CRITICAL(&s_err_lock);
     s_error_count++;
+    portEXIT_CRITICAL(&s_err_lock);
+}
+
+static void short_write_inc(void)
+{
+    portENTER_CRITICAL(&s_err_lock);
+    s_short_write_count++;
+    portEXIT_CRITICAL(&s_err_lock);
+}
+
+static void dma_fault_inc(void)
+{
+    portENTER_CRITICAL(&s_err_lock);
+    s_dma_fault_count++;
+    portEXIT_CRITICAL(&s_err_lock);
+}
+
+static void backpressure_timeout_inc(void)
+{
+    portENTER_CRITICAL(&s_err_lock);
+    s_backpressure_timeout_count++;
     portEXIT_CRITICAL(&s_err_lock);
 }
 
@@ -163,6 +242,12 @@ static size_t ring_write(ring_t *r, const uint8_t *data, size_t len)
     }
     if (free > MICHI_AUDIO_CHUNK_BYTES) {
         free = MICHI_AUDIO_CHUNK_BYTES; /* bounded critical section */
+    }
+    /* A ring write must never publish a fraction of one PCM frame. */
+    free -= free % s_frame_bytes;
+    if (free == 0) {
+        portEXIT_CRITICAL(&s_ring_lock);
+        return 0;
     }
     size_t first = r->size - r->head;
     size_t n = free < first ? free : first;
@@ -248,24 +333,33 @@ static void handle_pending_command_in_task(void)
         size_t written = 0;
         esp_err_t wr_err = i2s_channel_write(s_tx, s_chunk, sizeof(s_chunk), &written,
                                              MICHI_AUDIO_I2S_SILENCE_TIMEOUT_MS);
+        /* H12: an ESP_OK with a short write is NOT a successful silence
+         * barrier. Never report QUIESCED after an incomplete DMA delivery. */
+        esp_err_t silence_err = wr_err;
+        if (wr_err == ESP_OK && written != sizeof(s_chunk)) {
+            silence_err = ESP_FAIL;
+            short_write_inc();
+        }
 
         portENTER_CRITICAL(&s_state_lock);
         s_cmd_ack_generation = gen;
         if (s_state == MICHI_AUDIO_STATE_FAULTED ||
             s_state == MICHI_AUDIO_STATE_STOPPING ||
             s_state == MICHI_AUDIO_STATE_STOPPED) {
-            s_cmd_result = (wr_err != ESP_OK) ? wr_err : ESP_ERR_TIMEOUT;
-        } else if (wr_err != ESP_OK) {
+            s_cmd_result = (silence_err != ESP_OK) ? silence_err : ESP_ERR_TIMEOUT;
+        } else if (silence_err != ESP_OK) {
             s_state = MICHI_AUDIO_STATE_FAULTED;
-            s_cmd_result = wr_err;
+            s_cmd_result = silence_err;
         } else {
             s_state = MICHI_AUDIO_STATE_QUIESCED;
             s_cmd_result = ESP_OK;
         }
         portEXIT_CRITICAL(&s_state_lock);
 
-        if (wr_err != ESP_OK) {
-            ESP_LOGW(TAG, "quiesce: silence i2s_channel_write failed: %s", esp_err_to_name(wr_err));
+        if (silence_err != ESP_OK) {
+            ESP_LOGW(TAG, "quiesce: silence DMA incomplete err=%s delivered=%u/%u",
+                     esp_err_to_name(silence_err), (unsigned)written,
+                     (unsigned)sizeof(s_chunk));
             err_count_inc();
         }
 
@@ -273,6 +367,9 @@ static void handle_pending_command_in_task(void)
             xSemaphoreGive(s_cmd_ack_sem);
         }
     } else if (cmd == MICHI_AUDIO_CMD_RESUME) {
+        /* The worker is quiesced and owns the gain envelope. Reset before
+         * publishing RUNNING, to fade the first resumed PCM from silence. */
+        michi_volume_reset_envelope();
         portENTER_CRITICAL(&s_state_lock);
         s_cmd_ack_generation = gen;
         if (s_state == MICHI_AUDIO_STATE_FAULTED ||
@@ -345,12 +442,13 @@ static esp_err_t send_cmd_and_wait_ack(michi_audio_cmd_t cmd, uint32_t timeout_m
         s_state == MICHI_AUDIO_STATE_FAULTED ||
         (cmd == MICHI_AUDIO_CMD_QUIESCE && s_state != MICHI_AUDIO_STATE_RUNNING) ||
         (cmd == MICHI_AUDIO_CMD_RESUME && s_state != MICHI_AUDIO_STATE_QUIESCED)) {
-        portEXIT_CRITICAL(&s_state_lock);
-        if (cmd == MICHI_AUDIO_CMD_QUIESCE) {
+        bool may_reopen = (s_state == MICHI_AUDIO_STATE_RUNNING);
+        if (cmd == MICHI_AUDIO_CMD_QUIESCE && may_reopen) {
             portENTER_CRITICAL(&s_ring_lock);
             s_ring_write_barrier = false;
             portEXIT_CRITICAL(&s_ring_lock);
         }
+        portEXIT_CRITICAL(&s_state_lock);
         xSemaphoreGive(s_cmd_mux);
         return ESP_ERR_INVALID_STATE;
     }
@@ -392,10 +490,16 @@ static esp_err_t send_cmd_and_wait_ack(michi_audio_cmd_t cmd, uint32_t timeout_m
     }
 
     if (cmd == MICHI_AUDIO_CMD_QUIESCE && res != ESP_OK) {
-        /* If quiesce failed or timed out, reset write barrier */
-        portENTER_CRITICAL(&s_ring_lock);
-        s_ring_write_barrier = false;
-        portEXIT_CRITICAL(&s_ring_lock);
+        /* H12: a failed command must not reopen PCM admission after STOP,
+         * FAULTED or another lifecycle transition took ownership. */
+        portENTER_CRITICAL(&s_state_lock);
+        bool may_reopen = s_state == MICHI_AUDIO_STATE_RUNNING;
+        if (may_reopen) {
+            portENTER_CRITICAL(&s_ring_lock);
+            s_ring_write_barrier = false;
+            portEXIT_CRITICAL(&s_ring_lock);
+        }
+        portEXIT_CRITICAL(&s_state_lock);
     }
 
     xSemaphoreGive(s_cmd_mux);
@@ -448,6 +552,7 @@ static void i2s_task(void *arg)
         }
     }
 
+    unsigned consecutive_dma_errors = 0;
     for (;;) {
         handle_pending_command_in_task();
         bool should_exit = false;
@@ -498,19 +603,40 @@ static void i2s_task(void *arg)
         size_t written = 0;
         esp_err_t err = i2s_channel_write(s_tx, s_chunk, n, &written,
                                           MICHI_AUDIO_I2S_WRITE_TIMEOUT_MS);
-        if (err != ESP_OK) {
+        /* A short write is a failure even if the driver returned ESP_OK.
+         * Never replay the tail blindly: a prior prefix may already reside
+         * inside DMA, and duplicates would introduce an audible discontinuity. */
+        if (err != ESP_OK || written != n) {
             portENTER_CRITICAL(&s_state_lock);
             if (!s_run || s_state == MICHI_AUDIO_STATE_STOPPING) {
                 should_exit = true;
             }
             portEXIT_CRITICAL(&s_state_lock);
             if (should_exit) {
-                break; /* stop() disabled the channel: silent teardown */
+                break; /* stop() disabled the channel: normal teardown */
             }
-            /* Data was dequeued but could not be written: drop it and
-             * keep the pipeline moving. */
-            ESP_LOGW(TAG, "i2s_channel_write failed: %s", esp_err_to_name(err));
+            if (written < n) {
+                short_write_inc();
+            }
             err_count_inc();
+            consecutive_dma_errors++;
+            ESP_LOGW(TAG, "I2S PCM delivery incomplete: err=%s submitted=%u/%u streak=%u",
+                     esp_err_to_name(err), (unsigned)written, (unsigned)n,
+                     consecutive_dma_errors);
+            if (consecutive_dma_errors >= MICHI_AUDIO_DMA_FATAL_STREAK) {
+                /* Fail closed: the session producer will reject further PCM.
+                 * STOP must still disable the channel and join the worker. */
+                portENTER_CRITICAL(&s_state_lock);
+                s_state = MICHI_AUDIO_STATE_FAULTED;
+                s_run = false;
+                portEXIT_CRITICAL(&s_state_lock);
+                dma_fault_inc();
+                ESP_LOGE(TAG, "I2S output is faulted after %u consecutive failures",
+                         consecutive_dma_errors);
+                break;
+            }
+        } else {
+            consecutive_dma_errors = 0;
         }
         portENTER_CRITICAL(&s_state_lock);
         if (!s_run) {
@@ -552,7 +678,14 @@ shutdown:
 
     portENTER_CRITICAL(&s_state_lock);
     s_task_done = true;
-    s_state = MICHI_AUDIO_STATE_STOPPED;
+    /* H11: the worker has no authority to declare STOPPED. Only stop()
+     * may publish STOPPED after i2s_channel_disable actually succeeds.
+     * Preserve STOPPING during ordinary cooperative termination; any
+     * unexplained exit is FAULTED until the owner reconciles the channel. */
+    if (s_state != MICHI_AUDIO_STATE_FAULTED &&
+        s_state != MICHI_AUDIO_STATE_STOPPING) {
+        s_state = MICHI_AUDIO_STATE_FAULTED;
+    }
     s_task = NULL;
     portEXIT_CRITICAL(&s_state_lock);
 
@@ -568,7 +701,34 @@ static bool pin_ok(int pin)
     return pin >= 0 && pin < GPIO_NUM_MAX;
 }
 
-esp_err_t michi_audio_output_init(const michi_audio_output_config_t *cfg)
+/* H11: an I2S deletion failure during INIT must not turn the live channel
+ * into a leaked/unrecoverable handle. Keep ring ownership and mark the
+ * partial init FAULTED; deinit() is the only legal recovery route. The
+ * lifecycle lease is held throughout this helper. */
+static esp_err_t quarantine_failed_init_channel(i2s_chan_handle_t tx,
+                                                esp_err_t delete_err)
+{
+    portENTER_CRITICAL(&s_state_lock);
+    s_tx = tx;
+    s_inited = true;  /* ownership exists even though init failed */
+    s_run = false;
+    s_task = NULL;
+    s_task_done = false;
+    s_notify_closed = true;
+    s_channel_delete_failed = true;
+    s_state = MICHI_AUDIO_STATE_FAULTED;
+    portEXIT_CRITICAL(&s_state_lock);
+
+    portENTER_CRITICAL(&s_ring_lock);
+    s_ring_write_barrier = true;
+    portEXIT_CRITICAL(&s_ring_lock);
+    err_count_inc();
+    ESP_LOGE(TAG, "init: channel deletion failed (%s), keeping resources for deinit retry",
+             esp_err_to_name(delete_err));
+    return delete_err;
+}
+
+static esp_err_t michi_audio_output_init_impl(const michi_audio_output_config_t *cfg)
 {
     if (cfg == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -642,6 +802,7 @@ esp_err_t michi_audio_output_init(const michi_audio_output_config_t *cfg)
     s_ring.used = 0;
     portEXIT_CRITICAL(&s_ring_lock);
     s_bit_depth = cfg->bit_depth;
+    s_frame_bytes = ((size_t)cfg->bit_depth / 8) * cfg->channels;
 
     /* P0-5: every error below is propagated AND cleaned up. */
     i2s_chan_config_t chan_cfg = {
@@ -676,8 +837,7 @@ esp_err_t michi_audio_output_init(const michi_audio_output_config_t *cfg)
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "init: i2s_channel_init_std_mode failed: %s",
                  esp_err_to_name(err));
-        i2s_del_channel(tx);
-        goto fail_ring;
+        goto fail_channel;
     }
 
     /* Create control synchronization primitives */
@@ -696,9 +856,18 @@ esp_err_t michi_audio_output_init(const michi_audio_output_config_t *cfg)
             vSemaphoreDelete(s_cmd_ack_sem);
             s_cmd_ack_sem = NULL;
         }
-        i2s_del_channel(tx);
         err = ESP_ERR_NO_MEM;
-        goto fail_ring;
+        goto fail_channel;
+    }
+
+    /* H8: bind frame shape/ramp before any I2S consumer can run. */
+    err = michi_volume_configure_pcm(cfg->sample_rate, cfg->channels);
+    if (err != ESP_OK) {
+        vSemaphoreDelete(s_cmd_mux);
+        s_cmd_mux = NULL;
+        vSemaphoreDelete(s_cmd_ack_sem);
+        s_cmd_ack_sem = NULL;
+        goto fail_channel;
     }
 
     portENTER_CRITICAL(&s_state_lock);
@@ -708,6 +877,9 @@ esp_err_t michi_audio_output_init(const michi_audio_output_config_t *cfg)
     s_task = NULL;
     s_task_done = false;
     s_notify_closed = false;
+    s_channel_delete_failed = false;
+    s_channel_enabled = false;
+    s_control_inflight = 0;
     s_pending_cmd = MICHI_AUDIO_CMD_NONE;
     s_cmd_generation = 0;
     s_cmd_ack_generation = 0;
@@ -724,6 +896,15 @@ esp_err_t michi_audio_output_init(const michi_audio_output_config_t *cfg)
              cfg->sample_rate, cfg->bit_depth, cfg->channels);
     return ESP_OK;
 
+fail_channel:
+    /* Keep the allocated ring when deletion failed: the channel still
+     * belongs to this module and is recoverable by deinit(), not by init. */
+    {
+        esp_err_t del_err = i2s_del_channel(tx);
+        if (del_err != ESP_OK) {
+            return quarantine_failed_init_channel(tx, del_err);
+        }
+    }
 fail_ring:
     heap_caps_free(ring);
     portENTER_CRITICAL(&s_ring_lock);
@@ -737,10 +918,12 @@ fail_ring:
     return err;
 }
 
-esp_err_t michi_audio_output_start(void)
+static esp_err_t michi_audio_output_start_impl(void)
 {
     portENTER_CRITICAL(&s_state_lock);
-    if (!s_inited || (s_state != MICHI_AUDIO_STATE_INITIALIZED && s_state != MICHI_AUDIO_STATE_STOPPED)) {
+    if (!s_inited || s_channel_delete_failed || s_channel_enabled || s_write_inflight != 0 ||
+        s_task != NULL || s_task_done ||
+        (s_state != MICHI_AUDIO_STATE_INITIALIZED && s_state != MICHI_AUDIO_STATE_STOPPED)) {
         portEXIT_CRITICAL(&s_state_lock);
         return ESP_ERR_INVALID_STATE;
     }
@@ -754,12 +937,17 @@ esp_err_t michi_audio_output_start(void)
     s_ring_write_barrier = false;
     portEXIT_CRITICAL(&s_ring_lock);
 
+    /* New (or restarted) I2S session: avoid an initial full-scale step. */
+    michi_volume_reset_envelope();
+
     /* 2) Enable the LIVE channel */
     esp_err_t err = i2s_channel_enable(s_tx);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "start: i2s_channel_enable failed: %s", esp_err_to_name(err));
         return err;
     }
+
+    s_channel_enabled = true;
 
     /* 3) Flags BEFORE creating the task */
     portENTER_CRITICAL(&s_state_lock);
@@ -775,24 +963,45 @@ esp_err_t michi_audio_output_start(void)
                                       NULL, MICHI_AUDIO_TASK_PRIO, &task);
     if (task_ret != pdPASS) {
         ESP_LOGE(TAG, "start: task creation failed");
-        i2s_channel_disable(s_tx);
+        /* H10: channel enable succeeded but task creation did not. A failed
+         * rollback disable cannot be ignored: do not permit a second start
+         * on an uncertain I2S channel. A STOP retry owns this recovery. */
+        esp_err_t disable_err = i2s_channel_disable(s_tx);
+        if (disable_err == ESP_OK) {
+            s_channel_enabled = false;
+        } else {
+            err_count_inc();
+            ESP_LOGE(TAG, "start: rollback disable failed: %s",
+                     esp_err_to_name(disable_err));
+        }
         portENTER_CRITICAL(&s_state_lock);
         s_run = false;
-        s_state = MICHI_AUDIO_STATE_INITIALIZED;
+        s_state = (disable_err == ESP_OK) ? MICHI_AUDIO_STATE_INITIALIZED : MICHI_AUDIO_STATE_FAULTED;
         s_task = NULL;
+        s_task_done = (disable_err != ESP_OK); /* no worker exists: retry STOP safely */
+        s_notify_closed = (disable_err != ESP_OK);
         portEXIT_CRITICAL(&s_state_lock);
-        return ESP_ERR_NO_MEM;
+        return (disable_err == ESP_OK) ? ESP_ERR_NO_MEM : disable_err;
     }
 
+    /* The scheduler may run the worker before xTaskCreate returns. Do not
+     * resurrect a self-deleted task handle if it already reported FAULTED. */
     portENTER_CRITICAL(&s_state_lock);
-    s_task = task;
+    bool exited_during_create = s_task_done;
+    if (!exited_during_create) {
+        s_task = task;
+    }
     portEXIT_CRITICAL(&s_state_lock);
+    if (exited_during_create) {
+        ESP_LOGE(TAG, "start: worker exited before task ownership was published");
+        return ESP_FAIL; /* stop() must reconcile the still-enabled channel */
+    }
 
     ESP_LOGI(TAG, "start: pipeline running");
     return ESP_OK;
 }
 
-esp_err_t michi_audio_output_write(const uint8_t *data, size_t len)
+static esp_err_t michi_audio_output_write_impl(const uint8_t *data, size_t len)
 {
     if (data == NULL || len == 0) {
         return ESP_ERR_INVALID_ARG;
@@ -804,6 +1013,10 @@ esp_err_t michi_audio_output_write(const uint8_t *data, size_t len)
     if (st != MICHI_AUDIO_STATE_RUNNING) {
         return ESP_ERR_INVALID_STATE;
     }
+    /* Reject a torn sample before it reaches the PSRAM ring/I2S driver. */
+    if ((len % s_frame_bytes) != 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
 
     portENTER_CRITICAL(&s_ring_lock);
     bool barrier = s_ring_write_barrier;
@@ -813,7 +1026,21 @@ esp_err_t michi_audio_output_write(const uint8_t *data, size_t len)
     }
 
     size_t off = 0;
+    /* H14: wall-clock deadline across the entire producer call, not only
+     * ticks when the ring is completely full. Partial progress must not
+     * reset the budget: otherwise a slowly draining DAC can keep this
+     * producer occupied for arbitrarily long. Tick subtraction handles
+     * wrap-around for intervals shorter than half the counter range. */
+    const TickType_t started_at = xTaskGetTickCount();
+    const TickType_t budget_ticks = pdMS_TO_TICKS(MICHI_AUDIO_BACKPRESSURE_MAX_MS) > 0
+        ? pdMS_TO_TICKS(MICHI_AUDIO_BACKPRESSURE_MAX_MS) : 1;
     while (off < len) {
+        if ((TickType_t)(xTaskGetTickCount() - started_at) >= budget_ticks) {
+            backpressure_timeout_inc();
+            ESP_LOGW(TAG, "PCM ring total write deadline reached (budget=%u ticks)",
+                     (unsigned)budget_ticks);
+            return ESP_ERR_TIMEOUT;
+        }
         portENTER_CRITICAL(&s_state_lock);
         st = s_state;
         portEXIT_CRITICAL(&s_state_lock);
@@ -851,62 +1078,79 @@ esp_err_t michi_audio_output_write(const uint8_t *data, size_t len)
 
 esp_err_t michi_audio_output_flush(void)
 {
+    /* H12: flush is a producer-side ring operation. An already admitted
+     * flush must keep its ring allocation alive across STOP/DEINIT. The
+     * same counter also prevents START from reusing the ring during flush. */
     portENTER_CRITICAL(&s_state_lock);
     michi_audio_output_state_t st = s_state;
-    portEXIT_CRITICAL(&s_state_lock);
-
     if (st != MICHI_AUDIO_STATE_RUNNING && st != MICHI_AUDIO_STATE_QUIESCED) {
+        portEXIT_CRITICAL(&s_state_lock);
         return ESP_ERR_INVALID_STATE;
     }
+    s_write_inflight++;
+    portEXIT_CRITICAL(&s_state_lock);
 
     portENTER_CRITICAL(&s_ring_lock);
-    s_ring.head = 0;
-    s_ring.tail = 0;
-    s_ring.used = 0;
+    bool barrier = s_ring_write_barrier;
+    if (!barrier && s_ring.buf != NULL) {
+        s_ring.head = 0;
+        s_ring.tail = 0;
+        s_ring.used = 0;
+    }
     portEXIT_CRITICAL(&s_ring_lock);
-    return ESP_OK;
+
+    portENTER_CRITICAL(&s_state_lock);
+    s_write_inflight--;
+    portEXIT_CRITICAL(&s_state_lock);
+    return barrier ? ESP_ERR_INVALID_STATE : ESP_OK;
+}
+
+/* Admission is atomic with respect to DEINIT's last-reference check.
+ * A reference covers the entire command, including waits on the mutex/ACK.
+ * STOP may run concurrently, but DEINIT refuses a live reference even after
+ * STOP has completed. This closes the semaphore use-after-free window. */
+static esp_err_t audio_control_command(michi_audio_cmd_t cmd)
+{
+    portENTER_CRITICAL(&s_state_lock);
+    if (!s_inited) {
+        portEXIT_CRITICAL(&s_state_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    if ((cmd == MICHI_AUDIO_CMD_QUIESCE && s_state == MICHI_AUDIO_STATE_QUIESCED) ||
+        (cmd == MICHI_AUDIO_CMD_RESUME && s_state == MICHI_AUDIO_STATE_RUNNING)) {
+        portEXIT_CRITICAL(&s_state_lock);
+        return ESP_OK;
+    }
+    if ((cmd == MICHI_AUDIO_CMD_QUIESCE && s_state != MICHI_AUDIO_STATE_RUNNING) ||
+        (cmd == MICHI_AUDIO_CMD_RESUME && s_state != MICHI_AUDIO_STATE_QUIESCED)) {
+        portEXIT_CRITICAL(&s_state_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_control_inflight++;
+    portEXIT_CRITICAL(&s_state_lock);
+
+    esp_err_t err = send_cmd_and_wait_ack(cmd, 1000);
+#ifdef MICHI_HOST_TEST
+    while (atomic_load(&s_test_hold_control_exit)) {
+        atomic_store(&s_test_control_exit_entered, true);
+        vTaskDelay(1);
+    }
+    atomic_store(&s_test_control_exit_entered, false);
+#endif
+    portENTER_CRITICAL(&s_state_lock);
+    s_control_inflight--;
+    portEXIT_CRITICAL(&s_state_lock);
+    return err;
 }
 
 esp_err_t michi_audio_output_quiesce(void)
 {
-    portENTER_CRITICAL(&s_state_lock);
-    if (!s_inited) {
-        portEXIT_CRITICAL(&s_state_lock);
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (s_state == MICHI_AUDIO_STATE_QUIESCED) {
-        portEXIT_CRITICAL(&s_state_lock);
-        return ESP_OK; /* AUDIO-Q-06: idempotent */
-    }
-    if (s_state != MICHI_AUDIO_STATE_RUNNING) {
-        /* Illegal edge: cannot quiesce from INITIALIZED, STOPPED, STOPPING, FAULTED */
-        portEXIT_CRITICAL(&s_state_lock);
-        return ESP_ERR_INVALID_STATE;
-    }
-    portEXIT_CRITICAL(&s_state_lock);
-
-    return send_cmd_and_wait_ack(MICHI_AUDIO_CMD_QUIESCE, 1000);
+    return audio_control_command(MICHI_AUDIO_CMD_QUIESCE);
 }
 
 esp_err_t michi_audio_output_resume(void)
 {
-    portENTER_CRITICAL(&s_state_lock);
-    if (!s_inited) {
-        portEXIT_CRITICAL(&s_state_lock);
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (s_state == MICHI_AUDIO_STATE_RUNNING) {
-        portEXIT_CRITICAL(&s_state_lock);
-        return ESP_OK; /* Idempotent */
-    }
-    if (s_state != MICHI_AUDIO_STATE_QUIESCED) {
-        /* Illegal edge: cannot resume from INITIALIZED, STOPPED, STOPPING, FAULTED */
-        portEXIT_CRITICAL(&s_state_lock);
-        return ESP_ERR_INVALID_STATE;
-    }
-    portEXIT_CRITICAL(&s_state_lock);
-
-    return send_cmd_and_wait_ack(MICHI_AUDIO_CMD_RESUME, 1000);
+    return audio_control_command(MICHI_AUDIO_CMD_RESUME);
 }
 
 bool michi_audio_output_is_quiesced(void)
@@ -917,15 +1161,23 @@ bool michi_audio_output_is_quiesced(void)
     return q;
 }
 
-esp_err_t michi_audio_output_stop(void)
+static esp_err_t michi_audio_output_stop_impl(void)
 {
     portENTER_CRITICAL(&s_state_lock);
     if (!s_inited) {
         portEXIT_CRITICAL(&s_state_lock);
         return ESP_ERR_INVALID_STATE;
     }
-    if (s_state == MICHI_AUDIO_STATE_INITIALIZED || s_state == MICHI_AUDIO_STATE_STOPPED) {
-        /* Reconcile late worker exit: clear task handle, done flag, and notify closed flag */
+    /* A partial INIT that leaked its disabled channel needs DEINIT retry,
+     * not a STOP on a channel that was never enabled. */
+    if (s_channel_delete_failed && !s_channel_enabled) {
+        portEXIT_CRITICAL(&s_state_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    if ((s_state == MICHI_AUDIO_STATE_INITIALIZED ||
+         s_state == MICHI_AUDIO_STATE_STOPPED) && !s_channel_enabled &&
+        !s_task_done && s_task == NULL) {
+        /* Idempotence is legal only after hardware has been disabled. */
         s_task_done = false;
         s_task = NULL;
         s_notify_closed = false;
@@ -937,12 +1189,33 @@ esp_err_t michi_audio_output_stop(void)
         return ESP_OK; /* idempotent */
     }
     if (s_task == NULL && s_task_done) {
-        /* Worker has already completed and set s_task_done */
+        /* Worker completed itself. An I2S fatal fault does NOT imply that
+         * the hardware channel was disabled; explicitly disable it here. */
+        portEXIT_CRITICAL(&s_state_lock);
+        if (s_channel_enabled && s_tx != NULL) {
+            esp_err_t disable_err = i2s_channel_disable(s_tx);
+            if (disable_err != ESP_OK) {
+                /* H10: preserve FAULTED and done for retry. A failed disable
+                 * does not mean the hardware is safe to re-enable or delete. */
+                err_count_inc();
+                portENTER_CRITICAL(&s_state_lock);
+                s_state = MICHI_AUDIO_STATE_FAULTED;
+                s_notify_closed = true;
+                portEXIT_CRITICAL(&s_state_lock);
+                portENTER_CRITICAL(&s_ring_lock);
+                s_ring_write_barrier = true;
+                portEXIT_CRITICAL(&s_ring_lock);
+                ESP_LOGE(TAG, "stop after fault: channel remains owned: %s",
+                         esp_err_to_name(disable_err));
+                return disable_err;
+            }
+            s_channel_enabled = false;
+        }
+        portENTER_CRITICAL(&s_state_lock);
         s_task_done = false;
         s_state = MICHI_AUDIO_STATE_STOPPED;
         s_notify_closed = false;
         portEXIT_CRITICAL(&s_state_lock);
-
         portENTER_CRITICAL(&s_ring_lock);
         s_ring_write_barrier = false;
         portEXIT_CRITICAL(&s_ring_lock);
@@ -969,10 +1242,15 @@ esp_err_t michi_audio_output_stop(void)
     audio_task_notify();
 
     /* 3) Unblock any in-flight i2s_channel_write immediately. */
-    esp_err_t err = i2s_channel_disable(s_tx);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "stop: i2s_channel_disable failed: %s", esp_err_to_name(err));
-        err_count_inc();
+    esp_err_t err = ESP_OK;
+    if (s_channel_enabled) {
+        err = i2s_channel_disable(s_tx);
+        if (err == ESP_OK) {
+            s_channel_enabled = false;
+        } else {
+            ESP_LOGW(TAG, "stop: i2s_channel_disable failed: %s", esp_err_to_name(err));
+            err_count_inc();
+        }
     }
     /* 4) Join on the done flag with a timeout. The task sets it right
      *    before self-deleting; after observing it, s_task is stale and is
@@ -1010,15 +1288,18 @@ esp_err_t michi_audio_output_stop(void)
         return ESP_ERR_TIMEOUT;
     }
 
+    /* H10: the worker has exited but a failed channel disable is still a
+     * hardware fault. Keep a retryable terminal state and retain ownership.
+     * Never advertise STOPPED or permit a new start on an enabled channel. */
     portENTER_CRITICAL(&s_state_lock);
     s_task = NULL;
-    s_task_done = false;
-    s_notify_closed = false;
-    s_state = MICHI_AUDIO_STATE_STOPPED;
+    s_task_done = (err != ESP_OK);
+    s_notify_closed = (err != ESP_OK);
+    s_state = (err == ESP_OK) ? MICHI_AUDIO_STATE_STOPPED : MICHI_AUDIO_STATE_FAULTED;
     portEXIT_CRITICAL(&s_state_lock);
 
     portENTER_CRITICAL(&s_ring_lock);
-    s_ring_write_barrier = false;
+    s_ring_write_barrier = (err != ESP_OK);
     portEXIT_CRITICAL(&s_ring_lock);
 
     if (s_cmd_mux != NULL) {
@@ -1027,11 +1308,15 @@ esp_err_t michi_audio_output_stop(void)
         xSemaphoreGive(s_cmd_mux);
     }
 
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "stop: channel disable failed, retry stop before deinit");
+        return err;
+    }
     ESP_LOGI(TAG, "stop: pipeline stopped");
     return ESP_OK;
 }
 
-esp_err_t michi_audio_output_deinit(void)
+static esp_err_t michi_audio_output_deinit_impl(void)
 {
     /* Never free under a live task: if the handle or the done flag is
      * still set, the I2S task may exist (or have just exited) - only
@@ -1042,12 +1327,14 @@ esp_err_t michi_audio_output_deinit(void)
         s_task_done = false;
         s_notify_closed = false;
     }
-    if (s_task != NULL || s_task_done || s_state == MICHI_AUDIO_STATE_RUNNING ||
+    if (s_task != NULL || s_task_done || s_channel_enabled || s_write_inflight != 0 ||
+        s_control_inflight != 0 ||
+        s_state == MICHI_AUDIO_STATE_RUNNING ||
         s_state == MICHI_AUDIO_STATE_QUIESCED || s_state == MICHI_AUDIO_STATE_STOPPING ||
-        s_state == MICHI_AUDIO_STATE_FAULTED) {
+        (s_state == MICHI_AUDIO_STATE_FAULTED && !s_channel_delete_failed)) {
         portEXIT_CRITICAL(&s_state_lock);
-        ESP_LOGE(TAG, "deinit: I2S task may still be alive - call stop() "
-                      "until it returns ESP_OK first");
+        ESP_LOGE(TAG, "deinit: active task, producer or channel; "
+                      "stop and drain all writes before releasing resources");
         return ESP_ERR_INVALID_STATE;
     }
     if (!s_inited) {
@@ -1066,7 +1353,19 @@ esp_err_t michi_audio_output_deinit(void)
     if (s_tx != NULL) {
         esp_err_t err = i2s_del_channel(s_tx);
         if (err != ESP_OK) {
-            ESP_LOGW(TAG, "deinit: i2s_del_channel failed: %s", esp_err_to_name(err));
+            /* H10: do NOT free the ring or command semaphores, and do NOT
+             * discard s_tx. Retain ownership so deinit can be retried.
+             * A start after this ambiguous driver failure is prohibited. */
+            err_count_inc();
+            portENTER_CRITICAL(&s_state_lock);
+            s_channel_delete_failed = true;
+            portEXIT_CRITICAL(&s_state_lock);
+            ESP_LOGE(TAG, "deinit: channel deletion failed, resources retained: %s",
+                     esp_err_to_name(err));
+            if (s_cmd_mux != NULL) {
+                xSemaphoreGive(s_cmd_mux);
+            }
+            return err;
         }
         s_tx = NULL;
     }
@@ -1105,11 +1404,85 @@ esp_err_t michi_audio_output_deinit(void)
     s_inited = false;
     s_run = false;
     s_notify_closed = false;
+    s_channel_delete_failed = false;
+    s_channel_enabled = false;
+    s_write_inflight = 0;
+    s_control_inflight = 0;
     s_state = MICHI_AUDIO_STATE_UNINITIALIZED;
     portEXIT_CRITICAL(&s_state_lock);
 
     ESP_LOGI(TAG, "deinit: resources released");
     return ESP_OK;
+}
+
+/* These public entry points enforce the H11 single-lifecycle-operation
+ * invariant. No mutex is allocated/destroyed during INIT/DEINIT; the static
+ * spinlock protects only a boolean and is NEVER held over driver calls. */
+esp_err_t michi_audio_output_init(const michi_audio_output_config_t *cfg)
+{
+    if (!lifecycle_try_enter()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t err = michi_audio_output_init_impl(cfg);
+    lifecycle_leave();
+    return err;
+}
+
+esp_err_t michi_audio_output_start(void)
+{
+    if (!lifecycle_try_enter()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t err = michi_audio_output_start_impl();
+    lifecycle_leave();
+    return err;
+}
+
+esp_err_t michi_audio_output_stop(void)
+{
+    if (!lifecycle_try_enter()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t err = michi_audio_output_stop_impl();
+    lifecycle_leave();
+    return err;
+}
+
+esp_err_t michi_audio_output_deinit(void)
+{
+    if (!lifecycle_try_enter()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t err = michi_audio_output_deinit_impl();
+    lifecycle_leave();
+    return err;
+}
+
+esp_err_t michi_audio_output_write(const uint8_t *data, size_t len)
+{
+    if (data == NULL || len == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    portENTER_CRITICAL(&s_state_lock);
+    if (s_state != MICHI_AUDIO_STATE_RUNNING) {
+        portEXIT_CRITICAL(&s_state_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_write_inflight++;
+    portEXIT_CRITICAL(&s_state_lock);
+
+#ifdef MICHI_HOST_TEST
+    while (s_test_hold_producer) {
+        s_test_producer_in_hold = true;
+        vTaskDelay(1);
+    }
+    s_test_producer_in_hold = false;
+#endif
+    esp_err_t err = michi_audio_output_write_impl(data, len);
+    portENTER_CRITICAL(&s_state_lock);
+    s_write_inflight--;
+    portEXIT_CRITICAL(&s_state_lock);
+    return err;
 }
 
 bool michi_audio_output_is_running(void)
@@ -1160,6 +1533,27 @@ void test_michi_audio_output_hold_worker(bool hold)
     s_test_hold_worker = hold;
 }
 
+void test_michi_audio_output_hold_producer(bool hold)
+{
+    s_test_hold_producer = hold;
+}
+
+void test_michi_audio_output_hold_control_exit(bool hold)
+{
+    atomic_store(&s_test_hold_control_exit, hold);
+    if (hold) atomic_store(&s_test_control_exit_entered, false);
+}
+
+bool test_michi_audio_output_control_exit_is_held(void)
+{
+    return atomic_load(&s_test_control_exit_entered);
+}
+
+bool test_michi_audio_output_producer_is_held(void)
+{
+    return s_test_producer_in_hold;
+}
+
 uint32_t test_michi_audio_output_get_quiesce_barrier_race_count(void)
 {
     return s_test_quiesce_barrier_race_count;
@@ -1170,3 +1564,19 @@ void test_michi_audio_output_reset_quiesce_barrier_race_count(void)
     s_test_quiesce_barrier_race_count = 0;
 }
 #endif
+
+/* H9: bounded, concurrency-safe quality counters for future WebUI mapping.
+ * Counters are cumulative for this boot and never imply analog fidelity. */
+esp_err_t michi_audio_output_get_quality(michi_audio_output_quality_t *quality)
+{
+    if (quality == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    portENTER_CRITICAL(&s_err_lock);
+    quality->i2s_errors = s_error_count;
+    quality->short_dma_writes = s_short_write_count;
+    quality->backpressure_timeouts = s_backpressure_timeout_count;
+    quality->fatal_dma_streaks = s_dma_fault_count;
+    portEXIT_CRITICAL(&s_err_lock);
+    return ESP_OK;
+}

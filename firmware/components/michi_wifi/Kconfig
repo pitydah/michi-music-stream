@@ -1,6 +1,18 @@
 menu "Michi Music Stream WiFi"
 
-    comment "Wi-Fi STA + BLE provisioning (phase 9). Credentials live ONLY in the NVS 'wifi' namespace - nothing here is a Wi-Fi credential."
+    comment "Wi-Fi STA with LAB-ONLY BLE provisioning (phase 9). Credentials live ONLY in the NVS 'wifi' namespace - nothing here is a Wi-Fi credential."
+
+    config MICHI_WIFI_REQUIRE_WPA2
+        bool "Require WPA2 or stronger AP authentication (recommended in production)"
+        default n
+        help
+          When enabled, reject open and WPA-only access points during
+          station association. Requires a WPA2/WPA3 capable AP. Default
+          remains off to preserve existing factory deployments and lab
+          networks; release engineering should enable it for deployments
+          where the Wi-Fi infrastructure supports WPA2 or better.
+          This protects Wi-Fi association only. It does NOT encrypt RTP
+          itself or replace Michi Home authentication/OTA verification.
 
     config MICHI_WIFI_RETRY_MAX
         int "Max reconnect attempts before RECOVERABLE_ERROR"
@@ -9,8 +21,8 @@ menu "Michi Music Stream WiFi"
         help
           Consecutive STA disconnects tolerated before the FSM lands on
           RECOVERABLE_ERROR (MICHI_EVENT_ERROR is broadcast with
-          ESP_ERR_WIFI_NOT_CONNECT as data; recovery via the physical
-          button long press - MICHI_EVENT_RECOVER - or a reboot). 0 fails
+          ESP_ERR_WIFI_NOT_CONNECT as data; recovery through USB Ecosystem
+          reconfiguration or a reboot). 0 fails
           on the first disconnect.
 
     config MICHI_WIFI_RECONNECT_BASE_MS
@@ -23,9 +35,18 @@ menu "Michi Music Stream WiFi"
           handler). With the defaults: 5 s, 10 s, 20 s, then
           RECOVERABLE_ERROR.
 
+    config MICHI_WIFI_ALLOW_BLE_PROVISIONING_LAB
+        bool "Enable BLE Wi-Fi provisioning (LAB ONLY, never production)"
+        default n
+        help
+          Production firmware must use Michi Ecosystem USB factory
+          provisioning with embedded Wi-Fi/Home identity. Disabling this
+          leaves unprovisioned units waiting for USB recovery and prevents
+          automatic BLE advertising. Lab builds require a unique long PoP.
+
     config MICHI_PROV_POP
         string "BLE provisioning proof-of-possession (SRP6a)"
-        default "michi123"
+        default ""
         help
           Proof-of-possession shown by the client (e.g. the Espressif
           Provisioning app) when starting the secure session. THIS IS A
@@ -54,7 +75,8 @@ menu "Michi Music Stream WiFi"
           bring-up error or NVS persist failure) the BLE provisioning
           service restarts automatically after this delay, max 3 retries.
           Exhausted sessions log clearly and land on UNPROVISIONED; the
-          pairing button long press (recovery action) restarts the cycle.
+          lab-only recovery trigger may restart the cycle; production devices
+          use authorized USB Ecosystem recovery.
 
     config MICHI_WIFI_TASK_STACK_BYTES
         int "Provisioning task stack (bytes)"

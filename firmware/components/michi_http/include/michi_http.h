@@ -27,11 +27,12 @@ extern "C" {
  *
  * /server/info emits the exact receiver v1-lite profile (build_info_json,
  * including the persistent Ed25519 identity group of michi_identity).
- * Receiver-button pairing (MS-06), the canonical RTP session (MS-07)
- * and the heartbeat lease (MS-08) are implemented; the certified
- * now-playing payload and the OTA flow answer 501 NOT_IMPLEMENTED
- * after the route-table auth and the strict JSON body gate, and the
- * matching feature flag in /server/info is false. Diagnostics is
+ * Michi Home challenge/session auth, canonical RTP session (MS-07),
+ * and heartbeat lease (MS-08) are implemented;
+ * OTA management answers 501 NOT_IMPLEMENTED after auth/body validation.
+ * Now-playing is a session-bound optional LOCAL extension, not the frozen
+ * alpha.5 contract; it is not publicly advertised until E2E certified.
+ * Diagnostics is
  * implemented (its response shape is not frozen by the contract).
  *
  * Every error response uses the single canonical envelope
@@ -48,7 +49,7 @@ extern "C" {
  *   1. read the body: michi_http_read_body() (full Content-Length,
  *      bounded size, anti-slowloris total deadline with a single timeout
  *      retry - never a partial read);
- *   2. parse with cJSON_Parse();
+ *   2. parse with michi_http_json_parse_strict() using the received length;
  *   3. copy EVERY value into local buffers with the checked helpers
  *      michi_http_json_get_string/int/bool() - exact JSON type plus
  *      length/range limit; a value that does not fit is a 400, never a
@@ -124,6 +125,23 @@ esp_err_t michi_http_stop(void);
  */
 esp_err_t michi_http_read_body(httpd_req_t *req, char *buf, size_t buf_len,
                                size_t *out_len);
+
+/**
+ * @brief Strict JSON object parser for exactly body_len wire bytes.
+ *
+ * The input must contain a NUL terminator at body[body_len], but no
+ * embedded raw NUL, escaped Unicode NUL or trailing garbage is accepted.
+ * Returns an owned cJSON object or NULL.
+ */
+cJSON *michi_http_json_parse_strict(const char *body, size_t body_len);
+
+/**
+ * @brief Validate a human-readable text field as strict UTF-8.
+ *
+ * Rejects controls, DEL, overlong encodings, surrogates, truncation and
+ * out-of-range scalars. len is the field's actual byte length.
+ */
+bool michi_http_utf8_text_valid(const char *text, size_t len);
 
 /**
  * @brief Checked JSON string getter.

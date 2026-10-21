@@ -36,6 +36,8 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <unistd.h>
+#include "freertos/queue.h"
 
 #include "esp_timer.h"
 #include "michi_audio_fake.h"
@@ -779,6 +781,166 @@ static void test_expired_session_answers_like_reference(void)
     cleanup_session();
 }
 
+static void test_metadata_revision_and_session_isolation(void)
+{
+    printf("michi_session: metadata revision ordering + session isolation\n");
+    michi_session_start_params_t p = make_params();
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
+          "metadata first session started");
+    michi_session_info_t info;
+    CHECK(michi_session_get_info(&info) == ESP_OK, "metadata session id obtained");
+    const int before = test_display_update_count();
+    CHECK(michi_session_set_now_playing(g_token, OWNER, info.session_id, 1,
+          "Living Room", "New Song", "Artist") == MICHI_SESSION_METADATA_OK,
+          "initial revision accepted");
+    CHECK(test_display_update_count() == before + 1,
+          "one display update after metadata");
+    CHECK(michi_session_get_info(&info) == ESP_OK && info.metadata_revision == 1u,
+          "diagnostics snapshot reflects first metadata revision");
+    CHECK(michi_session_set_now_playing(g_token, OWNER, info.session_id, 1,
+          "Living Room", "Stale Song", "Artist") == MICHI_SESSION_METADATA_STALE,
+          "duplicate revision rejected");
+    CHECK(strcmp(test_display_last_title(), "New Song") == 0,
+          "stale metadata never reached display");
+    CHECK(michi_session_set_now_playing(g_token, OWNER, info.session_id, 2,
+          "Living Room", "Newer Song", "Artist") == MICHI_SESSION_METADATA_OK,
+          "increasing revision accepted");
+    CHECK(michi_session_get_info(&info) == ESP_OK && info.metadata_revision == 2u,
+          "diagnostics snapshot reflects newest accepted revision");
+    CHECK(michi_session_set_now_playing(g_token, "wrong-owner", info.session_id, 3,
+          "Living Room", "Bad Song", "Artist") == MICHI_SESSION_METADATA_OWNER_MISMATCH,
+          "wrong controller rejected");
+    CHECK(michi_session_set_now_playing(g_token, OWNER,
+          "00000000-0000-4000-8000-000000000000", 3,
+          "Living Room", "Bad Song", "Artist") == MICHI_SESSION_METADATA_SESSION_MISMATCH,
+          "stale session ID rejected");
+    CHECK(strcmp(test_display_last_title(), "Newer Song") == 0,
+          "rejected writes never change display");
+    CHECK(michi_session_stop(g_token) == ESP_OK,
+          "stop clears metadata atomically");
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
+          "second session started");
+    CHECK(michi_session_get_info(&info) == ESP_OK,
+          "second session id obtained");
+    CHECK(info.metadata_revision == 0u,
+          "new session begins with zero accepted metadata revisions");
+    CHECK(michi_session_set_now_playing(g_token, OWNER, info.session_id, 1,
+          "Living Room", "First Track New Session", "Artist") == MICHI_SESSION_METADATA_OK,
+          "revisions reset across sessions");
+    cleanup_session();
+}
+
+/* H15: watchdog restart must fail closed; no fake lease renewal. */
+/* H16: no HTTP access is needed to expire a lease when callback queue
+ * delivery AND timer retry both fail. The session worker polls the
+ * monotonic deadline autonomously. */
+extern uint32_t test_michi_session_lease_poll_expiry_count(void);
+static void test_h16_autonomous_lease_without_timer_delivery(void)
+{
+    printf("michi_session: H16 autonomous expiry on double watchdog fault\n");
+    michi_session_start_params_t p = make_params();
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
+          "H16 startup valid");
+    uint32_t before = test_michi_session_lease_poll_expiry_count();
+    test_queue_set_force_send_fail(true);
+    test_esp_timer_fail_next_start(true);
+    test_esp_timer_advance(31LL * 1000 * 1000);
+    /* No session GET, ACTIVE, heartbeat or DELETE before checking that
+     * the independently scheduled worker observed the expiry. */
+    for (int i = 0; i < 50 &&
+         test_michi_session_lease_poll_expiry_count() == before; ++i) {
+        usleep(10000);
+    }
+    test_queue_set_force_send_fail(false);
+    CHECK(test_michi_session_lease_poll_expiry_count() > before,
+          "H16 independent watchdog ran despite callback and retry failure");
+    CHECK(!michi_session_active(), "H16 expired session cleaned");
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
+          "H16 a new session may start after autonomous expiry");
+    cleanup_session();
+}
+
+static void test_h15_watchdog_restart_fail_closed(void)
+{
+    printf("michi_session: H15 failed heartbeat restart preserves old lease\n");
+    michi_session_start_params_t p = make_params();
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
+          "H15 start valid session");
+    michi_session_info_t info;
+    CHECK(michi_session_get_info(&info) == ESP_OK, "H15 initial state");
+    char sid[MICHI_SESSION_ID_LEN];
+    memcpy(sid, info.session_id, sizeof(sid));
+    test_esp_timer_advance(5LL * 1000 * 1000);
+    test_esp_timer_fail_next_restart(true);
+    CHECK(michi_session_heartbeat(g_token, sid, 41, PEER_IP) ==
+          MICHI_SESSION_HEARTBEAT_WATCHDOG_ERROR,
+          "H15 watchdog restart error never returns success");
+    CHECK(michi_session_get_info(&info) == ESP_OK &&
+          info.lease_remaining_ms == 25000,
+          "H15 old 30s deadline preserved when restart fails");
+    CHECK(michi_session_heartbeat(g_token, sid, 41, PEER_IP) ==
+          MICHI_SESSION_HEARTBEAT_OK,
+          "H15 failed renewal did not consume heartbeat sequence");
+    CHECK(michi_session_get_info(&info) == ESP_OK &&
+          info.lease_remaining_ms == 30000,
+          "H15 subsequent renewal commits deadline");
+    cleanup_session();
+}
+
+/* H15: already released RTP context cannot reappear as active on I2S failure. */
+static void test_h15_failed_output_quiesce_closes_dead_transport(void)
+{
+    printf("michi_session: H15 failed output quiesce cannot resurrect RTP\n");
+    michi_session_start_params_t p = make_params();
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
+          "H15 start for dead transport error");
+    test_michi_audio_state()->active = false; /* worker already joined */
+    test_michi_audio_set_stop_err(ESP_FAIL);  /* I2S quiesce failed */
+    CHECK(michi_session_stop(g_token) == ESP_FAIL,
+          "H15 propagate output error even after transport released");
+    CHECK(!michi_session_active(),
+          "H15 no phantom active session after dead transport teardown");
+    CHECK(test_state_post_count(MICHI_EVENT_SESSION_CLOSED) == 1,
+          "H15 announce closure even if hardware output is FAULTED");
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
+          "H15 new session allowed after fully ended transport");
+    cleanup_session();
+}
+
+/* H15: HTTP fast paths must reconcile the dead RTP task. */
+static void test_h15_heartbeat_reconciles_dead_engine(void)
+{
+    printf("michi_session: H15 heartbeat closes zombie RTP worker\n");
+    michi_session_start_params_t p = make_params();
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
+          "H15 heartbeat zombie test start");
+    michi_session_info_t info;
+    CHECK(michi_session_get_info(&info) == ESP_OK, "H15 read session id");
+    test_michi_audio_state()->active = false;
+    CHECK(michi_session_heartbeat(g_token, info.session_id, 1, PEER_IP) ==
+          MICHI_SESSION_HEARTBEAT_NO_SESSION,
+          "H15 refuse heartbeat on dead RTP worker");
+    CHECK(!michi_session_active(), "H15 fast liveness query cleans zombie");
+}
+
+/* H15: no second worker can start while first startup rollback is incomplete. */
+static void test_h15_failed_startup_rollback_retried(void)
+{
+    printf("michi_session: H15 start rollback ownership gate\n");
+    michi_session_start_params_t p = make_params();
+    test_michi_audio_fail_next_port_lookup(true);
+    test_michi_audio_set_stop_err(ESP_FAIL);
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_ERR_INVALID_STATE,
+          "H15 port read failure propagated");
+    CHECK(!michi_session_active(), "H15 no published session on bad port");
+    CHECK(test_michi_audio_state()->active,
+          "H15 fake engine remains owned after failed cleanup");
+    CHECK(michi_session_start(&p, g_token, sizeof(g_token)) == ESP_OK,
+          "H15 retry start drains old engine before new session");
+    CHECK(michi_session_active(), "H15 only replacement session active");
+    cleanup_session();
+}
+
 int main(void)
 {
     reset_all();
@@ -816,6 +978,18 @@ int main(void)
     test_watchdog_same_close_as_delete();
     reset_all();
     test_expired_session_answers_like_reference();
+    reset_all();
+    test_metadata_revision_and_session_isolation();
+    reset_all();
+    test_h15_watchdog_restart_fail_closed();
+    reset_all();
+    test_h16_autonomous_lease_without_timer_delivery();
+    reset_all();
+    test_h15_failed_output_quiesce_closes_dead_transport();
+    reset_all();
+    test_h15_heartbeat_reconciles_dead_engine();
+    reset_all();
+    test_h15_failed_startup_rollback_retried();
 
     if (failures != 0) {
         printf("michi_session: %d FAILURE(S)\n", failures);

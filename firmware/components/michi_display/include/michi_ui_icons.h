@@ -29,6 +29,7 @@ typedef enum michi_ui_icon {
     MICHI_UI_ICON_ERROR,   /*!< Error circle */
     MICHI_UI_ICON_UPDATE,  /*!< Download/update arrow */
     MICHI_UI_ICON_WAVE,    /*!< Audio wave */
+    MICHI_UI_ICON_ROOM,    /*!< Room/source location pictogram, precision AA */
     MICHI_UI_ICON_COUNT,
 } michi_ui_icon_t;
 
@@ -55,6 +56,7 @@ typedef enum michi_ui_icon_size {
 #define MICHI_ICON_ERROR   MICHI_UI_ICON_ERROR
 #define MICHI_ICON_UPDATE  MICHI_UI_ICON_UPDATE
 #define MICHI_ICON_WAVE    MICHI_UI_ICON_WAVE
+#define MICHI_ICON_ROOM    MICHI_UI_ICON_ROOM
 
 /**
  * @brief Draw an icon with its top-left at ABSOLUTE (x, y), clipped to the
@@ -81,6 +83,11 @@ static inline void michi_ui_draw_icon(uint16_t *fb, uint16_t fb_w, uint16_t fb_h
     else sz = MICHI_UI_ICON_SIZE_48;
     ui_draw_icon(fb, fb_w, fb_h, y_origin, x, y, icon, sz, color);
 }
+
+/* Official full-color logo for boot/idle, baked RGB565 in flash.
+ * Supported px_size: 40 and 72. All pixel writes are band-clipped. */
+void michi_ui_draw_brand(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                         uint16_t y_origin, int x, int y, int px_size);
 
 #ifdef __cplusplus
 }

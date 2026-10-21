@@ -1,0 +1,13 @@
+# PROMPT — OpenCode / validación local H6 Michi Music Stream
+
+Actúa como ingeniero principal de firmware ESP-IDF y auditor KILLCRITIC. Trabaja sobre la copia local del repositorio `michi-music-stream`, con los archivos H6 descargados desde Google Drive. NO alteres Michi Link ni Michi Ecosystem. Comprueba primero el HEAD, los cambios reales de `git diff`, y la existencia de cambios H4/H5 integrados. No sobrescribas cambios locales no relacionados.
+
+1. Compila y ejecuta `tests/host/test_michi_jb.c` mediante el Makefile/runner del repositorio; valida los casos de cola llena, paquetes reordenados, caducidad, wrap de 16 bits, copia de PCM en PSRAM y reintentos. Un test incorporado no es un test aprobado hasta ver su salida.
+2. Ejecuta `./scripts/run_tests.sh --full` y los jobs de ESP-IDF/CI compatibles con ESP32-S3. Verifica los errores, warnings, sanitizers y posibles conflictos del header de pruebas.
+3. Analiza `michi_audio.c::stream_policy`, `session_drain`, `session_fill`, `michi_jb_insert_packet` y `michi_jb_discard_stale`. Invariantes: buffer nunca supera capacity; no se expulsa PCM más cercano por PCM lejano; no se avanza high-water si el buffer rechaza la inserción; nunca se reutiliza un paquete anterior al playhead tras underrun; sin desbordamientos en secuencia `65535→0`.
+4. Probar con secuencias RTP sintéticas incluyendo reorder 1–10 paquetes, burst, pérdidas, duplicados, full-buffer, pausa/reanudar y un emisor que se adelanta fuera de la ventana. Evaluar 5/50/500 ms de buffers si la configuración lo permite.
+5. Comprobar que la política no aumenta artificialmente los underruns: comparar contadores entre H5 y H6, registrar mediciones; si empeoran, razonar y corregir. Medir `overruns`, `late`, `lost`, `provisionally_missing`, `underruns`, `jitter_us`, heap/PSRAM mínimo. Verificar que el buffer rechaza carga malformada sin escribir memoria contigua.
+6. Hardware real: ESP32-S3, PCM5122 por RCA y Standard por PCM5102A/jack si existe la placa. Probar salidas tras reinicio, 24h continuas, pérdida Wi-Fi y reconexión, latencia, ruido y clics. No afirmar certificación de hardware si no se prueba realmente.
+7. Entregar reporte `H6_VALIDATION_RESULT.md` con versiones exactas, SHA, comandos, resultados PASS/FAIL por requisito, fallos con evidencia, correcciones aplicadas, métricas comparativas y porcentaje global JUSTIFICADO. Commit/push únicamente cuando validación y revisión lo autoricen. No inventar resultados.
+
+Mantén `features.now_playing=false` y los endpoints experimentales no certificados hasta integración E2E con Micro Server. No cambies paquetes RTP ni identidad Home de forma unilateral.

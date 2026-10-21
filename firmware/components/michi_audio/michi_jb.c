@@ -4,7 +4,9 @@
 esp_err_t michi_jb_init(michi_jb_t *jb, michi_jb_entry_t *entries, uint8_t *pool,
                         uint32_t capacity, size_t rx_buf_bytes)
 {
-    if (jb == NULL || capacity == 0) {
+    if (jb == NULL || capacity == 0 ||
+        (entries == NULL && capacity > MICHI_JB_TEST_MAX_PACKETS) ||
+        (pool != NULL && rx_buf_bytes == 0)) {
         return ESP_ERR_INVALID_ARG;
     }
     jb->entries = (entries != NULL) ? entries : jb->entries_static;
@@ -104,7 +106,25 @@ michi_jb_insert_result_t michi_jb_insert_packet(michi_jb_t *jb, uint16_t playhea
         jb->rx_buf_bytes = 0;
     }
 
-    /* Duplicate? */
+    /* Reject invalid/oversized payload BEFORE evicting a valid packet.
+     * Silent clipping paired with slot->len=len could otherwise read beyond
+     * the slot at playback. A test-only buffer (pool=NULL) allows metadata
+     * inserts with NULL payload; production pooled buffers do not. */
+    if (jb->pool != NULL &&
+        (jb->rx_buf_bytes == 0 || len > jb->rx_buf_bytes ||
+         (len != 0 && payload == NULL))) {
+        return MICHI_JB_INSERT_OVERRUN_DROPPED;
+    }
+
+    /* H6: never insert a packet behind the current RTP playout cursor,
+     * regardless of whether capacity is available. Signed 16-bit sequence
+     * distance works across FFFF->0000 wrap for a bounded jitter window. */
+    const int16_t incoming_distance = (int16_t)(seq - playhead);
+    if (incoming_distance < 0) {
+        return MICHI_JB_INSERT_OVERRUN_DROPPED;
+    }
+
+    /* Duplicate detection precedes eviction and never mutates the queue. */
     if (michi_jb_find(jb, seq) != NULL) {
         return MICHI_JB_INSERT_DUPLICATE;
     }
@@ -112,28 +132,48 @@ michi_jb_insert_result_t michi_jb_insert_packet(michi_jb_t *jb, uint16_t playhea
     michi_jb_insert_result_t res = MICHI_JB_INSERT_OK;
 
     if (jb->count >= jb->capacity) {
-        michi_jb_entry_t *oldest = michi_jb_oldest(jb, playhead);
-        if (oldest != NULL) {
-            if (out_evicted_seq != NULL) {
-                *out_evicted_seq = oldest->seq;
+        /* H6 playout-first full-buffer policy: first reclaim obsolete PCM,
+         * never destroy the playhead packet to make room for distant audio.
+         * If no stale slot exists, a closer packet may replace ONLY the
+         * farthest future slot; otherwise the arrival is rejected. */
+        michi_jb_entry_t *evict = NULL;
+        int16_t farthest_future = -1;
+        for (uint32_t i = 0; i < jb->capacity; ++i) {
+            michi_jb_entry_t *entry = &jb->entries[i];
+            if (!entry->used) continue;
+            const int16_t distance = (int16_t)(entry->seq - playhead);
+            if (distance < 0) {
+                evict = entry;  /* Prefer a stale slot over all future PCM. */
+                break;
             }
-            oldest->used = false;
-            jb->count--;
-            res = MICHI_JB_INSERT_OVERRUN_EVICTED;
-        } else {
+            if (distance > farthest_future) {
+                farthest_future = distance;
+                evict = entry;
+            }
+        }
+        if (evict == NULL) {
             return MICHI_JB_INSERT_OVERRUN_DROPPED;
         }
+        const int16_t candidate_distance =
+            (int16_t)(evict->seq - playhead);
+        if (candidate_distance >= 0 &&
+            incoming_distance >= candidate_distance) {
+            /* Arrival is at least as far from playout as existing PCM. */
+            return MICHI_JB_INSERT_OVERRUN_DROPPED;
+        }
+        if (out_evicted_seq != NULL) {
+            *out_evicted_seq = evict->seq;
+        }
+        evict->used = false;
+        jb->count--;
+        res = MICHI_JB_INSERT_OVERRUN_EVICTED;
     }
 
     for (uint32_t i = 0; i < jb->capacity; i++) {
         michi_jb_entry_t *slot = &jb->entries[i];
         if (!slot->used) {
-            if (payload != NULL && jb->pool != NULL) {
-                size_t copy_bytes = len;
-                if (jb->rx_buf_bytes > 0 && copy_bytes > jb->rx_buf_bytes) {
-                    copy_bytes = jb->rx_buf_bytes;
-                }
-                memcpy(jb->pool + (size_t)i * jb->rx_buf_bytes, payload, copy_bytes);
+            if (payload != NULL && jb->pool != NULL && len != 0) {
+                memcpy(jb->pool + (size_t)i * jb->rx_buf_bytes, payload, len);
             }
             slot->seq = seq;
             slot->timestamp = timestamp;
@@ -156,4 +196,23 @@ void michi_jb_release(michi_jb_t *jb, michi_jb_entry_t *e)
     if (jb->count > 0) {
         jb->count--;
     }
+}
+
+/* Reject packets whose signed 16-bit RTP distance is behind the playout
+ * cursor. Works across wrap (0xFFFF -> 0); caller counts these as late.
+ * This prevents accidental huge silence insertion from a stale buffer head. */
+uint32_t michi_jb_discard_stale(michi_jb_t *jb, uint16_t playhead)
+{
+    if (jb == NULL || jb->entries == NULL) {
+        return 0;
+    }
+    uint32_t removed = 0;
+    for (uint32_t i = 0; i < jb->capacity; ++i) {
+        michi_jb_entry_t *entry = &jb->entries[i];
+        if (entry->used && (int16_t)(entry->seq - playhead) < 0) {
+            michi_jb_release(jb, entry);
+            ++removed;
+        }
+    }
+    return removed;
 }

@@ -16,6 +16,8 @@ BaseType_t xQueueSend(QueueHandle_t xQueue, const void *pvItemToQueue, uint32_t 
 BaseType_t xQueueSendFromISR(QueueHandle_t xQueue, const void *pvItemToQueue, BaseType_t *pxHigherPriorityTaskWoken);
 BaseType_t xQueueReceive(QueueHandle_t xQueue, void *pvBuffer, uint32_t xTicksToWait);
 void vQueueDelete(QueueHandle_t xQueue);
+/* Host-only injection: reject sends to model a saturated callback queue. */
+void test_queue_set_force_send_fail(bool fail);
 
 #ifdef __cplusplus
 }

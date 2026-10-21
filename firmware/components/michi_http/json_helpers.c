@@ -17,6 +17,94 @@
 #include "validators.h"
 #include "michi_home.h"
 
+/* The normal cJSON_Parse() accepts an object prefix followed by extra bytes.
+ * All Michi HTTP handlers must consume the entire Content-Length, and a NUL
+ * on the wire must never silently truncate a signed/authenticated body. */
+static bool contains_escaped_nul(const char *body, size_t len)
+{
+    bool inside_string = false;
+    bool escape = false;
+    for (size_t i = 0; i < len; ++i) {
+        const char c = body[i];
+        if (!inside_string) {
+            if (c == '"') inside_string = true;
+            continue;
+        }
+        if (escape) {
+            if (c == 'u' && i + 4 < len &&
+                body[i + 1] == '0' && body[i + 2] == '0' &&
+                body[i + 3] == '0' && body[i + 4] == '0') {
+                return true;
+            }
+            escape = false;
+        } else if (c == '\\') {
+            escape = true;
+        } else if (c == '"') {
+            inside_string = false;
+        }
+    }
+    return false;
+}
+
+/* Validate UTF-8 as Unicode scalar values, rejecting truncated sequences,
+ * overlong encodings, surrogate code points and values beyond U+10FFFF.
+ * This is used for externally supplied human-readable metadata. */
+bool michi_http_utf8_text_valid(const char *text, size_t len)
+{
+    if (text == NULL) return false;
+    const unsigned char *p = (const unsigned char *)text;
+    for (size_t i = 0; i < len;) {
+        const unsigned char a = p[i];
+        if (a < 0x80u) {
+            if (a < 0x20u || a == 0x7fu) return false;
+            ++i;
+            continue;
+        }
+        size_t needed = 0;
+        unsigned char min_second = 0x80u;
+        unsigned char max_second = 0xbfu;
+        if (a >= 0xc2u && a <= 0xdfu) {
+            needed = 2;
+        } else if (a >= 0xe0u && a <= 0xefu) {
+            needed = 3;
+            if (a == 0xe0u) min_second = 0xa0u;
+            if (a == 0xedu) max_second = 0x9fu;
+        } else if (a >= 0xf0u && a <= 0xf4u) {
+            needed = 4;
+            if (a == 0xf0u) min_second = 0x90u;
+            if (a == 0xf4u) max_second = 0x8fu;
+        } else {
+            return false;
+        }
+        if (len - i < needed || p[i + 1] < min_second ||
+            p[i + 1] > max_second) return false;
+        for (size_t k = 2; k < needed; ++k) {
+            if (p[i + k] < 0x80u || p[i + k] > 0xbfu) return false;
+        }
+        i += needed;
+    }
+    return true;
+}
+
+cJSON *michi_http_json_parse_strict(const char *body, size_t body_len)
+{
+    if (body == NULL || body_len == 0 ||
+        memchr(body, '\0', body_len) != NULL ||
+        contains_escaped_nul(body, body_len)) {
+        return NULL;
+    }
+    /* The caller provides an extra NUL sentinel beyond body_len. The
+     * parse-end requirement rejects a valid prefix with trailing garbage. */
+    const char *end = NULL;
+    cJSON *root = cJSON_ParseWithOpts(body, &end, true);
+    if (root == NULL) return NULL;
+    if (!cJSON_IsObject(root) || end != body + body_len) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    return root;
+}
+
 bool michi_http_json_get_string(const cJSON *obj, const char *key,
                                 char *out, size_t out_len)
 {

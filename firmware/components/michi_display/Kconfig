@@ -25,6 +25,33 @@ menu "Michi Music Stream Display"
           stale (a drop racing that re-render is covered by the next state
           change).
 
+    config MICHI_DISPLAY_DIAGNOSTICS_ON_BOOT
+        bool "Show live hardware diagnostics immediately after boot (lab builds)"
+        default n
+        help
+          For physical bench testing, keep the diagnostics panel on screen
+          without relying on a removed pairing button, touchscreen or server.
+          Disable in production builds. Errors and firmware OTA safety screens
+          still take precedence over diagnostics.
+
+    config MICHI_DISPLAY_WAVE_ANIMATION
+        bool "Enable low-rate Woven Wave activity animation"
+        default y
+        help
+          Decorative motion shown only while the receiver plays or buffers.
+          The waveform is NOT audio amplitude, seek position, or a visual
+          confirmation of an actual PCM stream. Disable it during bench tests
+          if SPI refresh causes underruns or excessive display CPU usage.
+
+    config MICHI_DISPLAY_WAVE_PERIOD_MS
+        int "Woven Wave refresh period (milliseconds)"
+        default 160
+        range 120 500
+        depends on MICHI_DISPLAY_WAVE_ANIMATION
+        help
+          Minimum delay between animation-only redraws. Higher values reduce
+          LCD bus traffic; the session observer remains event-driven.
+
     config MICHI_DISPLAY_RASTER_2BIT
         bool "Enable 2-bit anti-aliased raster mode"
         default n

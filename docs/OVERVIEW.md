@@ -1,84 +1,37 @@
-# Michi Music Stream — Overview
+# Michi Music Stream — Arquitectura vigente
 
-## Qué es
+## Propósito
 
-Michi Music Stream es una familia de receptores físicos de audio diseñados para integrarse al ecosistema Michi. Su única función es recibir un flujo de audio por red y reproducirlo a través de una salida física (jack 3.5 mm o RCA).
+Receptor de audio físico para el ecosistema Michi. No indexa música, no aloja bibliotecas ni actúa como servidor. Micro Server transmite audio y Stream lo reproduce por I2S/DAC.
 
-## Qué no es
+## Flujo de incorporación (sin botón de pairing)
 
-- No es una biblioteca musical.
-- No administra playlists.
-- No indexa música.
-- No es un servidor musical.
-- No tiene almacenamiento local de música.
-- No reproduce de forma autónoma.
+1. Ecosystem aprovisiona Wi-Fi, identidad criptográfica y certificado de membresía firmado por Michi Home en el flujo de flasheo.
+2. Al arrancar, Stream importa su configuración de fábrica y conecta a Wi-Fi como estación.
+3. Publica `_michi-link._tcp.local` y prepara anuncios firmados por multicast `224.0.0.167:53318`.
+4. Micro Server consulta `GET /api/v1/server/info` y completa la autenticación mutuamente verificada mediante `POST /api/v1/auth/challenge` y `POST /api/v1/auth/session`.
+5. Una sesión autorizada negocia el transporte RTP por `/api/v1/receiver-lite/session`.
 
-## Cómo se integra
+## API efectiva
 
-Michi Music Stream es una salida de audio para el ecosistema. Para funcionar necesita:
-1. Una red Wi-Fi local.
-2. Un controlador emparejado (Michi Micro Server) que envíe comandos REST.
-3. Una fuente de audio (Micro Server) que transmita audio por RTP/UDP.
+| Ruta | Método | Rol |
+|---|---|---|
+| `/api/v1/server/info` | GET | Perfil y capacidades |
+| `/api/v1/auth/challenge` | POST | Desafío de autenticación |
+| `/api/v1/auth/session` | POST | Prueba de membresía y token |
+| `/api/v1/home/revocations` | GET/POST | Revocaciones firmadas por la autoridad Home |
+| `/api/v1/receiver-lite/session` | POST/GET/PATCH/DELETE | Ciclo de sesión RTP autorizada |
+| `/api/v1/receiver-lite/heartbeat` | POST | Mantener lease |
+| `/api/v1/receiver-lite/diagnostics` | GET | Diagnósticos existentes |
+| `/api/v1/receiver-lite/now-playing` | PUT | Handler local experimental; feature no anunciado hasta certificación (ver `docs/NOW_PLAYING_EXTENSION.md`) |
+| `/api/v1/receiver-lite/firmware` | GET/POST | No asumir OTA HTTP disponible |
 
-## Variantes
+**No existen rutas `/api/v1/pair/*` en la tabla vigente.**
 
-| Aspecto | Standard | Hi-Fi |
-|---------|----------|-------|
-| MCU | ESP32-S3 | ESP32-S3 |
-| DAC | I2S (PCM5102A) | DAC Hi-Fi (PCM5122) |
-| Salida | Jack 3.5 mm | RCA estéreo |
-| Audio certificado hoy | PCM 16-bit / 48 kHz / 2 canales | PCM 16-bit / 48 kHz / 2 canales |
-| Codec certificado hoy | `pcm_s16le` | `pcm_s16le` |
+## Audio realmente anunciado
 
-> PCM 24-bit, 96 kHz y Opus son capacidades **futuras**: el silicio del DAC
-> Hi-Fi las soporta, pero no hay camino implementado ni anunciado.
+Ambas variantes usan PCM estéreo `pcm_s16le`, 48 kHz, 16 bit, PT RTP 97, 10 ms y 1920 bytes de payload. Opus y Hi-Res superior son futuras capacidades; no anunciarlas antes de implementarlas y medirlas en hardware.
 
-## Protocolo: Michi Link v1-lite
+## Estado de certificación
 
-Contrato canónico publicado por Michi Link, vendorizado en
-`contracts/michi-link/`. Rutas exactas bajo `/api/v1`:
-
-| Método | Ruta | Auth |
-|--------|------|------|
-| GET | `/api/v1/server/info` | No |
-| POST | `/api/v1/pair/start` | Ventana física abierta |
-| GET | `/api/v1/pair/status` | No |
-| POST | `/api/v1/pair/confirm` | Sesión de pairing |
-| POST | `/api/v1/receiver-lite/session` | Bearer |
-| GET | `/api/v1/receiver-lite/session` | Bearer |
-| PATCH | `/api/v1/receiver-lite/session` | Bearer + sesión |
-| DELETE | `/api/v1/receiver-lite/session` | Bearer + sesión |
-| POST | `/api/v1/receiver-lite/heartbeat` | Bearer + sesión |
-
-Extensiones opcionales: `now-playing` (PUT), `diagnostics` (GET),
-`firmware` (GET/POST) — anunciadas por feature flags veraces.
-
-Volumen como entero **0-100**, validado (sin clamp silencioso).
-
-Formato de error canónico (una sola forma):
-```json
-{
-  "error": {
-    "code": "INVALID_REQUEST",
-    "message": "Descripción legible",
-    "request_id": "req_...",
-    "details": {}
-  }
-}
-```
-
-Códigos: `INVALID_REQUEST` (400), `UNAUTHORIZED` (401), `FORBIDDEN` (403),
-`NOT_FOUND` (404), `CONFLICT` (409), `RATE_LIMITED` (429),
-`NOT_IMPLEMENTED` (501), `INTERNAL_ERROR` (500).
-
-## Seguridad
-
-- Identidad Ed25519 persistente; `michi_id` derivado de la clave pública.
-- Pairing RECEIVER_BUTTON: botón físico abre ventana de 120 s; PIN de 6
-  dígitos local; el receptor genera el token (32 bytes, base64url) y
-  persiste solo su digest SHA-256 en NVS.
-- `session_token` (32 bytes, base64url) solo existe en RAM y se entrega una vez.
-- Factory reset: botón presionado >= 10 s (arm window de 10 s post-arranque;
-  bloqueado en BOOTING/SELF_TEST/UPDATING). Recovery: pulsación de 5-10 s
-  con el estado RECOVERABLE_ERROR.
-- TLS, PAKE y hardening de producción son trabajo futuro (MS-12).
+Las pruebas de contrato/simulador son distintas de la verificación con placa física y DAC. La validación de escucha, continuidad de sesión, I2S/PCM5122, reloj y reconexión real requiere un procedimiento DEVICE_E2E independiente.

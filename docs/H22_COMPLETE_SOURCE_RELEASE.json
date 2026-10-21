@@ -1,0 +1,16 @@
+{
+  "archive": "MICHI_MUSIC_STREAM_H22_COMPLETE_SOURCE_PRETEST.zip",
+  "archive_sha256": "4d4c6554fe60d410be00c185076a4b0694a241835986393d47dc504960c1e002",
+  "audit_revision": "H22.1-static-audit-corrections",
+  "baseline": "H22-DRIVE-SOURCE-PRETEST",
+  "date": "2026-10-20",
+  "embedded_manifest": "SOURCE_SNAPSHOT_MANIFEST.json",
+  "firmware_built": false,
+  "handoff_notes": "SOURCE_BASELINE_H22.md",
+  "hardware_certified": false,
+  "project": "michi-music-stream",
+  "source_file_count": 601,
+  "source_kind": "source-only-not-tested-not-certified",
+  "tests_executed": false,
+  "tree_manifest": "docs/H22_SOURCE_TREE_MANIFEST.json"
+}

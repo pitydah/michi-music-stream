@@ -3,6 +3,7 @@
 #include "esp_timer.h"
 
 #include <string.h>
+#include <stdatomic.h>
 
 struct test_esp_timer {
     test_esp_timer_cb_t callback;
@@ -11,8 +12,20 @@ struct test_esp_timer {
     bool armed;
 };
 
-static int64_t s_now_us;
+static _Atomic int64_t s_now_us;
 static struct test_esp_timer *s_timer; /* single-timer model */
+static bool s_fail_next_restart = false;
+static bool s_fail_next_start = false;
+
+void test_esp_timer_fail_next_start(bool fail)
+{
+    s_fail_next_start = fail;
+}
+
+void test_esp_timer_fail_next_restart(bool fail)
+{
+    s_fail_next_restart = fail;
+}
 
 int64_t test_esp_timer_now(void)
 {
@@ -21,6 +34,8 @@ int64_t test_esp_timer_now(void)
 
 void test_esp_timer_reset(void)
 {
+    s_fail_next_restart = false;
+    s_fail_next_start = false;
     s_now_us = 0;
     if (s_timer != NULL) {
         s_timer->armed = false;
@@ -35,9 +50,9 @@ void test_esp_timer_set_time(int64_t us)
 
 void test_esp_timer_advance(int64_t us)
 {
-    s_now_us += us;
+    int64_t new_now = atomic_fetch_add(&s_now_us, us) + us;
     if (s_timer != NULL && s_timer->armed &&
-        s_now_us >= s_timer->deadline_us) {
+        new_now >= s_timer->deadline_us) {
         s_timer->armed = false;
         s_timer->callback(s_timer->arg);
     }
@@ -70,6 +85,10 @@ esp_err_t esp_timer_start_once(esp_timer_handle_t timer, uint64_t timeout_us)
     if (timer == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (s_fail_next_start) {
+        s_fail_next_start = false;
+        return ESP_FAIL;
+    }
     timer->deadline_us = s_now_us + (int64_t)timeout_us;
     timer->armed = true;
     return ESP_OK;
@@ -79,6 +98,10 @@ esp_err_t esp_timer_restart(esp_timer_handle_t timer, uint64_t timeout_us)
 {
     if (timer == NULL) {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (s_fail_next_restart) {
+        s_fail_next_restart = false;
+        return ESP_FAIL; /* preserve the previous timer and deadline */
     }
     timer->deadline_us = s_now_us + (int64_t)timeout_us;
     timer->armed = true;

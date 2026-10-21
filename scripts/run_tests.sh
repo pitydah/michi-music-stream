@@ -83,6 +83,10 @@ run_suite() {
 # cross-repo hardening core: pairing/session/discovery HTTP gates) skip
 # silently and report a false PASS.
 require_host_cjson() {
+    if [ ! -f "$PROJECT_DIR/tests/host/test_michi_home.c" ]; then
+        echo "FAIL: tests/host/test_michi_home.c is absent; restore its source before host certification" >&2
+        return 1
+    fi
     if pkg-config --exists libcjson 2>/dev/null; then
         return 0
     fi
@@ -151,7 +155,16 @@ scan_against_allowlist() {
 GATE_ALLOWLIST='
 docs/ROADMAP.md
 tests/e2e/run_e2e.py
+docs/OPENCODE_HARDENING_LOCAL_VALIDATION.md
+docs/OPENCODE_H2_VALIDATION.md
+docs/H2_KILLCRITIC_DELIVERY.md
+docs/ui/UI04_OPENCODE_VALIDATION.md
+docs/ui/UI03_OPENCODE_LOCAL_VALIDATION.md
+docs/ui/UI02_SIGNATURE_HIFI_DESIGN.md
 '
+# The docs above mention DEVICE_E2E_PASS only to REFUSE it ("do not declare it
+# without physical evidence"). Allowing them keeps the gate aimed at false
+# certification claims; it never permits asserting the gate without hardware.
 
 # Run a scan suite in THIS shell (the scanner is a shell function, not a
 # subprocess) with the same fail-fast contract as run_suite.
@@ -173,6 +186,11 @@ run_scan() {
 
 # ══ the suites ═════════════════════════════════════════════════════
 
+# H16B: fail before any suite if a source file was accidentally overwritten
+# with another component during synchronization from Google Drive.
+run_suite "source-role integrity" \
+    python3 scripts/check_source_identity.py
+
 run_suite "contract bundle sync" \
     python3 scripts/sync_michi_link_contract.py --check
 
@@ -193,6 +211,11 @@ run_suite "simulator HTTP integration tests" \
 
 run_suite "official examples validation" \
     python3 tests/contract/test_examples.py
+
+# H17: source-only snapshot must be deterministic, secret-aware and refuse
+# accidental overwrites; the generator is never run against the repository here.
+run_suite "source snapshot packaging contracts" \
+    python3 -m pytest tests/test_source_snapshot.py -q
 
 run_scan "legacy reference scan" \
     "$LEGACY_PATTERN" "$LEGACY_ALLOWLIST" "legacy references"

@@ -18,9 +18,10 @@ menu "Michi Music Stream Audio Engine"
         range 50 2000
         help
           Packet-level jitter buffer capacity, expressed in 10 ms
-          packets (500 ms = 50 packets). The per-session payload pool is
-          capacity x MICHI_AUDIO_RX_BUF_BYTES in PSRAM, so 500 ms/8192 B
-          costs ~400 KB. Larger values absorb longer network stalls at
+          packets (500 ms = 50 packets). The per-session PSRAM pool stores
+          ONLY 1920-byte PCM payloads, not the larger UDP receive buffer:
+          500 ms costs 96,000 bytes (93.75 KiB) for PCM, plus metadata.
+          Larger values absorb longer network stalls at
           the cost of PSRAM and startup latency.
 
     config MICHI_AUDIO_PREFILL_MS
@@ -30,17 +31,17 @@ menu "Michi Music Stream Audio Engine"
         help
           Audio buffered into the jitter buffer before the session
           starts writing to the pipeline (clamped at runtime to
-          MICHI_AUDIO_JITTER_MAX_MS). After every underrun a fixed
-          re-prefill of 250 ms (MICHI_AUDIO_REPREFILL_MS) is used,
-          independent of this value.
+          MICHI_AUDIO_JITTER_MAX_MS). Underrun recovery uses a bounded
+          deadline derived from negotiated buffer_ms (500..1000 ms).
 
     config MICHI_AUDIO_RX_BUF_BYTES
         int "Session UDP receive buffer size (bytes)"
         default 8192
         range 2048 65535
         help
-          Size of the datagram buffer and of each jitter-buffer payload
-          slot. Must exceed the canonical 12-byte RTP header + 1920-byte
+          Size of the UDP datagram receive buffer (NOT the jitter-buffer
+          payload slot). Jitter slots are fixed at 1920 PCM bytes.
+          Must exceed the canonical 12-byte RTP header + 1920-byte
           payload (michi_audio init verifies it). Datagrams larger than
           this are truncated by recvfrom.
 

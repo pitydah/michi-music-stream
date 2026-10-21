@@ -92,6 +92,15 @@ TaskHandle_t xTaskGetCurrentTaskHandle(void)
     return s_current_task;
 }
 
+TickType_t xTaskGetTickCount(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    /* The test shim uses one millisecond per RTOS tick. */
+    uint64_t ms = (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+    return (TickType_t)ms;
+}
+
 BaseType_t xTaskCreate(TaskFunction_t fn, const char *name,
                        uint32_t stack_bytes, void *arg, int priority,
                        TaskHandle_t *out)

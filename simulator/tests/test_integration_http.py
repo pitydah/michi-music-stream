@@ -443,3 +443,102 @@ class TestHeartbeat:
                 headers={"Authorization": f"Bearer {token}"},
             )
             assert r.status_code == 401
+
+
+class TestNowPlayingExperimental:
+    """Host-side parity checks; firmware capability stays unadvertised."""
+
+    @staticmethod
+    def _payload(sid, revision=1, **changes):
+        result = {
+            "session_id": sid, "source": "Living Room", "title": "Teardrop",
+            "artist": "Massive Attack", "revision": revision,
+        }
+        result.update(changes)
+        return result
+
+    @staticmethod
+    def _headers(bearer, stream):
+        return {"Authorization": f"Bearer {bearer}", "X-Michi-Session": stream}
+
+    def test_ordering_and_clear_on_delete(self, app_std):
+        app, state = app_std
+        with app.test_client() as c:
+            bearer = authenticate_client(c, state)
+            session = start_session(c, state, bearer)
+            path = "/api/v1/receiver-lite/now-playing"
+            headers = self._headers(bearer, session["session_token"])
+            body = self._payload(session["session_id"])
+            assert state.info()["features"]["now_playing"] is False
+            result = c.put(path, headers=headers, json=body)
+            assert result.status_code == 200
+            assert result.get_json()["revision"] == 1
+            assert state.metadata["title"] == "Teardrop"
+            for rev in (1, 0):
+                result = c.put(path, headers=headers, json=self._payload(session["session_id"], rev))
+                assert result.status_code in (400, 409)
+            result = c.put(path, headers=headers,
+                           json=self._payload(session["session_id"], 2, title="Nueva canción"))
+            assert result.status_code == 200
+            assert state.metadata_revision == 2
+            assert state.metadata["title"] == "Nueva canción"
+            response = c.delete("/api/v1/receiver-lite/session", headers=headers)
+            assert response.status_code == 204
+            assert state.metadata_revision == 0
+            assert state.metadata["title"] == ""
+            assert c.put(path, headers=headers, json=body).status_code == 404
+
+    def test_wrong_owner_session_token_and_session_id(self, app_std):
+        app, state = app_std
+        with app.test_client() as c:
+            bearer = authenticate_client(c, state)
+            session = start_session(c, state, bearer)
+            other_bearer = authenticate_client(c, state)
+            path = "/api/v1/receiver-lite/now-playing"
+            body = self._payload(session["session_id"])
+            valid = self._headers(bearer, session["session_token"])
+            assert c.put(path, headers=self._headers(other_bearer, session["session_token"]), json=body).status_code == 403
+            assert c.put(path, headers=self._headers(bearer, "invalid"), json=body).status_code == 401
+            bad_id = self._payload("550e8400-e29b-41d4-a716-446655440000")
+            assert c.put(path, headers=valid, json=bad_id).status_code == 404
+            assert c.put(path, headers=valid, json=body).status_code == 200
+
+    def test_malformed_json_and_utf8(self, app_std):
+        app, state = app_std
+        with app.test_client() as c:
+            bearer = authenticate_client(c, state)
+            session = start_session(c, state, bearer)
+            path = "/api/v1/receiver-lite/now-playing"
+            h = self._headers(bearer, session["session_token"])
+            data = self._payload(session["session_id"])
+            h_bad = dict(h)
+            h_bad["Content-Type"] = "text/plain"
+            assert c.put(path, headers=h_bad, data=b"{}").status_code == 415
+            for raw in (
+                b'{"revision":1,"revision":2}',
+                b'{}{}', b'{}garbage', b'{"artist":"\\u0000"}',
+                b'\xff', b'{"title":"\\ud800"}', b'\0',
+            ):
+                assert c.put(path, headers={**h, "Content-Type": "application/json"}, data=raw).status_code == 400
+            for changed in ({"artist": "A" * 49}, {"title": "😀" * 17},
+                            {"source": "Line\nbreak"}, {"revision": True},
+                            {"revision": 3.5}, {"revision": 4294967296},
+                            {"rogue": "unexpected"}):
+                assert c.put(path, headers=h, json={**data, **changed}).status_code == 400
+            assert state.metadata_revision == 0
+
+    def test_new_session_resets_revision_and_lease_expiry(self, app_std):
+        app, state = app_std
+        with app.test_client() as c:
+            bearer = authenticate_client(c, state)
+            first = start_session(c, state, bearer)
+            uri = "/api/v1/receiver-lite/now-playing"
+            headers = self._headers(bearer, first["session_token"])
+            assert c.put(uri, headers=headers, json=self._payload(first["session_id"], 7)).status_code == 200
+            state.lease_until_mono = state._now() - 1.0
+            assert c.put(uri, headers=headers, json=self._payload(first["session_id"], 8)).status_code == 404
+            second = start_session(c, state, bearer)
+            second_headers = self._headers(bearer, second["session_token"])
+            assert c.put(uri, headers=second_headers, json=self._payload(second["session_id"], 1)).status_code == 200
+            assert state.metadata_revision == 1
+            assert c.put(uri, headers=headers, json=self._payload(first["session_id"], 9)).status_code == 404

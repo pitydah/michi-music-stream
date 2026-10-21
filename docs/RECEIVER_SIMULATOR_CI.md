@@ -1,5 +1,19 @@
 # Receiver Simulator — Integración Continua
 
+> **AVISO H2 — FLUJO LEGACY ARCHIVADO:** los ejemplos de pairing/PIN que
+> aparecen más abajo son históricos y no corresponden al receptor actual.
+> El firmware Stream productivo utiliza `HOME_MEMBERSHIP` y las rutas
+> `POST /api/v1/auth/challenge` y `POST /api/v1/auth/session`; no expone
+> `/api/v1/pair/*`. El simulador conserva helpers legacy solamente para
+> regresiones antiguas. NO basar pruebas de Micro Server ni certificaciones
+> nuevas en los ejemplos de PIN de este documento.
+>
+> Inicio canónico del simulador de contrato:
+> `python3 simulator/receiver_sim.py --type standard --port 53319`
+> Antes de una sesión RTP, autenticar un cliente con membresía Home y
+> firmas Ed25519 según `contracts/michi-link/`. El simulador no transmite
+> mDNS/Whisker ni sustituye la prueba de detección física.
+
 ## Resumen
 
 El simulator de Michi Music Stream es la herramienta oficial de validación externa para receptores v1-lite. Micro Server lo usa como blanco E2E antes de integrar hardware ESP32 real. Implementa exclusivamente el contrato canónico del bundle `contracts/michi-link/`.

@@ -1,0 +1,43 @@
+{
+  "baseline": "H20-SOURCE-PRETEST",
+  "tests_executed": false,
+  "source_only": true,
+  "full_repository": false,
+  "entries": [
+    {
+      "path": "scripts/reconcile_drive_sources.py",
+      "size": 7585,
+      "sha256": "ff01615ad994890b4bd9708a236794d1708a7ddad89331614fe053d242d5e523"
+    },
+    {
+      "path": "tests/test_reconcile_drive_sources.py",
+      "size": 3685,
+      "sha256": "46504725cf78eda8f56f89d9ace65f72f778d532bd1a1586c56d6d2466946eda"
+    },
+    {
+      "path": "scripts/check_release_profile.py",
+      "size": 3231,
+      "sha256": "76ba8da83c40d66a716ed7e607d6d5a5c75f7beb08bad7502d5a6f3b4e20dae6"
+    },
+    {
+      "path": "tests/test_release_profile.py",
+      "size": 1795,
+      "sha256": "a01d17e343d2b38b7da46a516d80d174ccb9ab8fa19f231ec33f901e4cfa1dae"
+    },
+    {
+      "path": "firmware/sdkconfig.production.defaults",
+      "size": 323,
+      "sha256": "09b4b6d75e5541c17f78d1c4dca48f1665383e04c77ade0953d088fd68705e3c"
+    },
+    {
+      "path": "docs/H20_SOURCE_RECONCILIATION_AND_RELEASE.md",
+      "size": 3783,
+      "sha256": "668494cdc91b5221c0409e831cd919ef2a20823735d6b5f032ff64708a20b5c7"
+    },
+    {
+      "path": "docs/OPENCODE_H20_VALIDATION.md",
+      "size": 1348,
+      "sha256": "50337b666c3c0f2c079d6821e95fae26032def2080ceb24729a155acd540215f"
+    }
+  ]
+}

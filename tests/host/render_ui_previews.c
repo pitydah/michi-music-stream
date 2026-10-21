@@ -77,6 +77,11 @@ int main(int argc, char **argv)
         .state = MICHI_STATE_IDLE,
         .wifi_connected = true,
         .wifi_rssi = -48,
+        .network_ready = true,
+        .ipv4_str = "192.168.31.69",
+        .clock_synced = true,
+        .mdns_running = true,
+        .announces_sent_session = 6,
         .server_connected = false,
     };
     render_scenario_to_file("ui-03-ready-online.ppm", &s03, out_dir);
@@ -158,6 +163,15 @@ int main(int argc, char **argv)
     };
     render_scenario_to_file("ui-10-playing-meta.ppm", &s10, out_dir);
 
+    /* UI-03: deterministic motion sequence for audit (not real PCM samples). */
+    for (int k = 0; k < 12; ++k) {
+        char name[64];
+        s10.waveform_phase = (uint8_t)(k * 5);
+        snprintf(name, sizeof(name), "ui-21-wave-%02d.ppm", k);
+        render_scenario_to_file(name, &s10, out_dir);
+    }
+
+
     /* 11. Playing with Spanish UTF-8 accents */
     michi_ui_screen_ctx_t s11 = {
         .state = MICHI_STATE_PLAYING,
@@ -165,9 +179,10 @@ int main(int argc, char **argv)
         .artist = "Alejandro Sanz & Niña Pastori",
         .source = "Michi Hi-Fi",
         .volume = 80,
-        .sample_rate = 96000,
-        .bit_depth = 24,
+        .sample_rate = 48000,
+        .bit_depth = 16,
     };
+    s11.waveform_phase = 29;
     render_scenario_to_file("ui-11-playing-spanish-utf8.ppm", &s11, out_dir);
 
     /* 12. Playing fallback (no metadata) */
@@ -189,7 +204,11 @@ int main(int argc, char **argv)
         .sample_rate = 48000,
         .bit_depth = 16,
     };
+    s13.waveform_phase = 17; /* Must remain static despite nonzero phase. */
     render_scenario_to_file("ui-13-paused-meta.ppm", &s13, out_dir);
+    render_scenario_to_file("ui-22-paused-phase-a.ppm", &s13, out_dir);
+    s13.waveform_phase = 51;
+    render_scenario_to_file("ui-22-paused-phase-b.ppm", &s13, out_dir);
 
     /* 14. Paused fallback */
     michi_ui_screen_ctx_t s14 = {
@@ -250,6 +269,11 @@ int main(int argc, char **argv)
         .show_diagnostics = true,
         .wifi_connected = true,
         .wifi_rssi = -52,
+        .network_ready = true,
+        .ipv4_str = "192.168.31.69",
+        .clock_synced = true,
+        .mdns_running = true,
+        .announces_sent_session = 12,
         .server_connected = true,
         .dac_state = MICHI_UI_DAC_PRESENT,
         .dac_detected = true,
@@ -257,7 +281,7 @@ int main(int argc, char **argv)
         .volume = 72,
         .sample_rate = 48000,
         .bit_depth = 16,
-        .psram_bytes = 8 * 1024 * 1024,
+        .psram_bytes = 0,
         .fw_version = "v0.3.0-rc1",
     };
     render_scenario_to_file("ui-19-diagnostics-connected.ppm", &s19, out_dir);
@@ -268,13 +292,18 @@ int main(int argc, char **argv)
         .show_diagnostics = true,
         .wifi_connected = true,
         .wifi_rssi = -52,
+        .network_ready = true,
+        .ipv4_str = "192.168.31.69",
+        .clock_synced = true,
+        .mdns_running = true,
+        .announces_sent_session = 12,
         .server_connected = true,
         .dac_state = MICHI_UI_DAC_ABSENT,
         .dac_detected = false,
         .volume = 72,
         .sample_rate = 48000,
         .bit_depth = 16,
-        .psram_bytes = 8 * 1024 * 1024,
+        .psram_bytes = 0,
         .fw_version = "v0.3.0-rc1",
     };
     render_scenario_to_file("ui-19b-diagnostics-dac-absent.ppm", &s19b, out_dir);
@@ -290,7 +319,7 @@ int main(int argc, char **argv)
         .volume = 72,
         .sample_rate = 0,
         .bit_depth = 0,
-        .psram_bytes = 8 * 1024 * 1024,
+        .psram_bytes = 0,
         .fw_version = "v0.3.0-rc1",
     };
     render_scenario_to_file("ui-19c-diagnostics-dac-unknown.ppm", &s19c, out_dir);

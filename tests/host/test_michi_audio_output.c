@@ -187,6 +187,24 @@ static void test_audio_q_05_i2s_write_fail_during_quiesce(void)
     CHECK(michi_audio_output_deinit() == ESP_OK, "deinit succeeds");
 }
 
+/* H12: driver may return ESP_OK yet write fewer silence bytes. This is
+ * a failure of the quiesce safety barrier, not success. */
+static void test_h12_quiesce_short_silence_dma_fails_closed(void)
+{
+    printf("=== H12: incomplete silence DMA never publishes QUIESCED ===\n");
+    test_i2s_reset();
+    michi_audio_output_config_t cfg = default_cfg();
+    CHECK(michi_audio_output_init(&cfg) == ESP_OK, "H12 short DMA init");
+    CHECK(michi_audio_output_start() == ESP_OK, "H12 short DMA start");
+    test_i2s_set_next_write_short(1024);
+    CHECK(michi_audio_output_quiesce() != ESP_OK, "H12 short silence DMA propagates failure");
+    CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_FAULTED,
+          "H12 short silence DMA latches FAULTED");
+    CHECK(!michi_audio_output_is_quiesced(), "H12 short DMA never claims quiesced");
+    CHECK(michi_audio_output_stop() == ESP_OK, "H12 short DMA stop");
+    CHECK(michi_audio_output_deinit() == ESP_OK, "H12 short DMA deinit");
+}
+
 /* AUDIO-Q-06: repeated QUIESCE behavior defined */
 static void test_audio_q_06_repeated_quiesce_idempotent(void)
 {
@@ -759,6 +777,42 @@ static void test_audio_cmd_05_stop_racing_command(void)
     CHECK(test_task_invalid_notify_count() == 0, "no invalid task notifications in CMD-05");
 }
 
+/* H13: a command has dropped the command mutex but not its ownership
+ * reference. STOP is free to complete; DEINIT must refuse to free semaphores
+ * until the last admitted QUIESCE caller has left the public API. */
+static void test_h13_control_reference_blocks_deinit(void)
+{
+    printf("=== H13: control command reference survives STOP ===\n");
+    test_i2s_reset();
+    michi_audio_output_config_t cfg = default_cfg();
+    CHECK(michi_audio_output_init(&cfg) == ESP_OK, "H13 init");
+    CHECK(michi_audio_output_start() == ESP_OK, "H13 start");
+
+    test_michi_audio_output_hold_control_exit(true);
+    pthread_t th;
+    esp_err_t cmd_res = ESP_FAIL;
+    pthread_create(&th, NULL, slow_command_thread, &cmd_res);
+    bool observed = false;
+    for (int i = 0; i < 200; i++) {
+        if (test_michi_audio_output_control_exit_is_held()) {
+            observed = true;
+            break;
+        }
+        usleep(5000);
+    }
+    CHECK(observed, "H13 command reached control reference window");
+    if (observed) {
+        CHECK(michi_audio_output_stop() == ESP_OK, "H13 STOP joins worker");
+        CHECK(michi_audio_output_deinit() == ESP_ERR_INVALID_STATE,
+              "H13 DEINIT refuses live control reference");
+    }
+    test_michi_audio_output_hold_control_exit(false);
+    pthread_join(th, NULL);
+    if (!observed) (void)michi_audio_output_stop();
+    CHECK(michi_audio_output_deinit() == ESP_OK,
+          "H13 DEINIT succeeds after control reference returns");
+}
+
 /* AUDIO-CMD-06: Zero notifications to dead/invalid task handle across lifecycle */
 static void test_audio_cmd_06_no_stale_taskhandle_notification(void)
 {
@@ -992,9 +1046,366 @@ static void test_audio_cmd_09_worker_never_observes_quiesce_before_write_barrier
     CHECK(test_task_invalid_notify_count() == 0, "no invalid task notifications in CMD-09");
 }
 
+/* H8: only complete interleaved PCM frames may enter the SPSC ring. */
+static void test_h8_complete_frame_boundary(void)
+{
+    test_i2s_reset();
+    michi_audio_output_config_t cfg = default_cfg();
+    CHECK(michi_audio_output_init(&cfg) == ESP_OK, "H8 stereo init");
+    CHECK(michi_audio_output_start() == ESP_OK, "H8 stereo start");
+    uint8_t sample[1920] = {0};
+    CHECK(michi_audio_output_write(sample, 3) == ESP_ERR_INVALID_ARG,
+          "H8 rejects partial 16-bit stereo PCM frame");
+    CHECK(michi_audio_output_write(sample, sizeof(sample)) == ESP_OK,
+          "H8 accepts full 16-bit stereo frame batch");
+    CHECK(michi_audio_output_stop() == ESP_OK, "H8 stereo stop");
+    CHECK(michi_audio_output_deinit() == ESP_OK, "H8 stereo deinit");
+
+    test_i2s_reset();
+    cfg = default_cfg();
+    cfg.bit_depth = 24;
+    CHECK(michi_audio_output_init(&cfg) == ESP_OK, "H8 24bit init");
+    CHECK(michi_audio_output_start() == ESP_OK, "H8 24bit start");
+    CHECK(michi_audio_output_write(sample, 5) == ESP_ERR_INVALID_ARG,
+          "H8 rejects incomplete 24-bit stereo frame");
+    CHECK(michi_audio_output_write(sample, sizeof(sample)) == ESP_OK,
+          "H8 accepts 24-bit stereo frame batch");
+    CHECK(michi_audio_output_stop() == ESP_OK, "H8 24bit stop");
+    CHECK(michi_audio_output_deinit() == ESP_OK, "H8 24bit deinit");
+}
+
+/* H9: consecutive failed DMA writes must surface a fault, never an
+ * endless lie that the audio output remains RUNNING. */
+static void test_h9_dma_fault_latches_and_can_stop(void)
+{
+    test_i2s_reset();
+    michi_audio_output_config_t cfg = default_cfg();
+    michi_audio_output_quality_t before = {0};
+    CHECK(michi_audio_output_get_quality(&before) == ESP_OK, "H9 quality getter");
+    CHECK(michi_audio_output_get_quality(NULL) == ESP_ERR_INVALID_ARG,
+          "H9 quality rejects NULL");
+    CHECK(michi_audio_output_init(&cfg) == ESP_OK, "H9 fault test init");
+    CHECK(michi_audio_output_start() == ESP_OK, "H9 fault test start");
+    test_i2s_set_write_fail(ESP_FAIL);
+    uint8_t pcm[1920] = {0};
+    /* 80ms prefill: 8 x 10ms PCM frames at the v1-lite output rate. */
+    for (int i = 0; i < 9; i++) {
+        CHECK(michi_audio_output_write(pcm, sizeof(pcm)) == ESP_OK,
+              "H9 queue valid stereo PCM");
+    }
+    bool faulted = false;
+    for (int i = 0; i < 100; i++) {
+        if (michi_audio_output_get_state() == MICHI_AUDIO_STATE_FAULTED) {
+            faulted = true;
+            break;
+        }
+        usleep(10000);
+    }
+    CHECK(faulted, "H9 repeated DMA write errors latch FAULTED");
+    michi_audio_output_quality_t after = {0};
+    CHECK(michi_audio_output_get_quality(&after) == ESP_OK,
+          "H9 read quality after DMA failure");
+    CHECK(after.fatal_dma_streaks > before.fatal_dma_streaks,
+          "H9 fatal DMA count increments");
+    CHECK(after.i2s_errors >= before.i2s_errors + 3,
+          "H9 I2S diagnostics count the failed writes");
+    CHECK(michi_audio_output_write(pcm, sizeof(pcm)) == ESP_ERR_INVALID_STATE,
+          "H9 faulted pipeline rejects new PCM");
+    CHECK(michi_audio_output_stop() == ESP_OK,
+          "H9 stop disables the channel after worker fault");
+    CHECK(michi_audio_output_deinit() == ESP_OK,
+          "H9 fault teardown releases resources");
+    test_i2s_set_write_fail(ESP_OK);
+}
+
+/* H10: the channel must not be considered stopped after a failed disable.
+ * Retry may recover ownership; never re-enable or deinit while ambiguous. */
+static void test_h10_stop_disable_failure_retries_safely(void)
+{
+    test_i2s_reset();
+    michi_audio_output_config_t cfg = default_cfg();
+    CHECK(michi_audio_output_init(&cfg) == ESP_OK, "H10 stop-failure init");
+    CHECK(michi_audio_output_start() == ESP_OK, "H10 stop-failure start");
+    test_i2s_set_disable_fail(ESP_FAIL);
+    CHECK(michi_audio_output_stop() == ESP_FAIL,
+          "H10 stop propagates I2S disable failure");
+    CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_FAULTED,
+          "H10 failed disable latches FAULTED");
+    CHECK(michi_audio_output_start() == ESP_ERR_INVALID_STATE,
+          "H10 failed disable blocks start");
+    CHECK(michi_audio_output_deinit() == ESP_ERR_INVALID_STATE,
+          "H10 failed disable blocks deinit");
+    CHECK(michi_audio_output_stop() == ESP_OK,
+          "H10 retry stop succeeds after disable recovers");
+    CHECK(!test_i2s_is_enabled(), "H10 channel disabled after retry");
+    CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_STOPPED,
+          "H10 stop state cleared only on success");
+    CHECK(michi_audio_output_deinit() == ESP_OK, "H10 deinit after stop retry");
+}
+
+/* H10: if task creation fails after enabling the channel and rollback
+ * disable also fails, the module must refuse a second start until STOP. */
+static void test_h10_start_rollback_disable_failure(void)
+{
+    test_i2s_reset();
+    michi_audio_output_config_t cfg = default_cfg();
+    CHECK(michi_audio_output_init(&cfg) == ESP_OK, "H10 start-rollback init");
+    test_task_set_create_fail(true);
+    test_i2s_set_disable_fail(ESP_FAIL);
+    CHECK(michi_audio_output_start() == ESP_FAIL,
+          "H10 task creation failure propagates failed disable rollback");
+    test_task_set_create_fail(false);
+    CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_FAULTED,
+          "H10 rollback failure remains FAULTED");
+    CHECK(michi_audio_output_start() == ESP_ERR_INVALID_STATE,
+          "H10 rollback failure disallows second start");
+    CHECK(michi_audio_output_stop() == ESP_OK,
+          "H10 STOP retries channel disable without a worker");
+    CHECK(michi_audio_output_deinit() == ESP_OK,
+          "H10 init failure recovery frees the channel");
+}
+
+/* H10: deletion failure leaves the initialized channel and buffers owned
+ * by this module so a later deinit can retry; start must fail closed. */
+static void test_h10_deinit_delete_failure_retains_resources(void)
+{
+    test_i2s_reset();
+    michi_audio_output_config_t cfg = default_cfg();
+    CHECK(michi_audio_output_init(&cfg) == ESP_OK, "H10 delete-failure init");
+    test_i2s_set_delete_fail(ESP_FAIL);
+    CHECK(michi_audio_output_deinit() == ESP_FAIL,
+          "H10 deinit propagates channel deletion failure");
+    CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_INITIALIZED,
+          "H10 deletion failure retains initialized ownership");
+    CHECK(michi_audio_output_start() == ESP_ERR_INVALID_STATE,
+          "H10 deletion failure blocks start");
+    CHECK(michi_audio_output_deinit() == ESP_OK,
+          "H10 retry deinit succeeds when driver recovers");
+    CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_UNINITIALIZED,
+          "H10 state resets only on complete deinit");
+    CHECK(michi_audio_output_init(&cfg) == ESP_OK,
+          "H10 fresh init possible after successful retry");
+    CHECK(michi_audio_output_deinit() == ESP_OK,
+          "H10 fresh channel deletes after retry");
+}
+
+/* H11: a partially-initialized channel that refuses deletion stays owned,
+ * cannot start, and can be recovered with a later DEINIT. */
+static void test_h11_init_cleanup_delete_failure(void)
+{
+    test_i2s_reset();
+    michi_audio_output_config_t cfg = default_cfg();
+    test_i2s_set_init_std_mode_fail(ESP_FAIL);
+    test_i2s_set_delete_fail(ESP_FAIL);
+    CHECK(michi_audio_output_init(&cfg) == ESP_FAIL,
+          "H11 init exposes deletion failure");
+    CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_FAULTED,
+          "H11 partially initialized channel is quarantined");
+    CHECK(michi_audio_output_start() == ESP_ERR_INVALID_STATE,
+          "H11 quarantined channel cannot start");
+    CHECK(michi_audio_output_init(&cfg) == ESP_ERR_INVALID_STATE,
+          "H11 quarantined channel cannot be overwritten");
+    CHECK(michi_audio_output_deinit() == ESP_OK,
+          "H11 cleanup retries channel destruction");
+    CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_UNINITIALIZED,
+          "H11 recovery clears quarantined state");
+    CHECK(michi_audio_output_init(&cfg) == ESP_OK,
+          "H11 clean init works after recovery");
+    CHECK(michi_audio_output_deinit() == ESP_OK,
+          "H11 fully recovered channel can deinit");
+}
+
+static void *h11_start_thread(void *arg)
+{
+    esp_err_t *res = (esp_err_t *)arg;
+    *res = michi_audio_output_start();
+    return NULL;
+}
+
+static void *h11_deinit_thread(void *arg)
+{
+    esp_err_t *res = (esp_err_t *)arg;
+    *res = michi_audio_output_deinit();
+    return NULL;
+}
+
+/* H11: the state check and the I2S driver calls form ONE lifecycle lease. */
+static void test_h11_start_vs_deinit_race(void)
+{
+    test_i2s_reset();
+    michi_audio_output_config_t cfg = default_cfg();
+    CHECK(michi_audio_output_init(&cfg) == ESP_OK, "H11 concurrency init");
+    test_i2s_set_enable_delay_ms(100);
+    esp_err_t start_result = ESP_FAIL;
+    pthread_t thread;
+    pthread_create(&thread, NULL, h11_start_thread, &start_result);
+    bool entered = false;
+    for (int i = 0; i < 200; i++) {
+        if (test_i2s_enable_entered()) { entered = true; break; }
+        usleep(1000);
+    }
+    CHECK(entered, "H11 START has entered I2S enable");
+    if (entered) {
+        CHECK(michi_audio_output_deinit() == ESP_ERR_INVALID_STATE,
+              "H11 DEINIT must not destroy a channel being enabled");
+        CHECK(michi_audio_output_stop() == ESP_ERR_INVALID_STATE,
+              "H11 STOP must not race a channel being enabled");
+        CHECK(michi_audio_output_start() == ESP_ERR_INVALID_STATE,
+              "H11 START must not race another START");
+    }
+    pthread_join(thread, NULL);
+    test_i2s_set_enable_delay_ms(0);
+    CHECK(start_result == ESP_OK, "H11 first START completed");
+    CHECK(michi_audio_output_stop() == ESP_OK, "H11 STOP after START");
+    CHECK(michi_audio_output_deinit() == ESP_OK, "H11 DEINIT after STOP");
+}
+
+static void test_h11_deinit_vs_init_race(void)
+{
+    test_i2s_reset();
+    michi_audio_output_config_t cfg = default_cfg();
+    CHECK(michi_audio_output_init(&cfg) == ESP_OK, "H11 deletion race init");
+    test_i2s_set_delete_delay_ms(100);
+    esp_err_t deinit_result = ESP_FAIL;
+    pthread_t thread;
+    pthread_create(&thread, NULL, h11_deinit_thread, &deinit_result);
+    bool entered = false;
+    for (int i = 0; i < 200; i++) {
+        if (test_i2s_delete_entered()) { entered = true; break; }
+        usleep(1000);
+    }
+    CHECK(entered, "H11 DEINIT entered deletion");
+    if (entered) {
+        CHECK(michi_audio_output_init(&cfg) == ESP_ERR_INVALID_STATE,
+              "H11 INIT must not race channel deletion");
+        CHECK(michi_audio_output_start() == ESP_ERR_INVALID_STATE,
+              "H11 START must not reenable a channel being deleted");
+    }
+    pthread_join(thread, NULL);
+    test_i2s_set_delete_delay_ms(0);
+    CHECK(deinit_result == ESP_OK, "H11 completed channel deletion");
+    CHECK(michi_audio_output_init(&cfg) == ESP_OK, "H11 fresh init after teardown");
+    CHECK(michi_audio_output_deinit() == ESP_OK, "H11 cleanup after fresh init");
+}
+
+/* H11 regression: a failed disable and a late worker exit must not
+ * accidentally turn STOPPING into STOPPED without retrying disable. */
+static void test_h11_disable_failure_with_join_timeout(void)
+{
+    test_i2s_reset();
+    michi_audio_output_config_t cfg = default_cfg();
+    CHECK(michi_audio_output_init(&cfg) == ESP_OK, "H11 dual failure init");
+    CHECK(michi_audio_output_start() == ESP_OK, "H11 dual failure start");
+    test_michi_audio_output_hold_worker(true);
+    test_michi_audio_output_set_join_timeout_ms(20);
+    test_i2s_set_disable_fail(ESP_FAIL);
+    CHECK(michi_audio_output_stop() == ESP_ERR_TIMEOUT,
+          "H11 STOP join timeout never claims success");
+    CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_STOPPING,
+          "H11 pending worker remains STOPPING");
+    test_michi_audio_output_hold_worker(false);
+    test_michi_audio_output_set_join_timeout_ms(0);
+    usleep(80000);
+    CHECK(michi_audio_output_get_state() != MICHI_AUDIO_STATE_STOPPED,
+          "H11 late worker cannot publish STOPPED before disable retry");
+    CHECK(michi_audio_output_stop() == ESP_OK,
+          "H11 retry completes the missing I2S disable");
+    CHECK(!test_i2s_is_enabled(), "H11 hardware channel disabled after retry");
+    CHECK(michi_audio_output_get_state() == MICHI_AUDIO_STATE_STOPPED,
+          "H11 owner alone publishes STOPPED");
+    CHECK(michi_audio_output_deinit() == ESP_OK,
+          "H11 deinit succeeds after disable retry");
+}
+
+static void *h11_write_thread(void *arg)
+{
+    esp_err_t *res = (esp_err_t *)arg;
+    uint8_t pcm[1920] = {0};
+    *res = michi_audio_output_write(pcm, sizeof(pcm));
+    return NULL;
+}
+
+static void test_h11_producer_cannot_outlive_deinit(void)
+{
+    test_i2s_reset();
+    michi_audio_output_config_t cfg = default_cfg();
+    CHECK(michi_audio_output_init(&cfg) == ESP_OK, "H11 write-lease init");
+    CHECK(michi_audio_output_start() == ESP_OK, "H11 write-lease start");
+    test_michi_audio_output_hold_producer(true);
+    esp_err_t writer_result = ESP_OK;
+    pthread_t thread;
+    pthread_create(&thread, NULL, h11_write_thread, &writer_result);
+    bool held = false;
+    for (int i = 0; i < 200; i++) {
+        if (test_michi_audio_output_producer_is_held()) { held = true; break; }
+        usleep(1000);
+    }
+    CHECK(held, "H11 producer has acquired its memory lease");
+    if (held) {
+        CHECK(michi_audio_output_stop() == ESP_OK,
+              "H11 STOP remains cooperative with an active producer");
+        CHECK(michi_audio_output_deinit() == ESP_ERR_INVALID_STATE,
+              "H11 DEINIT refuses to free ring under active producer");
+        CHECK(michi_audio_output_start() == ESP_ERR_INVALID_STATE,
+              "H11 next START refuses ring reused before producer release");
+    }
+    test_michi_audio_output_hold_producer(false);
+    pthread_join(thread, NULL);
+    if (held) {
+        CHECK(writer_result == ESP_ERR_INVALID_STATE,
+              "H11 stale producer cannot write to the stopped session");
+        CHECK(michi_audio_output_deinit() == ESP_OK,
+              "H11 DEINIT succeeds once producer releases its lease");
+    } else {
+        (void)michi_audio_output_stop();
+        (void)michi_audio_output_deinit();
+    }
+}
+
+/* H14: a producer call must be bounded by total elapsed time even when
+ * the consumer intermittently drains the ring and the writer progresses.
+ * This uses the real host monotonic-clock FreeRTOS shim. */
+static void test_h14_total_pcm_write_deadline(void)
+{
+    printf("=== H14: total PCM enqueue deadline includes partial progress ===\n");
+    test_i2s_reset();
+    michi_audio_output_config_t cfg = default_cfg();
+    CHECK(michi_audio_output_init(&cfg) == ESP_OK, "H14 bounded-write init");
+    CHECK(michi_audio_output_start() == ESP_OK, "H14 bounded-write start");
+    enum { PCM_BYTES = 256 * 1024 };
+    uint8_t *pcm = malloc(PCM_BYTES);
+    CHECK(pcm != NULL, "H14 allocate long PCM input");
+    if (pcm != NULL) {
+        memset(pcm, 0x33, PCM_BYTES);
+        test_i2s_set_write_delay_ms(120);
+        const int64_t started_us = get_now_us();
+        const esp_err_t err = michi_audio_output_write(pcm, PCM_BYTES);
+        const int64_t elapsed_us = get_now_us() - started_us;
+        CHECK(err == ESP_ERR_TIMEOUT,
+              "H14 slow partial progress must respect global deadline");
+        CHECK(elapsed_us <= 3000000,
+              "H14 producer finishes within generous wall-clock budget");
+        free(pcm);
+        test_i2s_set_write_delay_ms(0);
+    }
+    CHECK(michi_audio_output_stop() == ESP_OK, "H14 bounded-write stop");
+    CHECK(michi_audio_output_deinit() == ESP_OK, "H14 bounded-write deinit");
+}
+
 int main(void)
 {
+    test_h14_total_pcm_write_deadline();
     test_task_reset_invalid_notify_count();
+    test_h11_producer_cannot_outlive_deinit();
+    test_h11_init_cleanup_delete_failure();
+    test_h11_start_vs_deinit_race();
+    test_h11_deinit_vs_init_race();
+    test_h11_disable_failure_with_join_timeout();
+    test_h10_stop_disable_failure_retries_safely();
+    test_h10_start_rollback_disable_failure();
+    test_h10_deinit_delete_failure_retains_resources();
+    test_h8_complete_frame_boundary();
+    test_h9_dma_fault_latches_and_can_stop();
 
     printf("=== michi_audio_output quiesce tests (AUDIO-Q-01..10) ===\n");
     test_audio_q_01_stale_pcm_never_submitted();
@@ -1002,6 +1413,7 @@ int main(void)
     test_audio_q_03_resume_accepts_fresh_pcm();
     test_audio_q_04_quiesce_while_blocked_in_write();
     test_audio_q_05_i2s_write_fail_during_quiesce();
+    test_h12_quiesce_short_silence_dma_fails_closed();
     test_audio_q_06_repeated_quiesce_idempotent();
     test_audio_q_07_stop_while_quiesced();
     test_audio_q_08_resume_while_stopped_rejected();
@@ -1031,6 +1443,7 @@ int main(void)
     test_audio_cmd_03_timeout_fault_semantics();
     test_audio_cmd_04_concurrent_callers_serialized();
     test_audio_cmd_05_stop_racing_command();
+    test_h13_control_reference_blocks_deinit();
     test_audio_cmd_06_no_stale_taskhandle_notification();
     test_audio_cmd_07_concurrent_writer_during_quiesce_content_verification();
     test_audio_cmd_08_stop_timeout_late_worker_retry_reconciles_done();

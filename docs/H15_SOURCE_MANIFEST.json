@@ -1,0 +1,251 @@
+{
+  "baseline": "Michi Music Stream H15 cumulative H8-H15",
+  "date": "2026-10-19",
+  "type": "pretest_source_overlay",
+  "tests_executed": false,
+  "hardware_certified": false,
+  "full_repository": false,
+  "files_count_excluding_manifest": 48,
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "a31e31e4b1db66c2cbe6f8d2856f516cf0d3ec329245b67a99bec2fb8e8b57ed",
+      "bytes": 8330
+    },
+    {
+      "path": "docs/CURRENT_PRETEST_BASELINE.md",
+      "sha256": "a76c898cda52ecfb37b750574e6f11d43bb9a4944a6731d5b7c18c5d8dad82e6",
+      "bytes": 1151
+    },
+    {
+      "path": "docs/H11_KILLCRITIC_FIRMWARE_CLOSURE.md",
+      "sha256": "8727a968f15d1700339c28bc89fec59add06c96845bee21117f15e5b1b36a2a0",
+      "bytes": 6323
+    },
+    {
+      "path": "docs/H11_SOURCE_MANIFEST.json",
+      "sha256": "cab0c79e542c4cdb3f790e8c3318a882aa56b3121d5a00f6f66b1e41db5f4d14",
+      "bytes": 1631
+    },
+    {
+      "path": "docs/H12_KILLCRITIC_PRETEST_HANDOFF.md",
+      "sha256": "6b88fd8df713e9e1e8abcc7bc665d6602a9c97c9df10c045069abc7e8401f721",
+      "bytes": 3816
+    },
+    {
+      "path": "docs/H12_SOURCE_MANIFEST.json",
+      "sha256": "8f930565c3bc71575ea96a23bd6b719bdf93e9e111e3b63a03b564346b975792",
+      "bytes": 3484
+    },
+    {
+      "path": "docs/H13_KILLCRITIC_CLOSURE.md",
+      "sha256": "91bd4cfbb5d99d798766670ef89798ee2535ca1fc587b34506ebadc4840089c3",
+      "bytes": 4465
+    },
+    {
+      "path": "docs/H13_SOURCE_MANIFEST.json",
+      "sha256": "d151d214fd804f872e9aac82dcc195b60b3e89902e149fbcf69b937e2a83a93b",
+      "bytes": 4208
+    },
+    {
+      "path": "docs/H14_CHANGES_REVIEW.patch",
+      "sha256": "5f61b0487d854ff6c3bd44243153722a3a346cd52d15887a9c4fa06729af64d8",
+      "bytes": 11446
+    },
+    {
+      "path": "docs/H14_KILLCRITIC_PRETEST_CLOSURE.md",
+      "sha256": "4d53b0728d464e6b178fa0e23b1f6d824192a371277825978bc357d67db0ee6a",
+      "bytes": 4609
+    },
+    {
+      "path": "docs/H14_SOURCE_MANIFEST.json",
+      "sha256": "180cc83b25e534bd6f6146d4b5ab2cbd71f5dd03ff80e3bdfbc04b9d1d0d727c",
+      "bytes": 5465
+    },
+    {
+      "path": "docs/H15_CHANGES_REVIEW.patch",
+      "sha256": "c99c335a99060d728024f7cd07fda5059ea47c0f9a8e9bbb7667bb8baacf5b6e",
+      "bytes": 50267
+    },
+    {
+      "path": "docs/H15_DRIVE_SCOPE_MATRIX.json",
+      "sha256": "0c3a29dc1f8fdd05bc6c4c03e8a5db522c2be7ca0157f7ddc0e1b987506844de",
+      "bytes": 1560
+    },
+    {
+      "path": "docs/H15_KILLCRITIC_SOURCE_CLOSURE.md",
+      "sha256": "9698356f4a56c82c9e768ba8179f71764b6aa54bd63471abf17c9922648bde42",
+      "bytes": 9172
+    },
+    {
+      "path": "docs/H8_FIRMWARE_PCM_RAMP_AND_FRAME_INTEGRITY.md",
+      "sha256": "75915e19008b5e7772bc55e9e2f7038cd1416582b21a29b2e93a014a56594e6d",
+      "bytes": 4986
+    },
+    {
+      "path": "docs/H9_KILLCRITIC_FIRMWARE_RELIABILITY.md",
+      "sha256": "35ef608d69f9087ef2d3b77552e9e51245213631b4b98dbbf0522b52d55cffdf",
+      "bytes": 6350
+    },
+    {
+      "path": "docs/OPENCODE_H11_LOCAL_VALIDATION.md",
+      "sha256": "5c83459230b03384724e14850c2bf841430326d41ef7508f119ce74a745a669a",
+      "bytes": 3401
+    },
+    {
+      "path": "docs/OPENCODE_H12_LOCAL_VALIDATION.md",
+      "sha256": "016df8840eb9a6c24e139f3415fd7847daf0fe5f04088477d738e349fe1c1b35",
+      "bytes": 3233
+    },
+    {
+      "path": "docs/OPENCODE_H13_LOCAL_VALIDATION.md",
+      "sha256": "be0b37711c8e5d72d235d7524f3d36b31051975114c944145e0b857eb2866585",
+      "bytes": 3119
+    },
+    {
+      "path": "docs/OPENCODE_H14_LOCAL_VALIDATION.md",
+      "sha256": "41ae43444be3a49b49294ad39a2417bac69c9e9b02582b2a7192e8f3032e164b",
+      "bytes": 3680
+    },
+    {
+      "path": "docs/OPENCODE_H15_VALIDATION.md",
+      "sha256": "c0e3a941718850e9e38783ad954c8f3a3b7e198cd75f53ecfa442ca623301bd7",
+      "bytes": 1868
+    },
+    {
+      "path": "docs/OPENCODE_H8_LOCAL_VALIDATION.md",
+      "sha256": "b9f2e944572bc8913845251c11ba49db1382afccf7b9fdd6cd83741705440d75",
+      "bytes": 2932
+    },
+    {
+      "path": "docs/OPENCODE_H9_LOCAL_VALIDATION.md",
+      "sha256": "9f45d88c258d23ee2b15be7697ac7d2371ea1964fd0df9dd3d63629248365c1f",
+      "bytes": 3328
+    },
+    {
+      "path": "docs/ROADMAP.md",
+      "sha256": "8304b1ad039175799972babae7be5ab1cead80729453b1e8b62395097768985b",
+      "bytes": 6675
+    },
+    {
+      "path": "firmware/components/michi_audio/michi_audio.c",
+      "sha256": "6f31633dc4bd0926c69e6dc0f1eacaec1686d63192c4e06ef3d1a6af7b8ad67b",
+      "bytes": 54639
+    },
+    {
+      "path": "firmware/components/michi_audio/michi_audio_pause_policy.h",
+      "sha256": "831585067627c6b611ad0cd850e3d451d6226d1ba494321146db012f70b1dcd0",
+      "bytes": 1049
+    },
+    {
+      "path": "firmware/components/michi_audio_output/include/michi_audio_output.h",
+      "sha256": "178846f7bac68bfb9cc8f1092dba9b4ce52cae89c0a34ca1d03568a31c6ec011",
+      "bytes": 11793
+    },
+    {
+      "path": "firmware/components/michi_audio_output/michi_audio_output.c",
+      "sha256": "7434990fbd6965d406507b3dcfb5b8b6a9a5fe3775a0007d566335fbaeb56676",
+      "bytes": 55782
+    },
+    {
+      "path": "firmware/components/michi_http/http_server.c",
+      "sha256": "aface97c395f928624adb4de8fe58674542e6cf8c0ede81839d5b68a296f6d71",
+      "bytes": 73947
+    },
+    {
+      "path": "firmware/components/michi_session/include/michi_session.h",
+      "sha256": "4ce64ecac08d7817af5c043a644a2c5d3128aa5a573bff395afb88feac5ff647",
+      "bytes": 21058
+    },
+    {
+      "path": "firmware/components/michi_session/michi_session.c",
+      "sha256": "e571803e9e56ecb03be3e99f40ba09c3098a5aa766da9aef61b0620e79b629c2",
+      "bytes": 45151
+    },
+    {
+      "path": "firmware/components/michi_volume/include/michi_volume.h",
+      "sha256": "5e656e714677bd8db7a743036609b3d5abe2b783b3cb82a0b3e8e730684e0448",
+      "bytes": 4240
+    },
+    {
+      "path": "firmware/components/michi_volume/michi_volume.c",
+      "sha256": "70d8cca69dcae0190adde0be6c7c5570f3befa49862b202d9e2a0a6710696ef0",
+      "bytes": 8178
+    },
+    {
+      "path": "tests/e2e/test_e2e_micro_stream.py",
+      "sha256": "596466c8d421b8e62694eb45459e6daf405a7e03b6f698c4192e3db731632c34",
+      "bytes": 20085
+    },
+    {
+      "path": "tests/host/Makefile",
+      "sha256": "7a59b57b7810529be8456149b34306ff8e48b981a9009b34193d7195507df0d1",
+      "bytes": 22799
+    },
+    {
+      "path": "tests/host/shim/driver/i2s_std.h",
+      "sha256": "f4ecf73b00a1283665fd519fd5c7a16e4bd60d8715cf0aebebc96454de4628e3",
+      "bytes": 3157
+    },
+    {
+      "path": "tests/host/shim/esp_timer.c",
+      "sha256": "02e61d73b2148f8f4212c8597ad4485c99692e07f2d42d15cd74301a70db9511",
+      "bytes": 2680
+    },
+    {
+      "path": "tests/host/shim/esp_timer.h",
+      "sha256": "e03337abf3347c2bbcb678744d581ae429db4f02a739dd37221d13a0b78a2c97",
+      "bytes": 1990
+    },
+    {
+      "path": "tests/host/shim/freertos/task.c",
+      "sha256": "c49e2f70707cd68a93d0716781a2abfaa0130d8c381af8c078197242d24dd9f5",
+      "bytes": 7752
+    },
+    {
+      "path": "tests/host/shim/freertos/task.h",
+      "sha256": "90690513478bcf7cfe6a5734ef3ff49795784e7982c8bf11403fd2beefe92d6d",
+      "bytes": 2554
+    },
+    {
+      "path": "tests/host/shim/i2s_shim.c",
+      "sha256": "ad6f540d6c7a6c3941db4d7c63cd132273fd3d0fd23daf44d351def7e4db598f",
+      "bytes": 9684
+    },
+    {
+      "path": "tests/host/shim/michi_audio_fake.c",
+      "sha256": "632aa7cf1808488148b095102ceeb7be6cd47501bb119873dbfd8711bf513fda",
+      "bytes": 4761
+    },
+    {
+      "path": "tests/host/shim/michi_audio_fake.h",
+      "sha256": "6c4b7c08e978b6983c4e847af6188c366afcd0e8a3be762b80fb934feb0694f6",
+      "bytes": 1199
+    },
+    {
+      "path": "tests/host/shim/michi_volume_fake.c",
+      "sha256": "30f418b2072df7d033dff5999290e94d239e7146258e598f925745208d2582bb",
+      "bytes": 1150
+    },
+    {
+      "path": "tests/host/test_michi_audio_output.c",
+      "sha256": "245b816dc1c575c70b7aaaf795b11daa353b88baf850e1d5ea7fc55504bdf99b",
+      "bytes": 63449
+    },
+    {
+      "path": "tests/host/test_michi_audio_pause_policy.c",
+      "sha256": "7ecfadd5c38b9138feb7b905775adc9959e56686852c9ff38c3256cd254f271f",
+      "bytes": 1194
+    },
+    {
+      "path": "tests/host/test_michi_session.c",
+      "sha256": "35645059bded7bf17e43339469b36114439d68023783901831665fe7bf49628f",
+      "bytes": 42409
+    },
+    {
+      "path": "tests/host/test_michi_volume.c",
+      "sha256": "b1f707ebe517f8c0219af08d20fb3b505a4d4ae1d57d3ecd0463c3a30a4266dd",
+      "bytes": 9726
+    }
+  ]
+}

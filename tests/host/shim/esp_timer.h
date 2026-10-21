@@ -32,6 +32,9 @@ typedef struct test_esp_timer *esp_timer_handle_t;
 
 int64_t test_esp_timer_now(void);
 void test_esp_timer_reset(void);
+/* Inject one failed timer restart without altering the old armed deadline. */
+void test_esp_timer_fail_next_restart(bool fail);
+void test_esp_timer_fail_next_start(bool fail);
 void test_esp_timer_set_time(int64_t us);
 
 /* Advance the fake clock; the registered one-shot timer's callback fires

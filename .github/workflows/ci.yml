@@ -10,6 +10,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Verify source ownership after repository synchronization
+        run: python3 scripts/check_source_identity.py
       - name: Contract sync check (vendored michi-link bundle)
         run: python3 scripts/sync_michi_link_contract.py --check && python3 scripts/sync_michi_link_contract.py --verify-source
       - name: Install dependencies
@@ -33,7 +35,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install libcjson-dev
         run: sudo apt-get update && sudo apt-get install -y libcjson-dev
-      - name: Host unit tests (semver, pairing validators, json helpers)
+      - name: Ensure host test sources are present (no stale executable fallbacks)
+        run: |
+          test -f tests/host/test_michi_home.c || { echo 'FAIL: missing tests/host/test_michi_home.c'; exit 1; }
+      - name: Host unit tests (identity, Home membership, session, audio and JSON)
         # make clean first: forces a rebuild, so stale binaries with
         # equal mtimes are never run in CI.
         run: |
@@ -57,14 +62,22 @@ jobs:
         working-directory: firmware/components/michi_display
         run: |
           mkdir -p /tmp/gen_a /tmp/gen_b
-          python3 tools/gen_michi_ui_assets.py --font notosans --raster 1bit --strict --output-dir /tmp/gen_a
-          python3 tools/gen_michi_ui_assets.py --font notosans --raster 1bit --strict --output-dir /tmp/gen_b
+          python3 tools/gen_michi_ui_assets.py --font notosans --raster 2bit --strict --output-dir /tmp/gen_a
+          python3 tools/gen_michi_ui_assets.py --font notosans --raster 2bit --strict --output-dir /tmp/gen_b
           diff -u /tmp/gen_a/fonts/michi_ui_fonts_data.h /tmp/gen_b/fonts/michi_ui_fonts_data.h
           diff -u /tmp/gen_a/icons/michi_ui_icons_data.h /tmp/gen_b/icons/michi_ui_icons_data.h
       - name: Generate canonical UI assets
         working-directory: firmware/components/michi_display
         run: |
-          python3 tools/gen_michi_ui_assets.py --font notosans --raster 1bit --strict
+          python3 tools/gen_michi_ui_assets.py --font notosans --raster 2bit --strict
+          python3 tools/gen_precision_icons.py --output assets/icons/michi_precision_icons_data.h
+      - name: Verify precision icons reproducibility
+        working-directory: firmware/components/michi_display
+        run: |
+          python3 tools/gen_precision_icons.py --output /tmp/icons_a.h
+          python3 tools/gen_precision_icons.py --output /tmp/icons_b.h
+          cmp /tmp/icons_a.h /tmp/icons_b.h
+          cmp /tmp/icons_a.h assets/icons/michi_precision_icons_data.h
       - name: Verify committed asset drift
         run: |
           git diff --exit-code firmware/components/michi_display/assets/
@@ -114,13 +127,11 @@ jobs:
             -I components/michi_audio/include \
             -I components/michi_audio_output/include \
             -I components/michi_board/include \
-            -I components/michi_button/include \
             -I components/michi_dac/include \
             -I components/michi_display/include \
             -I components/michi_http/include \
             -I components/michi_led/include \
             -I components/michi_ota/include \
-            -I components/michi_pairing/include \
             -I components/michi_product_profile/include \
             -I components/michi_session/include \
             -I components/michi_state/include \

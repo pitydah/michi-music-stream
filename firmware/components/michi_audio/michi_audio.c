@@ -16,7 +16,7 @@
  *    (packets_rejected = their sum) and never close the session.
  *  - Packet-level jitter buffer: ordered by 16-bit seq with wrap-aware
  *    int16 diff math; policies: duplicate, reordered, late, loss,
- *    overrun (drop-oldest), discontinuity (flush + resync). Sequence
+ *    overrun (preserve imminent PCM), discontinuity (flush + resync). Sequence
  *    wrap, loss and reordering never close the session.
  *  - Pause keeps the task ALIVE: valid packets are counted (received +
  *    loss) and discarded; resume flushes the buffer and resyncs to the
@@ -31,6 +31,7 @@
  */
 
 #include <inttypes.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #include "sdkconfig.h"
@@ -56,6 +57,8 @@
 #include "michi_rtp_clock.h"
 #include "michi_rtp_jitter.h"
 #include "michi_jb.h"
+#include "michi_audio_recv_policy.h"
+#include "michi_audio_pause_policy.h"
 #include "rtp_guard.h"
 
 #define TAG "michi_audio"
@@ -90,6 +93,10 @@
                                  MICHI_AUDIO_PACKET_MS_ASSUMED)
 
 #define MICHI_AUDIO_RX_BUF_BYTES CONFIG_MICHI_AUDIO_RX_BUF_BYTES
+/* A UDP receive datagram includes RTP headers, but jitter slots contain ONLY
+ * the validated PCM payload. Do not multiply the UDP datagram capacity by
+ * the number of jitter slots: 50 * 8192 wastes >300 KiB of PSRAM. */
+#define MICHI_AUDIO_JB_SLOT_BYTES MICHI_AUDIO_RTP_PAYLOAD_BYTES
 
 typedef michi_jb_entry_t jb_entry_t;
 typedef michi_jb_t jitter_buffer_t;
@@ -113,6 +120,8 @@ typedef struct {
     uint32_t jitter_us;      /* EWMA estimate */
     bool     in_underrun;    /* one underrun counted per contiguous stall */
     uint32_t drop_log_count; /* rogue-source log throttle */
+    uint8_t  recv_error_streak; /* unexpected consecutive UDP receive failures */
+    bool     fatal_recv_error;  /* distinguish terminal socket fault from timeout */
 
     /* Extended 64-bit RTP clock (P0-02: wrap fix, see michi_rtp_clock.h).
      * Tracks the monotonic 64-bit form of the RTP timestamp to prevent
@@ -127,12 +136,37 @@ typedef struct {
     uint8_t *zeros;          /* one packet of silence (heap) */
 } session_t;
 
-static volatile bool s_initialized = false;
-static volatile bool s_session_run = false;    /* cooperative: read by the task */
-static volatile bool s_session_done = false;   /* set by the task before self-delete */
-static volatile bool s_session_active = false; /* session bound and running */
-static volatile TaskHandle_t s_session_task = NULL;
-static volatile bool s_paused = false;         /* pause flag read by the task */
+/* H13: task-to-control communication requires actual C11 synchronization,
+ * not volatile. Default sequentially-consistent atomic operations are used
+ * for the cooperative run/done/paused flags; multi-field snapshots remain
+ * under s_lock. Task handle publication is atomic so that a task that exits
+ * immediately after creation cannot race an unsynchronized handle store. */
+static _Atomic bool s_initialized = false;
+static _Atomic bool s_session_run = false;
+static _Atomic bool s_session_done = false;
+static _Atomic bool s_session_active = false;
+static _Atomic(TaskHandle_t) s_session_task = NULL;
+static _Atomic bool s_paused = false;
+
+/* H13: serialize start/stop/pause transitions without a spinlock around
+ * network, I2S, task creation or waits. A concurrent request fails closed.
+ * Session worker itself never needs this lease. */
+static portMUX_TYPE s_session_lifecycle_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool s_session_lifecycle_busy = false;
+static bool session_lifecycle_try_enter(void)
+{
+    portENTER_CRITICAL(&s_session_lifecycle_lock);
+    bool acquired = !s_session_lifecycle_busy;
+    if (acquired) s_session_lifecycle_busy = true;
+    portEXIT_CRITICAL(&s_session_lifecycle_lock);
+    return acquired;
+}
+static void session_lifecycle_leave(void)
+{
+    portENTER_CRITICAL(&s_session_lifecycle_lock);
+    s_session_lifecycle_busy = false;
+    portEXIT_CRITICAL(&s_session_lifecycle_lock);
+}
 
 /* Negotiated session constants (set at session start, read by the API
  * layer / diagnostics while the session is active). Kept OUT of
@@ -234,9 +268,9 @@ static inline void jb_flush(jitter_buffer_t *jb)
 
 /* Insert a copy of the payload. Returns ESP_ERR_INVALID_STATE when the seq
  * is already queued (caller already classified it as duplicate); applies
- * the drop-oldest overrun policy (oldest relative to the playhead) when the
- * buffer is full. Both rejections (drop-oldest and NO_MEM) count as
- * overruns and are logged (DROP_LOG throttles a rogue sender's spam). */
+ * the playout-first overrun policy when the buffer is full: reclaim stale
+ * slots or evict the farthest future PCM only for a nearer packet. Rejected
+ * packets are counted as overruns and are never inserted. */
 static esp_err_t jb_insert(session_t *s, uint16_t playhead,
                            const michi_rtp_guard_packet_t *pkt)
 {
@@ -249,14 +283,14 @@ static esp_err_t jb_insert(session_t *s, uint16_t playhead,
         return ESP_ERR_INVALID_STATE;
     }
     if (res == MICHI_JB_INSERT_OVERRUN_EVICTED) {
-        ESP_LOGW(TAG, "jitter buffer full: dropped oldest seq=%u",
+        ESP_LOGW(TAG, "jitter buffer full: reclaimed stale/farthest seq=%u",
                  (unsigned)evicted_seq);
         m_add(&s_metrics.overruns, 1);
         return ESP_OK;
     }
     if (res == MICHI_JB_INSERT_OVERRUN_DROPPED) {
-        DROP_LOG(s, "jitter buffer full but no evictable packet: "
-                    "seq=%u dropped", (unsigned)pkt->seq);
+        DROP_LOG(s, "jitter buffer rejected seq=%u (late or less useful "
+                    "than queued PCM)", (unsigned)pkt->seq);
         m_add(&s_metrics.overruns, 1);
         return ESP_ERR_NO_MEM;
     }
@@ -340,27 +374,28 @@ static bool stream_policy(session_t *s, const michi_rtp_guard_packet_t *pkt)
     }
 
     const int16_t diff_l = (int16_t)(pkt->seq - s->last_seq);
+    const bool reordered = (diff_l <= 0); /* out of order, still playable */
+
+    const esp_err_t err = jb_insert(s, s->playhead, pkt);
+    if (err != ESP_OK) {
+        if (err == ESP_ERR_INVALID_STATE) {
+            m_add(&s_metrics.duplicate, 1);
+        }
+        /* Do not advance received high-water or provisional loss on a
+         * packet refused by the playout buffer. */
+        return false;
+    }
     const uint32_t missing = michi_rtp_guard_lost_delta(s->last_seq, pkt->seq);
     if (missing != 0) {
         m_add(&s_metrics.provisionally_missing, missing);
     }
-    const bool reordered = (diff_l <= 0); /* out of order, still playable */
-
-    const esp_err_t err = jb_insert(s, s->playhead, pkt);
-    if (err == ESP_OK) {
-        if (reordered) {
-            m_add(&s_metrics.reordered, 1);
-            m_sub(&s_metrics.provisionally_missing, 1);
-        }
-        /* The received high-water mark only advances on in-order
-         * arrivals; a reordered packet (diff_l <= 0) must never lower
-         * it, or the next in-order packet would report fake loss. */
-        if (diff_l > 0) {
-            s->last_seq = pkt->seq;
-        }
-    } else if (err == ESP_ERR_INVALID_STATE) {
-        m_add(&s_metrics.duplicate, 1);
-        return false;
+    if (reordered) {
+        m_add(&s_metrics.reordered, 1);
+        m_sub(&s_metrics.provisionally_missing, 1);
+    }
+    /* The high-water mark advances only on accepted in-order arrivals. */
+    if (diff_l > 0) {
+        s->last_seq = pkt->seq;
     }
     return true;
 }
@@ -375,8 +410,25 @@ static void session_recv(session_t *s)
     socklen_t from_len = sizeof(from);
     const int n = recvfrom(s->sock, s->recv_buf, MICHI_AUDIO_RX_BUF_BYTES, 0,
                            (struct sockaddr *)&from, &from_len);
-    if (n <= 0) {
-        return; /* timeout (SO_RCVTIMEO) or error: keep the session alive */
+    if (n < 0) {
+        const int socket_error = errno;
+        if (michi_audio_recv_error_is_fatal(&s->recv_error_streak, socket_error)) {
+            /* Unexpected persistent socket failures must terminate the RTP
+             * session. Ordinary recv timeouts/EINTR never end a session. */
+            ESP_LOGE(TAG, "RTP socket: %u consecutive receive errors; "
+                          "last errno=%d; closing session",
+                     (unsigned)s->recv_error_streak, socket_error);
+            s->fatal_recv_error = true;
+            s_session_run = false;
+        }
+        return;
+    }
+    michi_audio_recv_error_reset(&s->recv_error_streak);
+    if (n == 0) {
+        /* A zero-byte UDP datagram is not PCM; do not confuse it with a
+         * receive timeout. Drop it as a malformed datagram. */
+        m_add(&s_metrics.drops_malformed, 1);
+        return;
     }
 
     michi_rtp_guard_packet_t pkt;
@@ -517,6 +569,16 @@ static uint32_t gap_samples(const session_t *s, const jb_entry_t *next)
  * false when the pipeline rejected the write (session must end). */
 static bool session_drain(session_t *s)
 {
+    /* A packet that was once in-range can become obsolete after playout
+     * advances. michi_jb_oldest() deliberately returns the closest packet
+     * BEHIND the playhead if all slots are stale (used for buffer eviction).
+     * Never interpret that negative sequence distance as a uint16_t gap:
+     * it would turn a -1 packet into 65535 packets of silence. */
+    const uint32_t stale = michi_jb_discard_stale(&s->jb, s->playhead);
+    if (stale != 0) {
+        m_add(&s_metrics.late, stale);
+        metrics_live(s);
+    }
     jb_entry_t *pkt = jb_oldest(&s->jb, s->playhead);
     if (pkt == NULL) {
         return true; /* empty: the underrun path handles it */
@@ -540,10 +602,19 @@ static bool session_drain(session_t *s)
     }
 
     const uint32_t idx = jb_index(&s->jb, pkt);
-    if (michi_audio_output_write(s->jb.pool + (size_t)idx * MICHI_AUDIO_RX_BUF_BYTES,
+    if (michi_audio_output_write(s->jb.pool + (size_t)idx * MICHI_AUDIO_JB_SLOT_BYTES,
                                  pkt->len) != ESP_OK) {
         return false;
     }
+    /* H19: only accepted RTP PCM successfully admitted to the I2S ring
+     * counts as submitted audio. Gap/underrun silence is deliberately
+     * excluded; admission is NOT proof of DMA completion or audibility. */
+    const int64_t admitted_at_us = esp_timer_get_time();
+    portENTER_CRITICAL(&s_lock);
+    s_metrics.pcm_packets_submitted++;
+    s_metrics.pcm_bytes_submitted += (uint64_t)pkt->len;
+    s_metrics.last_pcm_submit_monotonic_us = admitted_at_us;
+    portEXIT_CRITICAL(&s_lock);
     s->last_played_ts = pkt->timestamp;
     s->playhead = (uint16_t)(pkt->seq + 1);
     michi_jb_release(&s->jb, pkt);
@@ -564,9 +635,26 @@ static void session_post_error(esp_err_t data)
     (void)michi_state_report_error(MICHI_EVENT_ERROR, (uint32_t)data);
 }
 
+/* H14: ownership of the socket and PSRAM allocations is transactional.
+ * Only the task or the failed start path releases the context, never both. */
+static void session_context_release(session_t *s)
+{
+    if (s == NULL) return;
+    if (s->sock >= 0) close(s->sock);
+    free(s->jb.entries);
+    free(s->jb.pool);
+    free(s->recv_buf);
+    free(s->zeros);
+    free(s);
+}
+
 static void session_task(void *arg)
 {
     session_t *s = (session_t *)arg;
+    /* H14 startup handshake: xTaskCreate is not a publication barrier.
+     * The creator first owns/publishes the handle and then releases this
+     * task. Thus no self-delete can precede handle publication. */
+    (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     bool self_end = false;  /* the task ended by itself, not via stop() */
     bool was_paused = false;
 
@@ -588,9 +676,15 @@ static void session_task(void *arg)
     }
 
     while (s_session_run) {
-        const bool paused = s_paused;
         session_recv(s);
-        if (paused) {
+        /* H15: action is sampled AFTER the blocking receive. `volatile`
+         * or an atomic load before the wait cannot make it current here. */
+        const michi_audio_worker_action_t action =
+            michi_audio_worker_next_action(s_session_run, s_paused);
+        if (action == MICHI_AUDIO_WORKER_STOP) {
+            break; /* stop request or terminal socket error */
+        }
+        if (action == MICHI_AUDIO_WORKER_PAUSE) {
             /* Paused: receive + count, discard. Flush any buffered packets
              * so no stale audio lingers. */
             if (s->jb.count > 0) {
@@ -611,6 +705,19 @@ static void session_task(void *arg)
             continue;
         }
         if (!session_drain(s)) {
+            if (!s_session_run) {
+                break; /* STOP interrupted a blocking PCM write */
+            }
+            if (michi_audio_pause_interrupted_pcm(
+                    s_session_run, s_paused,
+                    michi_audio_output_is_quiesced())) {
+                /* PAUSE won the race with a previously admitted PCM write.
+                 * Treat the stopped producer as PAUSE, never as a dead session. */
+                was_paused = true;
+                jb_flush(&s->jb);
+                metrics_live(s);
+                continue;
+            }
             ESP_LOGE(TAG, "session: pipeline rejected a write - ending session");
             session_post_error(ESP_ERR_INVALID_STATE);
             s_session_run = false;
@@ -628,12 +735,31 @@ static void session_task(void *arg)
                 m_add(&s_metrics.underruns, 1);
             }
             if (!write_silence(s, s->samples_per_packet)) {
+                if (!s_session_run) break;
+                if (michi_audio_pause_interrupted_pcm(
+                    s_session_run, s_paused,
+                    michi_audio_output_is_quiesced())) {
+                    was_paused = true;
+                    jb_flush(&s->jb);
+                    metrics_live(s);
+                    continue;
+                }
                 session_post_error(ESP_ERR_INVALID_STATE);
+                s_session_run = false;
                 self_end = true;
                 break;
             }
             const uint32_t recovery_deadline = michi_audio_recovery_deadline_ms(s->buffer_ms);
             session_fill(s, recovery_deadline);
+            if (!s_session_run) {
+                break; /* terminal UDP socket error during re-prefill */
+            }
+            const uint32_t recovery_stale =
+                michi_jb_discard_stale(&s->jb, s->playhead);
+            if (recovery_stale != 0) {
+                m_add(&s_metrics.late, recovery_stale);
+                metrics_live(s);
+            }
             if (s->jb.count < prefill_target(s)) {
                 ESP_LOGW(TAG, "underrun: degraded recovery - filled %u/%u packets within %u ms deadline",
                          (unsigned)s->jb.count, (unsigned)prefill_target(s), (unsigned)recovery_deadline);
@@ -655,7 +781,12 @@ static void session_task(void *arg)
     }
 
 out:
+    if (s->fatal_recv_error) {
+        session_post_error(ESP_FAIL);
+        self_end = true;
+    }
     if (self_end) {
+        s_session_run = false;
         /* The session ended BY ITSELF (pipeline write failure): clear
          * the active flag so session_start() can open a new session.
          * When stop() initiated the teardown it clears the flag after
@@ -666,14 +797,7 @@ out:
         s_session_active = false;
         portEXIT_CRITICAL(&s_lock);
     }
-    if (s->sock >= 0) {
-        close(s->sock);
-    }
-    free(s->jb.entries);
-    free(s->jb.pool);
-    free(s->recv_buf);
-    free(s->zeros);
-    free(s);
+    session_context_release(s);
     /* Cooperative: the task releases its own resources and signals, then
      * self-deletes. stop() never vTaskDelete()s from the outside. */
     s_session_done = true;
@@ -719,10 +843,10 @@ static esp_err_t output_ops_set_volume(uint8_t volume)
 
 static esp_err_t output_ops_mute(bool mute)
 {
-    if (mute) {
-        return michi_volume_set(0); /* digital mute; get() reflects it */
-    }
-    return ESP_OK; /* restore with set_volume() (no stored pre-mute level) */
+    /* Mute is orthogonal to volume: do not destroy the user's level.
+     * PCM is gated to zero for BOTH hardware- and software-volume DACs. */
+    michi_volume_set_muted(mute);
+    return ESP_OK;
 }
 
 static esp_err_t output_ops_stop(void)
@@ -802,7 +926,14 @@ static int session_bind_socket(uint16_t port, uint16_t *out_port)
         .tv_sec = 0,
         .tv_usec = MICHI_AUDIO_SESSION_SOCKET_TIMEOUT_MS * 1000,
     };
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    /* Without a bounded recvfrom() wait the session task could block forever
+     * after stop(): fail CLOSED before a task or externally visible session
+     * can exist. A failed timeout option must never silently be ignored. */
+    if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0) {
+        ESP_LOGE(TAG, "session: SO_RCVTIMEO setup failed (errno %d)", errno);
+        close(sock);
+        return -1;
+    }
 
     if (port != 0) {
         struct sockaddr_in addr = {0};
@@ -840,7 +971,7 @@ static int session_bind_socket(uint16_t port, uint16_t *out_port)
     return -1;
 }
 
-esp_err_t michi_audio_session_start(uint32_t port, uint32_t ssrc,
+static esp_err_t michi_audio_session_start_impl(uint32_t port, uint32_t ssrc,
                                     const char *source_ip, uint16_t buffer_ms)
 {
     if (!s_initialized) {
@@ -881,9 +1012,8 @@ esp_err_t michi_audio_session_start(uint32_t port, uint32_t ssrc,
             ESP_LOGE(TAG, "session start: a session task already exists");
             return ESP_ERR_INVALID_STATE;
         }
-        /* Stale handle: the previous task self-deleted before
-         * session_start assigned the handle. Clear it - the task is gone
-         * (done flag observed). */
+        /* Previous worker self-ended. Its completed generation can now
+         * be retired before opening another session. */
         s_session_task = NULL;
         s_session_done = false;
     }
@@ -891,34 +1021,23 @@ esp_err_t michi_audio_session_start(uint32_t port, uint32_t ssrc,
         ESP_LOGE(TAG, "session start: a session is already active");
         return ESP_ERR_INVALID_STATE;
     }
-    if (!michi_audio_output_is_running()) {
-        ESP_LOGE(TAG, "session start: audio pipeline not running "
-                      "(michi_audio_boot_dac() must run at boot)");
+    /* An earlier worker may have self-ended before start() could publish
+     * its handle. Once the task is observed finished and unowned, consume
+     * the stale completion signal before launching a new generation. */
+    if (s_session_task == NULL && s_session_done) {
+        s_session_done = false;
+    }
+    const michi_audio_output_state_t output_state = michi_audio_output_get_state();
+    if (output_state != MICHI_AUDIO_STATE_RUNNING &&
+        output_state != MICHI_AUDIO_STATE_QUIESCED &&
+        output_state != MICHI_AUDIO_STATE_FAULTED &&
+        output_state != MICHI_AUDIO_STATE_STOPPING) {
+        ESP_LOGE(TAG, "session start: audio output not prepared (%d)",
+                 (int)output_state);
         return ESP_ERR_INVALID_STATE;
     }
-    /* Flush stale audio from a previous session: the pipeline start()
-     * flushes the ring. The short clock gap between stop and start is
-     * fine: the PCM5122 PLL re-locks from BCLK/LRCK within milliseconds. */
-    esp_err_t err = michi_audio_output_stop();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "session start: pipeline stop failed: %s",
-                 esp_err_to_name(err));
-        return err;
-    }
-    err = michi_audio_output_start();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "session start: pipeline restart failed: %s",
-                 esp_err_to_name(err));
-        return err;
-    }
-
-    portENTER_CRITICAL(&s_lock);
-    memset(&s_metrics, 0, sizeof(s_metrics)); /* fresh counters per session */
-    s_session_ssrc = ssrc;  /* the NEGOTIATED source (no first-seen) */
-    s_session_peer = peer;
-    s_paused = false;
-    portEXIT_CRITICAL(&s_lock);
-
+    /* H14: allocate/bind UDP resources before touching the I2S pipeline.
+     * A failed socket bind or PSRAM allocation must not restart the DAC. */
     session_t *s = heap_caps_calloc(1, sizeof(*s), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (s == NULL) {
         ESP_LOGE(TAG, "session start: session context allocation failed");
@@ -934,26 +1053,25 @@ esp_err_t michi_audio_session_start(uint32_t port, uint32_t ssrc,
     s->guard.source_be32 = peer.s_addr;
     s->jb.entries = heap_caps_calloc(MICHI_AUDIO_MAX_PACKETS, sizeof(jb_entry_t),
                                      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    s->jb.pool = heap_caps_calloc((size_t)MICHI_AUDIO_MAX_PACKETS * MICHI_AUDIO_RX_BUF_BYTES,
+    s->jb.pool = heap_caps_calloc((size_t)MICHI_AUDIO_MAX_PACKETS * MICHI_AUDIO_JB_SLOT_BYTES,
                                   1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s->recv_buf = heap_caps_malloc(MICHI_AUDIO_RX_BUF_BYTES,
                                    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    s->zeros = heap_caps_calloc(MICHI_AUDIO_RX_BUF_BYTES, 1,
+    s->zeros = heap_caps_calloc(MICHI_AUDIO_JB_SLOT_BYTES, 1,
                                 MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (s->jb.entries == NULL || s->jb.pool == NULL || s->recv_buf == NULL ||
         s->zeros == NULL) {
         ESP_LOGE(TAG, "session start: buffer allocation failed "
-                      "(%d packets x %d bytes pool)",
-                 MICHI_AUDIO_MAX_PACKETS, MICHI_AUDIO_RX_BUF_BYTES);
-        free(s->jb.entries);
-        free(s->jb.pool);
-        free(s->recv_buf);
-        free(s->zeros);
-        free(s);
+                      "(%d packets x %d PCM bytes; UDP rx=%d bytes)",
+                 MICHI_AUDIO_MAX_PACKETS, MICHI_AUDIO_JB_SLOT_BYTES,
+                 MICHI_AUDIO_RX_BUF_BYTES);
+        session_context_release(s);
         return ESP_ERR_NO_MEM;
     }
+    /* Host-side JB tests enforce that copied packet sizes fit the stride;
+     * the receiver already validates the precise PCM geometry upstream. */
     michi_jb_init(&s->jb, s->jb.entries, s->jb.pool, MICHI_AUDIO_MAX_PACKETS,
-                  MICHI_AUDIO_RX_BUF_BYTES);
+                  MICHI_AUDIO_JB_SLOT_BYTES);
 
     /* Bind BEFORE any task exists: a bind/socket failure is reported to
      * the caller and NOTHING of the session survives - the caller rolls
@@ -961,21 +1079,36 @@ esp_err_t michi_audio_session_start(uint32_t port, uint32_t ssrc,
     uint16_t bound = 0;
     s->sock = session_bind_socket(port, &bound);
     if (s->sock < 0) {
-        free(s->jb.entries);
-        free(s->jb.pool);
-        free(s->recv_buf);
-        free(s->zeros);
-        free(s);
+        session_context_release(s);
         return ESP_FAIL;
     }
 
+    /* Commit point: prepared socket/memory exists, but session is not
+     * visible. Only now reconcile a prior FAULTED output and restart I2S.
+     * On failure we release all network resources without phantom state. */
+    esp_err_t err = michi_audio_output_stop();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "session start: pipeline stop failed: %s",
+                 esp_err_to_name(err));
+        session_context_release(s);
+        return err;
+    }
+    err = michi_audio_output_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "session start: pipeline restart failed: %s",
+                 esp_err_to_name(err));
+        session_context_release(s);
+        return err;
+    }
     portENTER_CRITICAL(&s_lock);
+    memset(&s_metrics, 0, sizeof(s_metrics));
+    s_session_ssrc = ssrc;
+    s_session_peer = peer;
+    s_paused = false;
     s_session_port = bound;
-    /* Active BEFORE the task exists: the invariant "active flag set =>
-     * a live bound session" holds in both directions - a task that
-     * self-ends clears the flag (strictly before its done flag), and a
-     * failed task creation clears it here. */
-    s_session_active = true;
+    /* Do not advertise an active session until the task handle is
+     * published. A task-creation failure must never be externally visible
+     * as an established receiver session. */
     portEXIT_CRITICAL(&s_lock);
     s_session_run = true;
     TaskHandle_t task = NULL;
@@ -986,21 +1119,31 @@ esp_err_t michi_audio_session_start(uint32_t port, uint32_t ssrc,
         portENTER_CRITICAL(&s_lock);
         s_session_active = false;
         portEXIT_CRITICAL(&s_lock);
-        close(s->sock);
-        free(s->jb.entries);
-        free(s->jb.pool);
-        free(s->recv_buf);
-        free(s->zeros);
-        free(s);
+        session_context_release(s);
+        /* No RTP producer exists. Quiesce I2S so the failed start does not
+         * advertise a playing pipeline. Preserve the original failure. */
+        esp_err_t quiet_err = michi_audio_output_quiesce();
+        if (quiet_err != ESP_OK) {
+            ESP_LOGE(TAG, "session: rollback silence failed: %s",
+                     esp_err_to_name(quiet_err));
+            (void)michi_audio_output_stop();
+        }
         return ESP_ERR_NO_MEM;
     }
+    /* H14: task remains blocked on its startup notification until the
+     * creating thread has published a valid handle and an active session.
+     * No worker failure can interleave with this publication sequence. */
     s_session_task = task;
+    portENTER_CRITICAL(&s_lock);
+    s_session_active = true;
+    portEXIT_CRITICAL(&s_lock);
+    xTaskNotifyGive(task);
     ESP_LOGI(TAG, "session: udp :%u ssrc=0x%08" PRIx32 " peer=%s buffer_ms=%u",
              (unsigned)bound, ssrc, source_ip, (unsigned)buffer_ms);
     return ESP_OK;
 }
 
-esp_err_t michi_audio_session_stop(void)
+static esp_err_t michi_audio_session_stop_impl(void)
 {
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
@@ -1009,7 +1152,9 @@ esp_err_t michi_audio_session_stop(void)
         return ESP_OK; /* idempotent */
     }
     s_session_run = false;
-    (void)michi_audio_output_quiesce();
+    /* Never discard a failed silence barrier. Caller must be told if the
+     * output remains FAULTED even though the network task was joined. */
+    const esp_err_t quiesce_err = michi_audio_output_quiesce();
     /* The task wakes within its 100 ms socket timeout or after the
      * completed blocking ring write; it tears down its own resources. */
     int waited_ms = 0;
@@ -1029,8 +1174,50 @@ esp_err_t michi_audio_session_stop(void)
     portENTER_CRITICAL(&s_lock);
     s_paused = false;
     portEXIT_CRITICAL(&s_lock);
+    if (quiesce_err != ESP_OK && quiesce_err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "session stopped, but output silence failed: %s",
+                 esp_err_to_name(quiesce_err));
+        return quiesce_err;
+    }
+    /* An INVALID_STATE during shutdown can mean the output was FAULTED,
+     * not a successful silence operation. Preserve that signal. */
+    if (quiesce_err != ESP_OK &&
+        michi_audio_output_get_state() == MICHI_AUDIO_STATE_FAULTED) {
+        ESP_LOGE(TAG, "session stopped with FAULTED output; next start must reconcile");
+        return ESP_ERR_INVALID_STATE;
+    }
     ESP_LOGI(TAG, "session: stopped");
     return ESP_OK;
+}
+
+/* Pause implementation is below the public transition wrappers. */
+static esp_err_t michi_audio_session_set_paused_impl(bool paused);
+
+/* H13 public transition gates. No protected spinlock spans driver I/O,
+ * blocking socket waits or command ACKs. A failed lease is retryable. */
+esp_err_t michi_audio_session_start(uint32_t port, uint32_t ssrc,
+                                    const char *source_ip, uint16_t buffer_ms)
+{
+    if (!session_lifecycle_try_enter()) return ESP_ERR_INVALID_STATE;
+    esp_err_t err = michi_audio_session_start_impl(port, ssrc, source_ip, buffer_ms);
+    session_lifecycle_leave();
+    return err;
+}
+
+esp_err_t michi_audio_session_stop(void)
+{
+    if (!session_lifecycle_try_enter()) return ESP_ERR_INVALID_STATE;
+    esp_err_t err = michi_audio_session_stop_impl();
+    session_lifecycle_leave();
+    return err;
+}
+
+esp_err_t michi_audio_session_set_paused(bool paused)
+{
+    if (!session_lifecycle_try_enter()) return ESP_ERR_INVALID_STATE;
+    esp_err_t err = michi_audio_session_set_paused_impl(paused);
+    session_lifecycle_leave();
+    return err;
 }
 
 bool michi_audio_session_active(void)
@@ -1038,21 +1225,23 @@ bool michi_audio_session_active(void)
     return s_session_active;
 }
 
-esp_err_t michi_audio_session_set_paused(bool paused)
+static esp_err_t michi_audio_session_set_paused_impl(bool paused)
 {
     if (!s_session_active) {
         return ESP_ERR_INVALID_STATE;
     }
-    esp_err_t err = ESP_OK;
-    if (paused) {
-        err = michi_audio_output_quiesce();
-    } else {
-        err = michi_audio_output_resume();
-    }
+    /* H15: mark PAUSE admission BEFORE blocking on the QUIESCE ACK.
+     * Worker checks this flag after recvfrom() and at failed PCM writes.
+     * RESUME keeps it true until the I2S accept barrier opens. */
+    if (paused) s_paused = true;
+    esp_err_t err = paused ? michi_audio_output_quiesce()
+                           : michi_audio_output_resume();
     if (err == ESP_OK) {
-        portENTER_CRITICAL(&s_lock);
-        s_paused = paused;
-        portEXIT_CRITICAL(&s_lock);
+        if (!paused) s_paused = false;
+    } else if (paused) {
+        /* A failed pause cannot be reported as an accepted PAUSED state.
+         * A FAULTED I2S worker still fails closed in the write path. */
+        s_paused = false;
     }
     return err;
 }

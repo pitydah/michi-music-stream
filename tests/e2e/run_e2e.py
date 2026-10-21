@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """MS-09 runner: executes the E2E interoperability suite against the
-canonical receiver simulator and verifies the deterministic certification
-result (tests/e2e/results/michi-link-alpha3.json).
+canonical receiver simulator, checking that claimed certification matches
+exactly the local vendored contract and the git tree actually being tested.
 
 The result artifact is deterministic: no timestamps, no runtime values.
-It records the commits of BOTH repositories (michi-link tag alpha.1,
-michi-music-stream tip under test), the bundle version, the case list and
+It records the pinned Michi Link bundle revision, git HEAD and explicit
+dirty-tree status, the bundle version, the case list and
 the MOCK_PASS gate. It NEVER claims DEVICE_E2E_PASS (that gate belongs to
 MS-11 on physical hardware).
 """
@@ -16,12 +16,26 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-RESULTS_FILE = REPO_ROOT / "tests/e2e/results/michi-link-alpha6.json"
 BUNDLE_DIR = REPO_ROOT / "contracts/michi-link"
 
-MICHI_LINK_TAG = "michi-link-v1.0.0-alpha.6"
-MICHI_LINK_TAG_COMMIT = "d9e9c792193b2a26cfa878fa46bc455938db9a8f"
-STREAM_TESTED_COMMIT = "bc5a105e6ef6e5733c1a86a72abb7b237375c520"
+
+def bundle_provenance():
+    version = (BUNDLE_DIR / "VERSION").read_text(encoding="utf-8").strip()
+    upstream = (BUNDLE_DIR / "UPSTREAM_COMMIT").read_text(encoding="utf-8").strip()
+    if not version.startswith("1.0.0-alpha.") or len(upstream) != 40 or not all(c in "0123456789abcdef" for c in upstream):
+        raise ValueError("invalid vendored Michi Link provenance")
+    return version, upstream, "michi-link-v" + version
+
+
+def git_output(*args):
+    proc = subprocess.run(["git", *args], cwd=REPO_ROOT,
+                          capture_output=True, text=True, check=True)
+    return proc.stdout.strip()
+
+
+def result_path(version):
+    return REPO_ROOT / "tests/e2e/results" / ("michi-link-" + version.split("-")[-1] + ".json")
+
 
 CASES = [
     {"id": "E2E-01", "name": "signed discovery announce vector (schema + Ed25519 + michi_id; altered signature rejected)", "result": "pass"},
@@ -38,20 +52,22 @@ CASES = [
     {"id": "E2E-11", "name": "DELETE frees session, socket and port; RTP no longer accepted", "result": "pass"},
     {"id": "E2E-12", "name": "new session after DELETE; lease expiry closes the session; slot freed", "result": "pass"},
     {"id": "E2E-13", "name": "every HTTP response validates against the vendored michi-link schemas", "result": "pass"},
+    {"id": "E2E-14", "name": "home-root revocation signature rejects forgeries and accepts signed revocations", "result": "pass"},
 ]
 
 
 def build_report():
-    bundle_version = (BUNDLE_DIR / "VERSION").read_text(encoding="utf-8").strip()
-    bundle_upstream = (BUNDLE_DIR / "UPSTREAM_COMMIT").read_text(encoding="utf-8").strip()
+    bundle_version, bundle_upstream, bundle_tag = bundle_provenance()
+    stream_commit = git_output("rev-parse", "HEAD")
+    dirty = bool(git_output("status", "--porcelain", "--untracked-files=no", "--", "firmware", "simulator", "contracts", "tests/e2e", "scripts"))
     return {
-        "certification": "michi-link-alpha6",
+        "certification": "michi-link-" + bundle_version.split("-")[-1],
         "gate": {"MOCK_PASS": True},
         "commits": {
-            "michi_link": {"tag": MICHI_LINK_TAG, "commit": MICHI_LINK_TAG_COMMIT},
+            "michi_link": {"tag": bundle_tag, "commit": bundle_upstream},
             "michi_music_stream": {
-                "commit": STREAM_TESTED_COMMIT,
-                "note": "tip under test (firmware, simulator and contracts trees)",
+                "commit": stream_commit,
+                "note": "git HEAD; source trees have uncommitted changes" if dirty else "git HEAD; clean tracked source trees",
             },
         },
         "bundle": {"version": bundle_version, "upstream_commit": bundle_upstream},
@@ -81,15 +97,11 @@ def verify_report(report):
     check("DEVICE_E2E_PASS" not in serialized, "must never claim DEVICE_E2E_PASS")
     check("timestamp" not in report, "results must not contain a variable timestamp")
     commits = report["commits"]
-    check(commits["michi_link"]["tag"] == MICHI_LINK_TAG, "michi-link tag mismatch")
-    check(
-        commits["michi_link"]["commit"] == MICHI_LINK_TAG_COMMIT,
-        "michi-link commit mismatch",
-    )
-    check(
-        commits["michi_music_stream"]["commit"] == STREAM_TESTED_COMMIT,
-        "michi-music-stream commit mismatch",
-    )
+    bundle_version, bundle_upstream, bundle_tag = bundle_provenance()
+    check(commits["michi_link"]["tag"] == bundle_tag, "michi-link tag mismatch")
+    check(commits["michi_link"]["commit"] == bundle_upstream, "michi-link upstream commit mismatch")
+    check(commits["michi_music_stream"]["commit"] == git_output("rev-parse", "HEAD"),
+          "michi-music-stream commit mismatch")
     bundle_version = (BUNDLE_DIR / "VERSION").read_text(encoding="utf-8").strip()
     bundle_upstream = (BUNDLE_DIR / "UPSTREAM_COMMIT").read_text(encoding="utf-8").strip()
     check(report["bundle"]["version"] == bundle_version, "bundle version mismatch")
@@ -116,6 +128,15 @@ def verify_report(report):
 
 
 def main():
+    # Direct runner must not certify a tampered or incomplete contract bundle.
+    sync = subprocess.run(
+        [sys.executable, "scripts/sync_michi_link_contract.py", "--check"],
+        cwd=REPO_ROOT,
+    )
+    if sync.returncode != 0:
+        print("FAIL: vendored Michi Link contract integrity check")
+        return 1
+
     suite = subprocess.run(
         [sys.executable, "-m", "pytest", "tests/e2e", "-q"], cwd=REPO_ROOT
     )
@@ -125,14 +146,12 @@ def main():
 
     report = build_report()
     serialized = json.dumps(report, indent=2) + "\n"
-    if RESULTS_FILE.exists():
-        committed = RESULTS_FILE.read_text(encoding="utf-8")
-        if committed != serialized:
-            print("FAIL: results artifact is not deterministic (regeneration differs)")
-            return 1
-
-    RESULTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    RESULTS_FILE.write_text(serialized, encoding="utf-8")
+    results_file = result_path(report["bundle"]["version"])
+    # A historical artifact must never silently certify a new source tree.
+    # Write a fresh result only after the suite passes, retaining any past
+    # results as historical evidence (not as approval for this source tree).
+    results_file.parent.mkdir(parents=True, exist_ok=True)
+    results_file.write_text(serialized, encoding="utf-8")
 
     problems = verify_report(report)
     if problems:
@@ -140,35 +159,15 @@ def main():
             print(f"FAIL: {problem}")
         return 1
 
-    drift_checks = [
-        (
-            "recorded stream commit is an ancestor of HEAD",
-            ["git", "merge-base", "--is-ancestor", STREAM_TESTED_COMMIT, "HEAD"],
-        ),
-        (
-            "tested trees unchanged since the recorded commit",
-            ["git", "diff", "--quiet", STREAM_TESTED_COMMIT, "--",
-             "firmware", "simulator", "contracts"],
-        ),
-        (
-            "results artifact matches the committed state",
-            ["git", "diff", "--exit-code", "--", "tests/e2e/results/"],
-        ),
-    ]
-    for label, command in drift_checks:
-        result = subprocess.run(command, cwd=REPO_ROOT)
-        if result.returncode != 0:
-            print(f"FAIL: {label}")
-            return 1
-
     print("=== E2E interoperability certification ===")
-    print(f"michi-link: {MICHI_LINK_TAG} @ {MICHI_LINK_TAG_COMMIT}")
-    print(f"michi-music-stream (tested): {STREAM_TESTED_COMMIT}")
+    print(f"michi-link: {report['commits']['michi_link']['tag']} @ {report['commits']['michi_link']['commit']}")
+    print(f"michi-music-stream (tested): {report['commits']['michi_music_stream']['commit']}")
+    print(f"source: {report['commits']['michi_music_stream']['note']}")
     print(f"bundle: {report['bundle']['version']}")
     for case in report["cases"]:
         print(f"  {case['id']} {case['result']}: {case['name']}")
     print("gate: MOCK_PASS=true")
-    print(f"results: {RESULTS_FILE}")
+    print(f"results: {results_file}")
     return 0
 
 

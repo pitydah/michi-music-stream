@@ -56,6 +56,8 @@ BaseType_t xTaskNotifyFromISR(TaskHandle_t xTaskToNotify, uint32_t ulValue, eNot
 BaseType_t xTaskNotifyWait(uint32_t ulBitsToClearOnEntry, uint32_t ulBitsToClearOnExit,
                            uint32_t *pulNotificationValue, TickType_t xTicksToWait);
 TaskHandle_t xTaskGetCurrentTaskHandle(void);
+/* Host monotonic tick clock, matching FreeRTOS wrap-aware tick semantics. */
+TickType_t xTaskGetTickCount(void);
 
 static inline void xTaskNotifyGive(TaskHandle_t task)
 {

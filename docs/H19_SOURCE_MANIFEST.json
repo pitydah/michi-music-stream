@@ -1,0 +1,101 @@
+{
+  "baseline": "H16R firmware + H18 RTP harness + H19 diagnostic and wifi hardening",
+  "version": "H19-SOURCE-PRETEST",
+  "date_local": "2026-10-19",
+  "source_only": true,
+  "tests_executed": false,
+  "firmware_compiled": false,
+  "is_full_repository": false,
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "95691017eded133930667da9327e0ee5ffcf183d42cce641bcd70de314afbcbc",
+      "bytes": 8334
+    },
+    {
+      "path": "docs/CURRENT_PRETEST_BASELINE.md",
+      "sha256": "e19094e0c16c9ac897e12d153b7e08301b83dbd321fcf66c2f7846189880d549",
+      "bytes": 1224
+    },
+    {
+      "path": "docs/H19_SOURCE_ENGINEERING_HANDOFF.md",
+      "sha256": "26c3238c3d2dd6d026f78304b6a02235773820179aaca825744eb46bb9c589a4",
+      "bytes": 4690
+    },
+    {
+      "path": "docs/OPENCODE_H19_LOCAL_VALIDATION.md",
+      "sha256": "f26802d097b11395d3b2f5408b894d5ff7a94c647736845d5d90c4e7b8972eaa",
+      "bytes": 1439
+    },
+    {
+      "path": "docs/ROADMAP.md",
+      "sha256": "0c4197d9f60b98ddac79065fdcb498c0151e2c90a13ea92ef43cb16fa01e5e52",
+      "bytes": 8141
+    },
+    {
+      "path": "firmware/components/michi_audio/include/michi_audio.h",
+      "sha256": "91c88b628371782b8f30d43c1276219cacb7de4f3ec72c88f5782a00472c2c57",
+      "bytes": 19525
+    },
+    {
+      "path": "firmware/components/michi_audio/include/michi_audio_diag.h",
+      "sha256": "a4f3265a05c375fb01d7591c37e45b9a22f0b279729bda2f9911767fba1039dd",
+      "bytes": 823
+    },
+    {
+      "path": "firmware/components/michi_audio/michi_audio.c",
+      "sha256": "4ee0aca75fd6400d1a3fdea3b514360207a63d0dfe870d4c1445bad1316b0157",
+      "bytes": 55137
+    },
+    {
+      "path": "firmware/components/michi_http/http_server.c",
+      "sha256": "181562c7d16ea58db31cf8c43bfb35ef5a745abfd8aec3e1901d4d3b5bb5ad1f",
+      "bytes": 76489
+    },
+    {
+      "path": "firmware/components/michi_wifi/Kconfig",
+      "sha256": "a75ca68baad15b249d39799a3d050866a1a3af2b9f1c67688e86c1069be06c56",
+      "bytes": 4133
+    },
+    {
+      "path": "firmware/components/michi_wifi/include/michi_wifi_secret.h",
+      "sha256": "932d288dd2a5d645c0b2d7b6f3ae95fb3053b4831e1acff37170fa6db269d5ec",
+      "bytes": 503
+    },
+    {
+      "path": "firmware/components/michi_wifi/michi_wifi.c",
+      "sha256": "7bdec7bbb2047860a264b72a9e85eed750b706ade77c58ae3515c01985fc9900",
+      "bytes": 57255
+    },
+    {
+      "path": "scripts/package_source_snapshot.py",
+      "sha256": "7840c138eea2a871c2719088115b12c57cd6a1fe304bc44acb5880d14b6306b6",
+      "bytes": 8683
+    },
+    {
+      "path": "tests/host/Makefile",
+      "sha256": "4ebabf698432a365543474de81b6151b79ad9a85f871ae43bf1c9518a07ce736",
+      "bytes": 24851
+    },
+    {
+      "path": "tests/host/test_michi_audio_diagnostics.c",
+      "sha256": "1634ac96c1171f007603d1c70ca5a166403ba156243ca18952e89aefd9d2e546",
+      "bytes": 1266
+    },
+    {
+      "path": "tests/host/test_michi_audio_engine.c",
+      "sha256": "860160cdf7489d65087046e1d37127d7d4fde1c44585ba6fc990e7705df8acf4",
+      "bytes": 6656
+    },
+    {
+      "path": "tests/host/test_michi_wifi_secret.c",
+      "sha256": "be83cd70e88eec242144808f5937e147c53d5a5fad513b71440f66546ebe899c",
+      "bytes": 735
+    },
+    {
+      "path": "tests/test_source_snapshot.py",
+      "sha256": "6d5c2b620ee508f1c82590ca48cd92124bf4904cee7999995c80af4bd3770e23",
+      "bytes": 4348
+    }
+  ]
+}

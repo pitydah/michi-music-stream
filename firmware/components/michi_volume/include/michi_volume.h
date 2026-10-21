@@ -21,11 +21,12 @@ extern "C" {
  *  - Digital gain: otherwise the gain is applied in the audio pipeline
  *    (michi_volume_apply(), called by michi_audio_output on the write
  *    path). If a hardware volume write fails, the subsystem falls back to
- *    digital gain so the value is STILL applied - get() always reflects
- *    what the pipeline produces.
+ *    digital gain. An unknown residual hardware attenuation may remain
+ *    after a failed DAC write; physical output cannot be certified by get().
  *
- * The phase-12 volume handler MUST answer with michi_volume_get() (the
- * clamped, actually applied value), never with the request payload.
+ * The phase-12 volume handler reports the configured volume using
+ * michi_volume_get(); independent output muting never changes that level.
+ * Mute gates PCM toward zero over a bounded 10-ms fade regardless of the hardware DAC path.
  */
 
 /**
@@ -47,20 +48,35 @@ esp_err_t michi_volume_init(void);
  * @param v Volume 0-100 (anything outside is clamped).
  * @return ESP_OK when the clamped value was applied (hardware or digital);
  *         ESP_ERR_INVALID_ARG is not used (clamping makes it unreachable);
- *         hardware failures are logged and downgraded to digital gain.
+ *         hardware failures are logged and downgraded to digital gain,
+ *         but require physical verification of the resulting output level.
  */
 esp_err_t michi_volume_set(uint8_t v);
 
 /**
- * @brief Get the REAL applied volume (0-100, always clamped).
+ * @brief Get the configured volume (0-100, clamped).
  *
- * This is the value the API layer must report back.
+ * Mute state is orthogonal; this does not return zero just because
+ * michi_volume_is_muted() is true.
  */
 uint8_t michi_volume_get(void);
 
 /**
+ * @brief Set or clear the independent PCM mute gate.
+ *
+ * Does not replace or alter the configured volume. Muting is enforced on
+ * PCM even if the DAC has hardware-volume support. Unmuting restores the
+ * existing level; setting the volume while muted updates that level for
+ * later unmute. Initialized to unmuted by michi_volume_init().
+ */
+void michi_volume_set_muted(bool muted);
+
+/** @brief Whether PCM samples are currently gated to silence. */
+bool michi_volume_is_muted(void);
+
+/**
  * @brief Apply digital gain to a PCM buffer (delegated by the audio output
- *        write path; no-op when the DAC hardware volume is active).
+ *        write path; the mute gate overrides both hardware and digital gain).
  *
  * @param buf       Sample buffer. For bit_depth 16: int16 samples. For
  *                  bit_depth 24: 3-byte packed samples (ESP32-S3 I2S
@@ -69,6 +85,24 @@ uint8_t michi_volume_get(void);
  * @param bytes     Byte count (16-bit: bytes/2 samples; 24-bit: bytes/3
  *                  samples).
  * @param bit_depth 16 or 24; anything else is a no-op (logged once).
+ */
+/**
+ * @brief Configure the consumer's interleaved PCM layout and reset its ramp.
+ * Must run before the I2S consumer task starts; never during playback.
+ * A 10 ms fade is calculated from the real stream sample rate (8-96 kHz).
+ */
+esp_err_t michi_volume_configure_pcm(uint32_t sample_rate, uint8_t channels);
+
+/** Reset gain to silence for fade-in after START or RESUME.
+ * Must be called only before the I2S task starts, or by that task itself.
+ */
+void michi_volume_reset_envelope(void);
+
+/**
+ * @brief Apply per-frame, 10-ms linear gain ramps across chunk boundaries.
+ * The independently reported mute state becomes acoustically silent at
+ * the end of the fade; hardware DAC volume changes remain DAC-controlled.
+ * Caller is the sole I2S consumer task (no concurrent apply calls).
  */
 void michi_volume_apply(uint8_t *buf, size_t bytes, uint8_t bit_depth);
 

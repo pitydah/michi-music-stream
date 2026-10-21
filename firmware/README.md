@@ -1,5 +1,19 @@
 # Michi Music Stream — Firmware
 
+> **Nota de actualidad (octubre de 2026):** este documento conserva varias
+> secciones históricas de las fases anteriores (RECEIVER_BUTTON, PIN y
+> componentes `michi_button`/`michi_pairing`) que **no describen el código
+> actual**. La tabla efectiva de rutas vive en
+> `components/michi_http/http_server.c`: `auth/challenge`, `auth/session`,
+> `home/revocations` y `receiver-lite/*`. El firmware integra
+> `michi_home`, `michi_auth` y aprovisionamiento `MICHI-F1` sin botón físico.
+> Para integración vigente, usar `../docs/OVERVIEW.md` y
+> `../docs/NETWORKING.md`. Los procedimientos antiguos se preservan aquí
+> solamente como referencia de evolución y **no deben seguirse** para flashear.
+> Las pruebas en hardware real, la recuperación sin botón y la seguridad
+> de producción todavía requieren validación independiente.
+
+
 ESP-IDF application for the Waveshare ESP32-S3-LCD-2 board (ESP32-S3, 16 MB flash, 8 MB octal PSRAM).
 
 ## Requirements

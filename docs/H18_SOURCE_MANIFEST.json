@@ -1,0 +1,74 @@
+{
+  "baseline": "H16R firmware + H17 infra + H18 host RTP integration",
+  "status": "source-only-pretest",
+  "tests_executed": false,
+  "build_executed": false,
+  "hardware_certified": false,
+  "files": [
+    {
+      "path": "scripts/package_source_snapshot.py",
+      "sha256": "17cede45c4e1012ef38500a5ae8ef27d9e3faa06391d9c5240eb2e085d9db96c",
+      "bytes": 8413
+    },
+    {
+      "path": "tests/test_source_snapshot.py",
+      "sha256": "e052d7afcfcc8b8985d4a3ef712079bf7965a22fe0118dbad204234ccc9f44af",
+      "bytes": 3883
+    },
+    {
+      "path": "tests/host/Makefile",
+      "sha256": "210cb8c83f99fa9b2f58fbc891d891c0abda88fcfd9cb098572f10e6eec3bc58",
+      "bytes": 24151
+    },
+    {
+      "path": "tests/host/test_michi_audio_engine.c",
+      "sha256": "4270e2b44c89090c877756f90c0da6c80ad0b09d50170c308eaa7639ad2f449e",
+      "bytes": 5670
+    },
+    {
+      "path": "tests/host/shim_rtp/esp_heap_caps.h",
+      "sha256": "2b6a0740893a1a2bed559106216f170ccbaea236faf82730bd375b4916967718",
+      "bytes": 848
+    },
+    {
+      "path": "tests/host/shim_rtp/lwip/ip4_addr.h",
+      "sha256": "27a05fca87176bf2e28ab8dcf22a6b0f071a1c27e374e337842584b6ab10d9a9",
+      "bytes": 688
+    },
+    {
+      "path": "tests/host/shim_rtp/lwip/sockets.h",
+      "sha256": "034783be27791eba3072ded6681cd73715e2929b34d54e7ac2838926dd59c228",
+      "bytes": 328
+    },
+    {
+      "path": "tests/host/shim_rtp/rtp_faults.c",
+      "sha256": "fdcfd3e0f746bab1556652bdc0928de4360fc1d495cabeb29bb2465408982488",
+      "bytes": 724
+    },
+    {
+      "path": "tests/host/shim_rtp/rtp_output_fake.c",
+      "sha256": "6d79269d9a446d6d91f99ea47952462ef7e2885ed79ced56779c978c78a72fc9",
+      "bytes": 3364
+    },
+    {
+      "path": "tests/host/shim_rtp/rtp_output_fake.h",
+      "sha256": "ae157f0397b89b7ab4c595249f2be6fa9ea9ec078d01ec5de0dd7bf80d5fa463",
+      "bytes": 410
+    },
+    {
+      "path": "tests/host/shim_rtp/rtp_time.c",
+      "sha256": "cae9f205b8ed18333781a503fde4569a5a706382e1c70e933add0dbe21e492ae",
+      "bytes": 331
+    },
+    {
+      "path": "docs/H18_KILLCRITIC_SOURCE_CORRECTIONS.md",
+      "sha256": "f87a0043d4f1d510769dbd4ab5b88e42f21fd0649707d0934db1cd46110c7d14",
+      "bytes": 4752
+    },
+    {
+      "path": "docs/OPENCODE_H18_LOCAL_VALIDATION.md",
+      "sha256": "f7714a6831bb7a86bc806acc907e4f6822de581694fef3c95212d94fe706ea19",
+      "bytes": 1867
+    }
+  ]
+}

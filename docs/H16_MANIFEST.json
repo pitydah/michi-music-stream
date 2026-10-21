@@ -1,0 +1,51 @@
+{
+  "baseline": "H15-PRETEST (verified source bytes on 2026-10-19)",
+  "tests_executed": false,
+  "files": [
+    {
+      "path": "docs/H16_OPEN_CODE_VALIDATION.md",
+      "sha256": "9a1024bbce547bb71153d5ba72627aeb47013cb8b84a511f45ee54df9c5c8762",
+      "bytes": 946
+    },
+    {
+      "path": "docs/H16_SOURCE_CHANGES.patch",
+      "sha256": "afb8ea052e0d2fa28514f103fdcabb23471899eafae298b163f1baa6db50c796",
+      "bytes": 9092
+    },
+    {
+      "path": "docs/H16_WATCHDOG_INDEPENDENT_FAILCLOSED.md",
+      "sha256": "8daad9008ddd1cd385ee5644960f6aa391ece6fbf0e14c377f6cfd6c2b646421",
+      "bytes": 2915
+    },
+    {
+      "path": "firmware/components/michi_session/michi_session.c",
+      "sha256": "5bd843e6a0076e4c6faf9405e302541491231c93e1250acfa5af7c1b8634b27a",
+      "bytes": 46582
+    },
+    {
+      "path": "tests/host/shim/esp_timer.c",
+      "sha256": "633f2c3fdc688e5eb051a0c76e52a62864d9f23c1b2bb846d4775d439d716949",
+      "bytes": 2997
+    },
+    {
+      "path": "tests/host/shim/esp_timer.h",
+      "sha256": "a6ea0982d51ed9cff3a35a4810567f6a976d399428533d56363c60673369d290",
+      "bytes": 2038
+    },
+    {
+      "path": "tests/host/shim/freertos/queue.c",
+      "sha256": "52e0a2048be43212b994a9f528ee2577c3a1691f66e6d004bb366b8e1097c015",
+      "bytes": 3464
+    },
+    {
+      "path": "tests/host/shim/freertos/queue.h",
+      "sha256": "a6c512fb0a3c1932f4a08fea956c4894552ff117e2913b910778ac31660139ae",
+      "bytes": 777
+    },
+    {
+      "path": "tests/host/test_michi_session.c",
+      "sha256": "fd0a2857c70717a2fff5992a3a4d487b1d4cdd9c9d7cd8350eadb36aefecf1eb",
+      "bytes": 43962
+    }
+  ]
+}

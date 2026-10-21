@@ -18,7 +18,7 @@
 | MCU | ESP32-S3-WROOM-1-N8R2 | ESP32-C3 |
 | DAC I2S | PCM5102A (SNR 112 dB, propuesto) | MAX98357A (DAC+amp), ES9023, AK4432 |
 | Regulador | AMS1117-3.3 | ME6211 |
-| Botón pairing | Pulsador táctil SMD 6×6 mm | — |
+| Botón pairing | No utilizado en el diseño vigente sin pairing físico | — |
 | LED estado | WS2812B RGB | LED bicolor |
 
 ## Diagrama
@@ -44,7 +44,7 @@
 
 | Pin | Función |
 |-----|---------|
-| 17 | Botón pairing (input pull-up activo en bajo, flanco descendente) |
+| 17 | No reservado para pairing (validar en la placa antes de reutilizar) |
 | 4 | LED estado (SK6812 / WS2812B) |
 | 3 | I2S BCLK |
 | 18 | I2S LRCK |
@@ -56,7 +56,7 @@
 |--------|-------|
 | Wi-Fi OK, sin sesión | Azul fijo |
 | Sesión activa | Verde fijo |
-| Pairing abierto | Amarillo intermitente (500 ms) |
+| Identidad Home no provisionada | Requiere indicación visual de recuperación (pendiente) |
 | Error / sin Wi-Fi | Rojo fijo |
 | Factory reset | Rojo intermitente (100 ms) |
 

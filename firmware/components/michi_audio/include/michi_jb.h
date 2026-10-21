@@ -30,8 +30,8 @@ typedef struct {
 typedef enum {
     MICHI_JB_INSERT_OK,
     MICHI_JB_INSERT_DUPLICATE,
-    MICHI_JB_INSERT_OVERRUN_DROPPED,  /* buffer full, packet dropped (no slot) */
-    MICHI_JB_INSERT_OVERRUN_EVICTED,  /* buffer full, oldest evicted */
+    MICHI_JB_INSERT_OVERRUN_DROPPED,  /* rejected: late, oversized, or less useful at capacity */
+    MICHI_JB_INSERT_OVERRUN_EVICTED,  /* buffer full: stale or farthest future slot reclaimed */
 } michi_jb_insert_result_t;
 
 esp_err_t michi_jb_init(michi_jb_t *jb, michi_jb_entry_t *entries, uint8_t *pool,
@@ -63,6 +63,14 @@ static inline michi_jb_insert_result_t michi_jb_insert_simple(
 }
 
 void michi_jb_release(michi_jb_t *jb, michi_jb_entry_t *e);
+
+/* Release every buffered packet that is older than playhead and return how
+ * many were discarded. Wraparound is handled with the same signed
+ * sequence-difference comparison the rest of the buffer uses, so a seq that
+ * is "behind" the playhead across the 16-bit rollover still counts as stale.
+ * Used by the session drain path to drop packets the playhead already passed
+ * instead of letting them occupy jitter-buffer slots. */
+uint32_t michi_jb_discard_stale(michi_jb_t *jb, uint16_t playhead);
 
 static inline uint32_t michi_jb_entry_index(const michi_jb_t *jb, const michi_jb_entry_t *e)
 {

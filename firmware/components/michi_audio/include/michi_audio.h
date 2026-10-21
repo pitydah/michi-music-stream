@@ -376,6 +376,11 @@ typedef struct {
     uint32_t packets_in_buffer;
     uint32_t last_seq;
     uint32_t last_timestamp;
+    /* H19 additional observations, reset per new RTP session. These count
+     * successful RTP PCM *ring admissions*, not DAC output nor silence. */
+    uint32_t pcm_packets_submitted;
+    uint64_t pcm_bytes_submitted;
+    int64_t last_pcm_submit_monotonic_us; /* 0 until first admission */
 } michi_audio_metrics_t;
 
 /**

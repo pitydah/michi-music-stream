@@ -73,10 +73,10 @@ HOME_SRC = $(HOME_DIR)/michi_home.c $(HOME_DIR)/michi_auth.c \
 HOME_INC = -I$(HOME_DIR)/include -I$(HOME_DIR)
 
 TESTS := test_semver test_michi_identity test_michi_home \
-         test_michi_session test_rtp_guard test_rtp_clock test_rtp_jitter \
+         test_michi_session test_michi_audio_pause_policy test_michi_audio_diagnostics test_michi_wifi_secret test_michi_audio_engine test_rtp_guard test_rtp_clock test_rtp_jitter \
          test_michi_ui test_spiffs_journal test_michi_jb test_michi_profile_logic \
          test_michi_ota_logic test_michi_dac test_michi_display_dma \
-         test_michi_audio_buffer test_michi_audio_output \
+         test_michi_audio_buffer test_michi_audio_output test_michi_volume \
          $(if $(filter yes,$(HAS_CJSON)),test_json_helpers test_http_canonical test_michi_discovery test_michi_time test_capability_parity test_auth_http test_session_http test_discovery_disc)
 
 .PHONY: all test clean
@@ -85,7 +85,7 @@ all: $(TESTS)
 
 test: all
 	@set -e; \
-	for t in test_semver test_michi_identity test_michi_home test_michi_session test_rtp_guard test_rtp_clock test_rtp_jitter test_michi_ui test_spiffs_journal test_michi_jb test_michi_profile_logic test_michi_ota_logic test_michi_dac test_michi_display_dma test_michi_audio_buffer test_michi_audio_output; do ./$$t; done; \
+	for t in test_semver test_michi_identity test_michi_home test_michi_session test_michi_audio_pause_policy test_michi_audio_diagnostics test_michi_wifi_secret test_michi_audio_engine test_rtp_guard test_rtp_clock test_rtp_jitter test_michi_ui test_spiffs_journal test_michi_jb test_michi_profile_logic test_michi_ota_logic test_michi_dac test_michi_display_dma test_michi_audio_buffer test_michi_audio_output test_michi_volume; do ./$$t; done; \
 	if [ "$(HAS_CJSON)" = "yes" ]; then \
 	    ./test_json_helpers; \
 	    ./test_http_canonical; \
@@ -223,6 +223,46 @@ render_ui_previews: render_ui_previews.c $(UI_DIR)/michi_ui_text.c \
 	    $(UI_DIR)/michi_ui_text.c $(UI_DIR)/michi_ui_fonts.c \
 	    $(UI_DIR)/michi_ui_components.c $(UI_DIR)/michi_ui_screens.c \
 	    $(UI_DIR)/michi_ui_icons.c $(UI_DIR)/michi_ui_theme.c
+
+# H15: test the exact pause/rejected-PCM branch used by the RTP worker.
+# This pure-C contract suite does NOT replace real michi_audio.c integration.
+# H19: table-driven software-only audio status, without hardware mocks.
+# H19: compile the exact volatile wipe helper used in Wi-Fi boot paths.
+test_michi_wifi_secret: test_michi_wifi_secret.c \
+        $(FIRMWARE)/michi_wifi/include/michi_wifi_secret.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(FIRMWARE)/michi_wifi/include \
+	    -o $@ test_michi_wifi_secret.c
+
+test_michi_audio_diagnostics: test_michi_audio_diagnostics.c \
+        $(FIRMWARE)/michi_audio/include/michi_audio_diag.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ test_michi_audio_diagnostics.c
+
+test_michi_audio_pause_policy: test_michi_audio_pause_policy.c \
+                               $(FIRMWARE)/michi_audio/michi_audio_pause_policy.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(FIRMWARE)/michi_audio \
+	    -o $@ test_michi_audio_pause_policy.c
+
+# H18: exercise real RTP engine and jitter buffer over POSIX UDP loopback.
+# Host shims replace hardware/RTOS only, never michi_audio.c; no physical claim.
+RTP_ENGINE_SRC = $(FIRMWARE)/michi_audio/michi_audio.c \
+                 $(FIRMWARE)/michi_audio/michi_jb.c \
+                 $(FIRMWARE)/michi_audio/rtp_guard.c \
+                 $(FIRMWARE)/michi_audio/michi_audio_buffer.c \
+                 shim_rtp/rtp_output_fake.c shim_rtp/rtp_faults.c \
+                 shim_rtp/rtp_time.c shim/freertos/task.c
+RTP_ENGINE_DEFS = -DCONFIG_MICHI_AUDIO_JITTER_MAX_MS=500 \
+                  -DCONFIG_MICHI_AUDIO_PREFILL_MS=50 \
+                  -DCONFIG_MICHI_AUDIO_RX_BUF_BYTES=2048 \
+                  -DCONFIG_MICHI_AUDIO_RTP_PT_S16LE=97 \
+                  -DCONFIG_MICHI_AUDIO_TASK_STACK_BYTES=4096
+
+test_michi_audio_engine: test_michi_audio_engine.c $(RTP_ENGINE_SRC) $(SHIMS) \
+                         shim_rtp/rtp_output_fake.h shim_rtp/esp_heap_caps.h \
+                         shim_rtp/lwip/ip4_addr.h \
+                         shim_rtp/lwip/sockets.h
+	$(CC) -Ishim_rtp $(CPPFLAGS) $(RTP_ENGINE_DEFS) $(CFLAGS) -pthread -Wl,--wrap=bind \
+	    -I$(FIRMWARE)/michi_audio -I$(FIRMWARE)/michi_audio_output/include \
+	    -o $@ test_michi_audio_engine.c $(RTP_ENGINE_SRC)
 
 # rtp_guard: the SAME datagram validation the engine runs (pure C).
 test_rtp_guard: test_rtp_guard.c $(FIRMWARE)/michi_audio/rtp_guard.c \
@@ -403,13 +443,19 @@ test_michi_audio_output: test_michi_audio_output.c $(AUDIO_OUT_SRC) \
 	$(CC) $(CPPFLAGS) $(CFLAGS) -I$(AUDIO_OUT_DIR)/include -pthread -o $@ \
 	    test_michi_audio_output.c $(AUDIO_OUT_SRC)
 
+# H7: the REAL firmware volume module, with a deterministic DAC stub.
+test_michi_volume: test_michi_volume.c $(FIRMWARE)/michi_volume/michi_volume.c \
+                   $(FIRMWARE)/michi_volume/include/michi_volume.h $(SHIMS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ test_michi_volume.c \
+	    $(FIRMWARE)/michi_volume/michi_volume.c
+
 clean:
 	rm -f test_semver test_michi_home test_json_helpers \
 	      test_http_canonical test_michi_identity test_michi_discovery \
 	      test_michi_time test_auth_http \
-	      test_michi_session test_rtp_guard test_session_http \
+	      test_michi_session test_michi_audio_pause_policy test_michi_audio_diagnostics test_michi_wifi_secret test_michi_audio_engine test_rtp_guard test_session_http \
 	      test_capability_parity test_discovery_disc \
 	      test_michi_ui render_ui_previews \
 	      test_michi_dac test_michi_display_dma test_spiffs_journal \
 	      test_michi_jb test_michi_profile_logic test_michi_ota_logic \
-	      test_rtp_clock test_rtp_jitter test_michi_audio_buffer test_michi_audio_output
+	      test_rtp_clock test_rtp_jitter test_michi_audio_buffer test_michi_audio_output test_michi_volume

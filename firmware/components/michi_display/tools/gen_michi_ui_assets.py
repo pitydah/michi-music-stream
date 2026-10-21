@@ -298,29 +298,18 @@ def pack_rows(rows):
 # Icon definitions (unit box, y down) — Boutique Hi-Fi Audio Aesthetic
 # ---------------------------------------------------------------------------
 CAT_BOUTIQUE = [
-    # Head contour (smooth rounded face)
-    ("C", 0.50, 0.56, 0.30),
-    # Left outer ear
-    ("L", 0.24, 0.38, 0.18, 0.08),
-    ("L", 0.18, 0.08, 0.38, 0.26),
-    # Right outer ear
-    ("L", 0.76, 0.38, 0.82, 0.08),
-    ("L", 0.82, 0.08, 0.62, 0.26),
-    # Left inner ear detail
-    ("L", 0.26, 0.32, 0.22, 0.14),
-    ("L", 0.22, 0.14, 0.34, 0.26),
-    # Right inner ear detail
-    ("L", 0.74, 0.32, 0.78, 0.14),
-    ("L", 0.78, 0.14, 0.66, 0.26),
-    # Eyes
-    ("D", 0.36, 0.50, 0.04),
-    ("D", 0.64, 0.50, 0.04),
-    # Nose
-    ("D", 0.50, 0.60, 0.025),
-    # Mouth
-    ("L", 0.50, 0.60, 0.50, 0.67),
-    ("A", 0.44, 0.67, 0.06, 0, 180),
-    ("A", 0.56, 0.67, 0.06, 0, 180),
+    # Authorized monochrome compact mark: ears, face, Wi-Fi and sound cone.
+    # This is an optical reduction of the Stream identity, NOT a second logo.
+    ("C", 0.50, 0.57, 0.30),
+    ("L", 0.21, 0.41, 0.16, 0.11),
+    ("L", 0.16, 0.11, 0.37, 0.30),
+    ("L", 0.79, 0.41, 0.84, 0.11),
+    ("L", 0.84, 0.11, 0.63, 0.30),
+    ("A", 0.49, 0.49, 0.16, 215, 325),
+    ("A", 0.49, 0.49, 0.09, 215, 325),
+    ("F", [(0.37, 0.60), (0.45, 0.60), (0.56, 0.51), (0.56, 0.75),
+           (0.45, 0.67), (0.37, 0.67)]),
+    ("A", 0.57, 0.63, 0.11, -54, 54),
 ]
 
 WIFI = [
@@ -648,8 +637,8 @@ def main():
         "--strict", action="store_true",
         help="Enforce strict canonical font SHA-256 verification and disable fallbacks.")
     parser.add_argument(
-        "--raster", choices=["1bit", "2bit"], default="1bit",
-        help="Bitmap depth: 1bit = on/off, 2bit = 4-level AA (default: 1bit).")
+        "--raster", choices=["1bit", "2bit"], default="2bit",
+        help="Bitmap depth: 1bit = on/off, 2bit = 4-level AA (default: 2bit).")
     args = parser.parse_args()
 
     raster_bits = 2 if args.raster == "2bit" else 1

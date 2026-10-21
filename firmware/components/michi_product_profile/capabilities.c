@@ -9,7 +9,7 @@
  *  - session/heartbeat/volume: implemented (MS-07/MS-08);
  *  - diagnostics: implemented (its response shape is not frozen by the
  *    contract);
- *  - now_playing: the certified payload still answers 501 NOT_IMPLEMENTED;
+ *  - now_playing: handler implemented but feature flag false pending partner certification;
  *  - ota: the A/B partitions exist, but the OTA service lands in phase 13
  *    (501).
  *

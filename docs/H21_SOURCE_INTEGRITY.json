@@ -1,0 +1,24 @@
+{
+  "baseline": "H21-DRIVE-RECONCILED",
+  "date": "2026-10-20",
+  "scope": "three-original-replacements-only",
+  "tests_executed": false,
+  "complete_repository_snapshot": false,
+  "verified_originals": {
+    "README.md": {
+      "bytes": 8334,
+      "sha256": "95691017eded133930667da9327e0ee5ffcf183d42cce641bcd70de314afbcbc",
+      "matched_h19_package": true
+    },
+    "docs/CURRENT_PRETEST_BASELINE.md": {
+      "bytes": 1224,
+      "sha256": "e19094e0c16c9ac897e12d153b7e08301b83dbd321fcf66c2f7846189880d549",
+      "matched_h19_package": true
+    },
+    "scripts/package_source_snapshot.py": {
+      "bytes": 8683,
+      "sha256": "7840c138eea2a871c2719088115b12c57cd6a1fe304bc44acb5880d14b6306b6",
+      "matched_h19_package": true
+    }
+  }
+}

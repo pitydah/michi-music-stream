@@ -1,0 +1,68 @@
+{
+  "baseline": "H15-pretest",
+  "date": "2026-10-19",
+  "scope": "source-only Google Drive",
+  "tests_executed": false,
+  "work_in_drive": [
+    {
+      "id": "KC-P0-01",
+      "area": "RTP pause/recvfrom",
+      "state": "source_addressed_pretest"
+    },
+    {
+      "id": "KC-P0-02",
+      "area": "RTP/I2S dead transport state",
+      "state": "source_addressed_pretest"
+    },
+    {
+      "id": "KC-P0-03",
+      "area": "startup rollback ownership",
+      "state": "source_addressed_pretest"
+    },
+    {
+      "id": "KC-P1-04",
+      "area": "watchdog C11 generation",
+      "state": "source_addressed_pretest"
+    },
+    {
+      "id": "KC-P1-05",
+      "area": "heartbeat timer rearm/fail closed",
+      "state": "source_addressed_pretest"
+    },
+    {
+      "id": "KC-P1-06",
+      "area": "playing vs audible truth",
+      "state": "open_contract_reconciliation"
+    },
+    {
+      "id": "KC-P1-07",
+      "area": "RTP real host harness",
+      "state": "open_required"
+    },
+    {
+      "id": "KC-P1-08",
+      "area": "queue saturation dual failure",
+      "state": "open_required"
+    },
+    {
+      "id": "KC-P1-09",
+      "area": "source-only repository full snapshot",
+      "state": "open_required"
+    },
+    {
+      "id": "KC-P1-10",
+      "area": "OTA/security/source policy hardening",
+      "state": "open_review"
+    }
+  ],
+  "external_excluded": [
+    "idf_build",
+    "host_test_execution",
+    "github_ci_execution",
+    "esp32_flash",
+    "dac_physical",
+    "micro_server_e2e",
+    "webui_external_repo",
+    "ota_power_cut"
+  ]
+}

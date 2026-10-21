@@ -144,9 +144,23 @@ static bool parse_membership_json(const cJSON *mem, michi_membership_t *out_memb
 
 static esp_err_t parse_inner_payload(const char *payload, size_t len, michi_factory_cfg_t *out_cfg)
 {
-    /* Attempt 1: Parse as JSON */
-    cJSON *json = cJSON_ParseWithLength(payload, len);
-    if (json != NULL) {
+    /* Never treat malformed JSON as line-delimited data; reject trailing
+     * bytes, embedded NUL, non-object roots and incomplete documents. */
+    const char *start = payload;
+    while (start < payload + len && isspace((unsigned char)*start)) start++;
+    if (start < payload + len && *start == '{') {
+        if (memchr(payload, '\0', len) != NULL) return ESP_ERR_INVALID_ARG;
+        const char *end = NULL;
+        cJSON *json = cJSON_ParseWithLengthOpts(payload, len, &end, false);
+        if (json == NULL || !cJSON_IsObject(json)) {
+            cJSON_Delete(json);
+            return ESP_ERR_INVALID_ARG;
+        }
+        while (end != NULL && end < payload + len && isspace((unsigned char)*end)) end++;
+        if (end != payload + len) {
+            cJSON_Delete(json);
+            return ESP_ERR_INVALID_ARG;
+        }
         cJSON *item = NULL;
         cJSON_ArrayForEach(item, json) {
             if (item->string == NULL) continue;
@@ -206,7 +220,8 @@ static esp_err_t parse_inner_payload(const char *payload, size_t len, michi_fact
         return ESP_OK;
     }
 
-    /* Attempt 2: Parse line-delimited key=value format */
+    /* Legacy only: parse line-delimited key=value format */
+    if (memchr(payload, '\0', len) != NULL) return ESP_ERR_INVALID_ARG;
     const char *cursor = payload;
     const char *end = payload + len;
 
@@ -266,63 +281,70 @@ esp_err_t michi_factory_cfg_parse(const char *payload, size_t len, michi_factory
     }
     memset(out_cfg, 0, sizeof(*out_cfg));
 
-    /* Attempt 1: Ecosystem canonical MICHI-F1 wire format (27-byte header + CRC32) */
-    if (len >= sizeof(michi_f1_ecosystem_header_t) + 4 &&
+    /* Binary MICHI-F1 must NEVER fall through to permissive legacy text
+     * parsing when truncated, corrupt, or a future schema is supplied.
+     * Human-readable legacy records beginning "MICHI-F1\n" remain supported. */
+    if (len == MICHI_F1_MAGIC_LEN &&
+        memcmp(payload, MICHI_F1_MAGIC, MICHI_F1_MAGIC_LEN) == 0) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    if (len > MICHI_F1_MAGIC_LEN &&
         memcmp(payload, MICHI_F1_MAGIC, MICHI_F1_MAGIC_LEN) == 0 &&
-        (uint8_t)payload[8] == MICHI_F1_VERSION) {
-
-        uint16_t p_len = ((uint8_t)payload[25] << 8) | (uint8_t)payload[26];
-        size_t total_len = sizeof(michi_f1_ecosystem_header_t) + p_len + 4;
-        if (p_len > 0 && total_len <= len) {
-            const uint8_t *crc_ptr = (const uint8_t *)(payload + sizeof(michi_f1_ecosystem_header_t) + p_len);
-            uint32_t stored_crc_be = ((uint32_t)crc_ptr[0] << 24) |
-                                     ((uint32_t)crc_ptr[1] << 16) |
-                                     ((uint32_t)crc_ptr[2] << 8)  |
-                                     (uint32_t)crc_ptr[3];
-            uint32_t calc_crc = compute_crc32((const uint8_t *)payload, sizeof(michi_f1_ecosystem_header_t) + p_len);
-            if (stored_crc_be != calc_crc && stored_crc_be != __builtin_bswap32(calc_crc)) {
-                ESP_LOGE(TAG, "factory_cfg: Ecosystem CRC32 mismatch (stored=0x%08" PRIx32 ", calc=0x%08" PRIx32 ")",
-                         stored_crc_be, calc_crc);
-                return ESP_ERR_INVALID_CRC;
-            }
-            const char *inner_payload = payload + sizeof(michi_f1_ecosystem_header_t);
-            return parse_inner_payload(inner_payload, p_len, out_cfg);
+        payload[MICHI_F1_MAGIC_LEN] != '\n' &&
+        payload[MICHI_F1_MAGIC_LEN] != '\r' &&
+        payload[MICHI_F1_MAGIC_LEN] != '=') {
+        if (len < sizeof(michi_f1_ecosystem_header_t) + 4) {
+            return ESP_ERR_INVALID_SIZE;
         }
+        const uint8_t *bytes = (const uint8_t *)payload;
+        if (bytes[8] == MICHI_F1_VERSION) {
+            const size_t p_len = ((size_t)bytes[25] << 8) | bytes[26];
+            const size_t full = sizeof(michi_f1_ecosystem_header_t) + p_len + 4;
+            if (p_len > 0 && full == len) {
+                const uint8_t *crc = bytes + full - 4;
+                const uint32_t stored = ((uint32_t)crc[0] << 24) |
+                                        ((uint32_t)crc[1] << 16) |
+                                        ((uint32_t)crc[2] << 8) |
+                                        (uint32_t)crc[3];
+                const uint32_t actual = compute_crc32(bytes, full - 4);
+                if (stored != actual) {
+                    ESP_LOGE(TAG, "factory_cfg: Ecosystem CRC32 mismatch");
+                    return ESP_ERR_INVALID_CRC;
+                }
+                return parse_inner_payload(payload + sizeof(michi_f1_ecosystem_header_t), p_len, out_cfg);
+            }
+        }
+
+        /* Historical, native-layout 48-byte container. Retained solely to
+         * read older valid records; new Ecosystem writers MUST use the 27-byte
+         * portable header. Check all lengths before dereferencing payload. */
+        if (len >= sizeof(michi_f1_header_t) + 4) {
+            michi_f1_header_t hdr;
+            memcpy(&hdr, payload, sizeof(hdr));
+            const uint64_t expected = (uint64_t)sizeof(hdr) + hdr.payload_len + 4;
+            if (hdr.version == MICHI_F1_VERSION &&
+                hdr.nonce_len >= MICHI_F1_NONCE_MIN_LEN &&
+                hdr.nonce_len <= MICHI_F1_NONCE_MAX_LEN &&
+                hdr.payload_len > 0 && expected == len) {
+                const uint8_t *crc = bytes + (size_t)expected - 4;
+                const uint32_t stored_be = ((uint32_t)crc[0] << 24) |
+                                           ((uint32_t)crc[1] << 16) |
+                                           ((uint32_t)crc[2] << 8) |
+                                           (uint32_t)crc[3];
+                uint32_t stored_native = 0;
+                memcpy(&stored_native, crc, 4);
+                const uint32_t actual = compute_crc32(bytes, (size_t)expected - 4);
+                if (stored_be != actual && stored_native != actual) {
+                    return ESP_ERR_INVALID_CRC;
+                }
+                return parse_inner_payload(payload + sizeof(hdr), hdr.payload_len, out_cfg);
+            }
+        }
+        ESP_LOGE(TAG, "factory_cfg: unsupported or malformed MICHI-F1 container");
+        return ESP_ERR_INVALID_SIZE;
     }
 
-    /* Attempt 2: Legacy 48-byte header MICHI-F1 container */
-    if (len >= sizeof(michi_f1_header_t) + 4 &&
-        memcmp(payload, MICHI_F1_MAGIC, MICHI_F1_MAGIC_LEN) == 0 &&
-        payload[8] != '\n' && payload[8] != '\r' && payload[8] != '=') {
-
-        const michi_f1_header_t *hdr = (const michi_f1_header_t *)payload;
-        if (hdr->version == MICHI_F1_VERSION &&
-            hdr->nonce_len >= MICHI_F1_NONCE_MIN_LEN && hdr->nonce_len <= MICHI_F1_NONCE_MAX_LEN &&
-            hdr->payload_len > 0 &&
-            sizeof(michi_f1_header_t) + hdr->payload_len + 4 <= len) {
-
-            const uint8_t *crc_ptr = (const uint8_t *)(payload + sizeof(michi_f1_header_t) + hdr->payload_len);
-            uint32_t stored_crc_be = ((uint32_t)crc_ptr[0] << 24) |
-                                     ((uint32_t)crc_ptr[1] << 16) |
-                                     ((uint32_t)crc_ptr[2] << 8)  |
-                                     (uint32_t)crc_ptr[3];
-            uint32_t stored_crc_le = 0;
-            memcpy(&stored_crc_le, crc_ptr, 4);
-            uint32_t calc_crc = compute_crc32((const uint8_t *)payload, sizeof(michi_f1_header_t) + hdr->payload_len);
-
-            if (stored_crc_be != calc_crc && stored_crc_le != calc_crc) {
-                ESP_LOGE(TAG, "factory_cfg: CRC32 mismatch (stored=0x%08" PRIx32 ", calc=0x%08" PRIx32 ")",
-                         stored_crc_be, calc_crc);
-                return ESP_ERR_INVALID_CRC;
-            }
-
-            const char *inner_payload = payload + sizeof(michi_f1_header_t);
-            size_t inner_len = hdr->payload_len;
-            return parse_inner_payload(inner_payload, inner_len, out_cfg);
-        }
-    }
-
-    /* Fallback: Legacy line-delimited or plain JSON */
+    /* Explicitly accepted legacy JSON / line-delimited factory records. */
     return parse_inner_payload(payload, len, out_cfg);
 }
 
@@ -564,6 +586,15 @@ static esp_err_t detect_factory_cfg_content_len(const char *buf, size_t to_read,
                 else if (c == '}') {
                     depth--;
                     if (depth == 0) {
+                        /* Only erased flash, NUL padding and whitespace may
+                         * follow a completed JSON factory document. */
+                        for (size_t j = i + 1; j < to_read; j++) {
+                            const uint8_t tail = (uint8_t)buf[j];
+                            if (tail != 0xFF && tail != 0x00 &&
+                                !isspace((unsigned char)tail)) {
+                                return ESP_ERR_INVALID_ARG;
+                            }
+                        }
                         *out_len = i + 1;
                         return ESP_OK;
                     }
@@ -585,17 +616,17 @@ static esp_err_t detect_factory_cfg_content_len(const char *buf, size_t to_read,
 
 esp_err_t michi_factory_cfg_check_and_import(void)
 {
-    /* 1. If already provisioned in NVS, nothing to do */
+    /* An existing Home identity must never be overwritten by raw factory
+     * partition bytes. Even a reflashed partition is NOT signed as a Wi-Fi
+     * recovery transaction. Detect it below and explicitly refuse it. */
+    bool already_provisioned = false;
     nvs_handle_t h;
     if (nvs_open(MICHI_HOME_NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
-        char id[MICHI_HOME_ID_LEN];
+        char id[MICHI_HOME_ID_LEN] = {0};
         size_t id_len = sizeof(id);
-        esp_err_t err = nvs_get_str(h, MICHI_HOME_NVS_KEY_ID, id, &id_len);
+        const esp_err_t nerr = nvs_get_str(h, MICHI_HOME_NVS_KEY_ID, id, &id_len);
         nvs_close(h);
-        if (err == ESP_OK && id_len > 1) {
-            ESP_LOGI(TAG, "factory_cfg: device already provisioned (home_id=%s), skipping", id);
-            return ESP_OK;
-        }
+        already_provisioned = nerr == ESP_OK && id_len > 1;
     }
 
 #ifdef MICHI_HOME_TESTING
@@ -621,6 +652,10 @@ esp_err_t michi_factory_cfg_check_and_import(void)
         return ESP_OK;
     }
 
+    if (already_provisioned) {
+        ESP_LOGE(TAG, "factory_cfg: existing Home; staged config refused (USB recovery transaction required)");
+        return ESP_ERR_INVALID_STATE;
+    }
     ESP_LOGI(TAG, "factory_cfg: found config in test partition (%zu bytes), importing...", content_len);
     esp_err_t res = michi_home_import_factory_cfg(buf, content_len);
     if (res == ESP_OK) {
@@ -678,6 +713,11 @@ esp_err_t michi_factory_cfg_check_and_import(void)
         return ESP_OK;
     }
 
+    if (already_provisioned) {
+        ESP_LOGE(TAG, "factory_cfg: existing Home; staged config refused, use authenticated USB recovery");
+        memset(buf, 0, sizeof(buf));
+        return ESP_ERR_INVALID_STATE;
+    }
     ESP_LOGI(TAG, "factory_cfg: found config in partition (%zu bytes), importing...", content_len);
     err = michi_home_import_factory_cfg(buf, content_len);
     if (err == ESP_OK) {
@@ -685,16 +725,11 @@ esp_err_t michi_factory_cfg_check_and_import(void)
         /* Securely erase partition to avoid retaining credentials */
         esp_err_t erase_err = esp_partition_erase_range(part, 0, part->size);
         if (erase_err != ESP_OK) {
-            ESP_LOGE(TAG, "factory_cfg: critical error, erase failed: %s (initiating full rollback)", esp_err_to_name(erase_err));
-            (void)michi_home_erase();
-            (void)michi_identity_factory_reset();
-            nvs_handle_t wh;
-            if (nvs_open("wifi", NVS_READWRITE, &wh) == ESP_OK) {
-                (void)nvs_erase_key(wh, "ssid");
-                (void)nvs_erase_key(wh, "password");
-                (void)nvs_commit(wh);
-                nvs_close(wh);
-            }
+            /* Import already succeeded and committed NVS. Erasing the
+             * identity after an ERASE failure would brick a provisioned
+             * device; preserve NVS and ask for explicit USB recovery. */
+            ESP_LOGE(TAG, "factory_cfg: staging erase failed: %s; NVS preserved",
+                     esp_err_to_name(erase_err));
             memset(buf, 0, sizeof(buf));
             return erase_err;
         }

@@ -58,6 +58,7 @@ typedef struct michi_ui_screen_ctx {
     const char *source;            /*!< Now Playing source label */
     const char *pairing_pin;       /*!< 6-digit pairing PIN */
     uint8_t volume;                /*!< Volume (0..100) */
+    uint8_t waveform_phase;        /*!< Frame-frozen UI motion phase (0..63), not audio metering */
     uint32_t sample_rate;          /*!< Sample rate in Hz (e.g. 48000) */
     uint8_t bit_depth;             /*!< Bit depth (e.g. 16) */
     uint32_t last_error;           /*!< Last captured error code */

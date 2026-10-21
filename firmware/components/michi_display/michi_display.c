@@ -45,6 +45,12 @@
 /* Queue payload: request type (0 = full re-render). */
 #define MICHI_DISPLAY_MSG_RENDER 0
 
+/* Low rate, audio-friendly screen animation (not a PCM visualization). */
+#ifndef CONFIG_MICHI_DISPLAY_WAVE_PERIOD_MS
+#define CONFIG_MICHI_DISPLAY_WAVE_PERIOD_MS 160
+#endif
+#define MICHI_DISPLAY_WAVE_PERIOD_MS CONFIG_MICHI_DISPLAY_WAVE_PERIOD_MS
+
 static QueueHandle_t s_queue;
 static TaskHandle_t s_task;
 static volatile bool s_initialized;
@@ -171,7 +177,13 @@ static char s_snap_src[MICHI_DISPLAY_SOURCE_MAX + 1];
 static char s_snap_title[MICHI_DISPLAY_TITLE_MAX + 1];
 static char s_snap_artist[MICHI_DISPLAY_ARTIST_MAX + 1];
 static char s_snap_pin[7];
+/* Lab-only Kconfig switch enables on-panel diagnostics without a button.
+ * The full runtime API can still toggle diagnostics when required. */
+#if CONFIG_MICHI_DISPLAY_DIAGNOSTICS_ON_BOOT
+static bool s_show_diagnostics = true;
+#else
 static bool s_show_diagnostics = false;
+#endif
 
 /* Draw callback for michi_board_display_render(): renders ONE band from the
  * frozen s_frame_snapshot via michi_ui_render_screen(). */
@@ -240,8 +252,14 @@ static void render_current_state(void)
         .source = s_snap_src,
         .pairing_pin = s_snap_pin,
         .volume = michi_volume_get(),
-        .sample_rate = (p != NULL && p->validated_sample_rate != 0) ? p->validated_sample_rate : 48000u,
-        .bit_depth = MICHI_DISPLAY_APPLIED_BIT_DEPTH,
+        .waveform_phase =
+#if defined(CONFIG_MICHI_DISPLAY_WAVE_ANIMATION) && CONFIG_MICHI_DISPLAY_WAVE_ANIMATION
+            (uint8_t)((now_ms / MICHI_DISPLAY_WAVE_PERIOD_MS) & 63),
+#else
+            0u,
+#endif
+        .sample_rate = (michi_session_active() && p != NULL) ? p->validated_sample_rate : 0u,
+        .bit_depth = michi_session_active() ? MICHI_DISPLAY_APPLIED_BIT_DEPTH : 0u,
         .last_error = last_err,
         .wifi_connected = wifi_ok,
         .wifi_rssi = rssi,
@@ -299,7 +317,24 @@ static void display_task(void *arg)
     render_current_state();
 
     for (;;) {
-        if (xQueueReceive(s_queue, &msg, portMAX_DELAY) != pdTRUE) {
+        /* Only animate an active transport screen. No periodic drawing on idle,
+         * pause, diagnostics, volume overlays, OTA or fatal errors. */
+        bool wave_enabled =
+#if defined(CONFIG_MICHI_DISPLAY_WAVE_ANIMATION) && CONFIG_MICHI_DISPLAY_WAVE_ANIMATION
+                            (s_frame_snapshot.state == MICHI_STATE_PLAYING ||
+                             s_frame_snapshot.state == MICHI_STATE_BUFFERING) &&
+                            !s_frame_snapshot.show_diagnostics &&
+                            !s_frame_snapshot.show_volume_overlay &&
+                            s_frame_snapshot.pairing_overlay == MICHI_UI_PAIRING_OVERLAY_NONE;
+#else
+                            false;
+#endif
+        TickType_t wait = wave_enabled ? pdMS_TO_TICKS(MICHI_DISPLAY_WAVE_PERIOD_MS)
+                                       : portMAX_DELAY;
+        if (xQueueReceive(s_queue, &msg, wait) != pdTRUE) {
+            /* This timeout is intentional: re-render for the next motion phase.
+             * Never hold the audio or FSM task waiting for SPI/DMA. */
+            if (wave_enabled) render_current_state();
             continue;
         }
         if (msg != MICHI_DISPLAY_MSG_RENDER) {

@@ -20,7 +20,7 @@ extern "C" {
 #define MICHI_UI_STR_STARTING          "iniciando"
 
 /* Ready / Idle */
-#define MICHI_UI_STR_READY             "Listo"
+#define MICHI_UI_STR_READY             "Michi Stream listo"
 #define MICHI_UI_STR_WAITING_IP        "Esperando IP"
 #define MICHI_UI_STR_WAITING_PLAYBACK  "Esperando reproducción"
 
@@ -29,11 +29,11 @@ extern "C" {
 
 /* Unprovisioned */
 #define MICHI_UI_STR_SETUP_TITLE       "Configurar Michi"
-#define MICHI_UI_STR_SETUP_HINT        "Mantén presionado el botón para comenzar"
+#define MICHI_UI_STR_SETUP_HINT        "Prepara la red y la identidad desde Michi Ecosystem"
 
 /* Provisioning / Wi-Fi */
 #define MICHI_UI_STR_PROV_TITLE        "Configurando red"
-#define MICHI_UI_STR_PROV_HINT         "Conecta Michi a tu red desde el dispositivo de configuración"
+#define MICHI_UI_STR_PROV_HINT         "Importando la configuración de red y Michi Home"
 #define MICHI_UI_STR_CONNECTING_TITLE  "Conectando"
 #define MICHI_UI_STR_CONNECTING_WIFI   "A la red Wi-Fi"
 

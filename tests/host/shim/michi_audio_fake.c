@@ -25,10 +25,12 @@
 typedef michi_audio_fake_state_t fake_state_t;
 
 static fake_state_t s_fake;
+static bool s_fail_next_port_lookup;
 
 void test_michi_audio_reset(void)
 {
     memset(&s_fake, 0, sizeof(s_fake));
+    s_fail_next_port_lookup = false;
     s_fake.next_auto_port = 49152;
     s_fake.metrics.received = 0;
 }
@@ -56,6 +58,11 @@ void test_michi_audio_set_pause_err(esp_err_t err)
 void test_michi_audio_set_stop_err(esp_err_t err)
 {
     s_fake.stop_err = err;
+}
+
+void test_michi_audio_fail_next_port_lookup(bool fail)
+{
+    s_fail_next_port_lookup = fail;
 }
 
 esp_err_t michi_audio_session_start(uint32_t port, uint32_t ssrc,
@@ -124,6 +131,10 @@ esp_err_t michi_audio_session_get_port(uint16_t *out_port)
     }
     if (!s_fake.active) {
         return ESP_ERR_NOT_FOUND;
+    }
+    if (s_fail_next_port_lookup) {
+        s_fail_next_port_lookup = false;
+        return ESP_FAIL;
     }
     *out_port = s_fake.bound_port;
     return ESP_OK;

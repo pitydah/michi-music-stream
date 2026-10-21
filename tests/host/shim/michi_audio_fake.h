@@ -32,6 +32,7 @@ void test_michi_audio_reset(void);
 void test_michi_audio_set_start_err(esp_err_t err);
 void test_michi_audio_set_pause_err(esp_err_t err);
 void test_michi_audio_set_stop_err(esp_err_t err);
+void test_michi_audio_fail_next_port_lookup(bool fail);
 michi_audio_fake_state_t *test_michi_audio_state(void);
 michi_audio_metrics_t *test_michi_audio_metrics(void);
 

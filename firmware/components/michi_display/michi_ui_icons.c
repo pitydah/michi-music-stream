@@ -3,6 +3,8 @@
 #include "michi_ui_icons.h"
 
 #include "../assets/icons/michi_ui_icons_data.h"
+#include "../assets/icons/michi_stream_brand_data.h"
+#include "../assets/icons/michi_precision_icons_data.h"
 
 /*
  * Icon glyph registry: (icon, size) -> bitmap table. Every bitmap is
@@ -93,6 +95,65 @@ static const michi_ui_icon_glyph_t s_icons[MICHI_UI_ICON_COUNT]
     },
 };
 
+/* UI-06: optical 2bpp precision glyphs. Small static masks live in flash.
+ * The RGB565 blend is bounded by the active DMA band; no heap or SVG decoder. */
+static void draw_precision_icon(uint16_t *fb, uint16_t fw, uint16_t fh,
+                                uint16_t oy, int x, int y,
+                                const uint8_t *mask, int px, uint16_t fg)
+{
+    if (fb == NULL || mask == NULL || fw == 0 || fh == 0) return;
+    if (y + px <= (int)oy || y >= (int)oy + (int)fh ||
+        x + px <= 0 || x >= (int)fw) return;
+    for (int py = 0; py < px; ++py) {
+        int yy = y + py - (int)oy;
+        if (yy < 0 || yy >= (int)fh) continue;
+        for (int pxl = 0; pxl < px; ++pxl) {
+            int xx = x + pxl;
+            if (xx < 0 || xx >= (int)fw) continue;
+            unsigned index = (unsigned)py * (unsigned)px + (unsigned)pxl;
+            unsigned alpha = (mask[index / 4u] >> (6u - 2u*(index & 3u))) & 3u;
+            if (alpha == 0u) continue;
+            uint16_t *pixel = &fb[(size_t)yy * fw + (size_t)xx];
+            if (alpha == 3u) { *pixel = fg; continue; }
+            uint16_t bg = *pixel;
+            unsigned r = ((((bg >> 11) & 31u) * (3u-alpha)) +
+                          (((fg >> 11) & 31u) * alpha) + 1u) / 3u;
+            unsigned g = ((((bg >> 5) & 63u) * (3u-alpha)) +
+                          (((fg >> 5) & 63u) * alpha) + 1u) / 3u;
+            unsigned b = (((bg & 31u) * (3u-alpha)) +
+                          ((fg & 31u) * alpha) + 1u) / 3u;
+            *pixel = (uint16_t)((r << 11) | (g << 5) | b);
+        }
+    }
+}
+
+static const uint8_t *precision_icon(michi_ui_icon_t icon,
+                                      michi_ui_icon_size_t size, int *pixels)
+{
+    int px;
+    if (size == MICHI_UI_ICON_SIZE_12) px=12;
+    else if (size == MICHI_UI_ICON_SIZE_16) px=16;
+    else if (size == MICHI_UI_ICON_SIZE_20) px=20;
+    else if (size == MICHI_UI_ICON_SIZE_32) px=32;
+    else return NULL;
+    *pixels=px;
+    switch (icon) {
+    case MICHI_UI_ICON_WIFI:
+        switch(px) { case 12:return michi_precision_wifi_12; case 16:return michi_precision_wifi_16;
+                     case 20:return michi_precision_wifi_20; default:return michi_precision_wifi_32; }
+    case MICHI_UI_ICON_SERVER:
+        switch(px) { case 12:return michi_precision_receiver_12; case 16:return michi_precision_receiver_16;
+                     case 20:return michi_precision_receiver_20; default:return michi_precision_receiver_32; }
+    case MICHI_UI_ICON_ROOM:
+        switch(px) { case 12:return michi_precision_room_12; case 16:return michi_precision_room_16;
+                     case 20:return michi_precision_room_20; default:return michi_precision_room_32; }
+    case MICHI_UI_ICON_SPEAKER:
+        switch(px) { case 12:return michi_precision_speaker_12; case 16:return michi_precision_speaker_16;
+                     case 20:return michi_precision_speaker_20; default:return michi_precision_speaker_32; }
+    default:return NULL;
+    }
+}
+
 void ui_draw_icon(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
                   uint16_t y_origin, int x, int y, michi_ui_icon_t icon,
                   michi_ui_icon_size_t size, uint16_t color)
@@ -104,6 +165,13 @@ void ui_draw_icon(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
     int ly;
 
     if (icon >= MICHI_UI_ICON_COUNT || size >= MICHI_UI_ICON_SIZE_COUNT) {
+        return;
+    }
+    int optical_px = 0;
+    const uint8_t *optical = precision_icon(icon, size, &optical_px);
+    if (optical != NULL) {
+        draw_precision_icon(fb, fb_w, fb_h, y_origin, x, y,
+                            optical, optical_px, color);
         return;
     }
     g = &s_icons[icon][size];
@@ -141,6 +209,28 @@ void ui_draw_icon(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
                 }
                 fb[(size_t)py * fb_w + (size_t)px] = color;
             }
+        }
+    }
+}
+
+/* Official SVG baked to RGB565, no heap, alpha, blur or SVG on the MCU.
+ * Only touch scanlines within the current 40px DMA band. */
+void michi_ui_draw_brand(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
+                         uint16_t y_origin, int x, int y, int px_size)
+{
+    const uint16_t *pixels = NULL;
+    if (fb == NULL || fb_w == 0 || fb_h == 0) return;
+    if (px_size == 40) pixels = michi_brand_40;
+    else if (px_size == 72) pixels = michi_brand_72;
+    else return;
+    for (int row = 0; row < px_size; ++row) {
+        const int local_y = y + row - (int)y_origin;
+        if (local_y < 0 || local_y >= (int)fb_h) continue;
+        const int first = (x < 0) ? -x : 0;
+        const int last = (x + px_size > (int)fb_w) ? (int)fb_w - x : px_size;
+        if (last <= first) continue;
+        for (int col = first; col < last; ++col) {
+            fb[(size_t)local_y * fb_w + (size_t)(x + col)] = pixels[row * px_size + col];
         }
     }
 }

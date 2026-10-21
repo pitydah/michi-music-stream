@@ -85,8 +85,10 @@
 #include "michi_state.h"
 #include "michi_time.h"
 #include "michi_wifi.h"
+#include "michi_wifi_secret.h"
 
 #define TAG "michi_wifi"
+
 
 /* NVS: the ONLY place credentials live. */
 #define MICHI_WIFI_NVS_NAMESPACE "wifi"
@@ -960,11 +962,15 @@ static void state_observer(const michi_event_t *ev)
              * provisioning. */
             michi_state_request(MICHI_STATE_UNPROVISIONED);
             if (!creds) {
+#if defined(CONFIG_MICHI_WIFI_ALLOW_BLE_PROVISIONING_LAB)
                 const esp_err_t err = michi_wifi_start_provisioning();
                 if (err != ESP_OK) {
                     ESP_LOGW(TAG, "boot: automatic provisioning start "
                              "failed: %s", esp_err_to_name(err));
                 }
+#else
+                ESP_LOGI(TAG, "unprovisioned: USB Ecosystem recovery required");
+#endif
             }
         }
     } else if (target == MICHI_STATE_WIFI_CONNECTING) {
@@ -1020,6 +1026,10 @@ static void recover_observer(const michi_event_t *ev)
             st0 == MICHI_STATE_RECOVERABLE_ERROR) {
             michi_state_request(MICHI_STATE_UNPROVISIONED);
         }
+#if !defined(CONFIG_MICHI_WIFI_ALLOW_BLE_PROVISIONING_LAB)
+        ESP_LOGW(TAG, "wifi: no credentials; USB Ecosystem recovery required");
+        return;
+#else
         ESP_LOGI(TAG, "wifi: recovery with no credentials, restarting "
                  "provisioning");
         portENTER_CRITICAL(&s_mux);
@@ -1031,6 +1041,7 @@ static void recover_observer(const michi_event_t *ev)
                      esp_err_to_name(err));
         }
         return;
+#endif
     }
 
     /* STA configured? esp_wifi_connect requires a valid config. */
@@ -1164,7 +1175,8 @@ esp_err_t michi_wifi_init(void)
         portENTER_CRITICAL(&s_mux);
         s_has_creds = true;
         portEXIT_CRITICAL(&s_mux);
-        ESP_LOGI(TAG, "wifi: stored credentials (ssid=%s)", s_ssid_cache);
+        /* Do not print the SSID into unattended serial/device logs. */
+        ESP_LOGI(TAG, "wifi: stored credentials available");
     }
 
     /* Boot plan. */
@@ -1176,6 +1188,7 @@ esp_err_t michi_wifi_init(void)
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "init: esp_wifi_start failed: %s",
                      esp_err_to_name(err));
+            michi_wifi_wipe_stack_secret(password, sizeof(password));
             return err;
         }
         s_wifi_started = true;
@@ -1188,11 +1201,21 @@ esp_err_t michi_wifi_init(void)
                 sizeof(wifi_cfg.sta.ssid));
         strlcpy((char *)wifi_cfg.sta.password, password,
                 sizeof(wifi_cfg.sta.password));
+#if defined(CONFIG_MICHI_WIFI_REQUIRE_WPA2)
+        wifi_cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+#else
+        /* Legacy network compatibility; signed Home and tokens still apply.
+         * For protected deployments configure MICHI_WIFI_REQUIRE_WPA2. */
         wifi_cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
+#endif
         err = esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_cfg);
+        /* esp_wifi_set_config copied the settings if successful. In both
+         * cases the temporary stack config must not retain the password. */
+        michi_wifi_wipe_stack_secret(&wifi_cfg, sizeof(wifi_cfg));
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "init: esp_wifi_set_config failed: %s",
                      esp_err_to_name(err));
+            michi_wifi_wipe_stack_secret(password, sizeof(password));
             return err;
         }
         /* F2(b): a failed initial connect is NOT an init failure (the AP
@@ -1213,7 +1236,7 @@ esp_err_t michi_wifi_init(void)
     }
 
     /* Never kept beyond init (the driver config holds the copy). */
-    memset(password, 0, sizeof(password));
+    michi_wifi_wipe_stack_secret(password, sizeof(password));
 
     michi_state_register_observer(MICHI_EVENT_STATE_CHANGED, state_observer);
     michi_state_register_observer(MICHI_EVENT_RECOVER, recover_observer);
@@ -1225,6 +1248,18 @@ esp_err_t michi_wifi_init(void)
 
 esp_err_t michi_wifi_start_provisioning(void)
 {
+#if !defined(CONFIG_MICHI_WIFI_ALLOW_BLE_PROVISIONING_LAB)
+    /* Production builds never start an auto-BLE setup service. */
+    ESP_LOGW(TAG, "BLE provisioning disabled: use Michi Ecosystem USB recovery");
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    /* A shared or empty PoP must NEVER expose Wi-Fi onboarding. */
+    if (strlen(CONFIG_MICHI_PROV_POP) < 16u ||
+        strcmp(CONFIG_MICHI_PROV_POP, "michi123") == 0) {
+        ESP_LOGE(TAG, "BLE lab provisioning refused: unique 16+ char PoP required");
+        return ESP_ERR_INVALID_STATE;
+    }
+#endif
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -1267,6 +1302,12 @@ esp_err_t michi_wifi_start_provisioning(void)
 
 esp_err_t michi_wifi_erase_credentials(void)
 {
+#if !defined(CONFIG_MICHI_WIFI_ALLOW_BLE_PROVISIONING_LAB)
+    /* Do not erase working Wi-Fi when no supported re-enrollment channel
+     * exists in production firmware. USB recovery is handled by Ecosystem. */
+    ESP_LOGW(TAG, "Wi-Fi erase refused in production (USB recovery required)");
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
     }

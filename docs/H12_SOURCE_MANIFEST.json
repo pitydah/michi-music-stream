@@ -1,0 +1,102 @@
+{
+  "release": "H12-pretest-2026-10-19",
+  "status": "not_compiled_not_tested_not_flushed",
+  "source_base": "H9 cumulative plus H10/H11/H12",
+  "items": [
+    {
+      "path": "docs/H11_KILLCRITIC_FIRMWARE_CLOSURE.md",
+      "size": 6323,
+      "sha256": "8727a968f15d1700339c28bc89fec59add06c96845bee21117f15e5b1b36a2a0"
+    },
+    {
+      "path": "docs/H11_SOURCE_MANIFEST.json",
+      "size": 1631,
+      "sha256": "cab0c79e542c4cdb3f790e8c3318a882aa56b3121d5a00f6f66b1e41db5f4d14"
+    },
+    {
+      "path": "docs/H12_KILLCRITIC_PRETEST_HANDOFF.md",
+      "size": 3816,
+      "sha256": "6b88fd8df713e9e1e8abcc7bc665d6602a9c97c9df10c045069abc7e8401f721"
+    },
+    {
+      "path": "docs/H8_FIRMWARE_PCM_RAMP_AND_FRAME_INTEGRITY.md",
+      "size": 4986,
+      "sha256": "75915e19008b5e7772bc55e9e2f7038cd1416582b21a29b2e93a014a56594e6d"
+    },
+    {
+      "path": "docs/H9_KILLCRITIC_FIRMWARE_RELIABILITY.md",
+      "size": 6350,
+      "sha256": "35ef608d69f9087ef2d3b77552e9e51245213631b4b98dbbf0522b52d55cffdf"
+    },
+    {
+      "path": "docs/OPENCODE_H11_LOCAL_VALIDATION.md",
+      "size": 3401,
+      "sha256": "5c83459230b03384724e14850c2bf841430326d41ef7508f119ce74a745a669a"
+    },
+    {
+      "path": "docs/OPENCODE_H12_LOCAL_VALIDATION.md",
+      "size": 3233,
+      "sha256": "016df8840eb9a6c24e139f3415fd7847daf0fe5f04088477d738e349fe1c1b35"
+    },
+    {
+      "path": "docs/OPENCODE_H8_LOCAL_VALIDATION.md",
+      "size": 2932,
+      "sha256": "b9f2e944572bc8913845251c11ba49db1382afccf7b9fdd6cd83741705440d75"
+    },
+    {
+      "path": "docs/OPENCODE_H9_LOCAL_VALIDATION.md",
+      "size": 3328,
+      "sha256": "9f45d88c258d23ee2b15be7697ac7d2371ea1964fd0df9dd3d63629248365c1f"
+    },
+    {
+      "path": "firmware/components/michi_audio_output/include/michi_audio_output.h",
+      "size": 11516,
+      "sha256": "71460c06780b3a1dd005b95110fc2dd039454166ce6f984347d9a6dc442ac395"
+    },
+    {
+      "path": "firmware/components/michi_audio_output/michi_audio_output.c",
+      "size": 54067,
+      "sha256": "f5564fbd5d6702c1c285cb667cec1581812ad60724b0447bcbfa0a3c73221480"
+    },
+    {
+      "path": "firmware/components/michi_http/http_server.c",
+      "size": 73722,
+      "sha256": "c7ed238ea219e7559f98d2d93260c9bd0e6d0fc2de4c7778dcc011e06446ef86"
+    },
+    {
+      "path": "firmware/components/michi_volume/include/michi_volume.h",
+      "size": 4240,
+      "sha256": "5e656e714677bd8db7a743036609b3d5abe2b783b3cb82a0b3e8e730684e0448"
+    },
+    {
+      "path": "firmware/components/michi_volume/michi_volume.c",
+      "size": 8178,
+      "sha256": "70d8cca69dcae0190adde0be6c7c5570f3befa49862b202d9e2a0a6710696ef0"
+    },
+    {
+      "path": "tests/host/shim/driver/i2s_std.h",
+      "size": 3157,
+      "sha256": "f4ecf73b00a1283665fd519fd5c7a16e4bd60d8715cf0aebebc96454de4628e3"
+    },
+    {
+      "path": "tests/host/shim/i2s_shim.c",
+      "size": 9684,
+      "sha256": "ad6f540d6c7a6c3941db4d7c63cd132273fd3d0fd23daf44d351def7e4db598f"
+    },
+    {
+      "path": "tests/host/shim/michi_volume_fake.c",
+      "size": 1150,
+      "sha256": "30f418b2072df7d033dff5999290e94d239e7146258e598f925745208d2582bb"
+    },
+    {
+      "path": "tests/host/test_michi_audio_output.c",
+      "size": 60448,
+      "sha256": "c5cfacbaa024e308476a9b043533b2c74af067ad3b1228bb39b1112293250d3c"
+    },
+    {
+      "path": "tests/host/test_michi_volume.c",
+      "size": 9726,
+      "sha256": "b1f707ebe517f8c0219af08d20fb3b505a4d4ae1d57d3ecd0463c3a30a4266dd"
+    }
+  ]
+}

@@ -110,11 +110,67 @@ static void test_get_bool(void)
     cJSON_Delete(obj);
 }
 
+/* The live HTTP request parser must reject ambiguous wire encodings. */
+static void test_strict_wire_parser(void)
+{
+    printf("json: strict complete body\n");
+    const char *good = "{\"source\":\"Sala\",\"revision\":2}";
+    cJSON *obj = michi_http_json_parse_strict(good, strlen(good));
+    CHECK(obj != NULL, "valid object accepted");
+    cJSON_Delete(obj);
+
+    const char *trailing = "{\"ok\":true} garbage";
+    CHECK(michi_http_json_parse_strict(trailing, strlen(trailing)) == NULL,
+          "trailing payload rejected");
+    const char *array = "[1,2,3]";
+    CHECK(michi_http_json_parse_strict(array, strlen(array)) == NULL,
+          "non-object rejected");
+    const char *escaped_nul = "{\"x\":\"\\u0000\"}";
+    CHECK(michi_http_json_parse_strict(escaped_nul, strlen(escaped_nul)) == NULL,
+          "Unicode NUL escape rejected");
+    const char *escaped_literal = "{\"x\":\"\\\\u0000\"}";
+    obj = michi_http_json_parse_strict(escaped_literal, strlen(escaped_literal));
+    CHECK(obj != NULL, "literal backslash-u is not a NUL escape");
+    cJSON_Delete(obj);
+    const char embedded[] = {'{','}','\0','X','\0'};
+    CHECK(michi_http_json_parse_strict(embedded, 4) == NULL,
+          "embedded wire NUL rejected");
+    CHECK(michi_http_json_parse_strict(NULL, 0) == NULL,
+          "NULL body rejected");
+}
+
+static void test_utf8_metadata(void)
+{
+    printf("json: UTF-8 metadata\n");
+    const char *spanish = "Música española";
+    CHECK(michi_http_utf8_text_valid(spanish, strlen(spanish)),
+          "valid multilingual title accepted");
+    CHECK(michi_http_utf8_text_valid("", 0), "empty metadata accepted");
+    const char *truncated = "\xc3";
+    CHECK(!michi_http_utf8_text_valid(truncated, 1),
+          "truncated sequence rejected");
+    const char *overlong = "\xc0\xaf";
+    CHECK(!michi_http_utf8_text_valid(overlong, 2),
+          "overlong UTF-8 rejected");
+    const char *surrogate = "\xed\xa0\x80";
+    CHECK(!michi_http_utf8_text_valid(surrogate, 3),
+          "UTF-8 surrogate rejected");
+    const char *above = "\xf4\x90\x80\x80";
+    CHECK(!michi_http_utf8_text_valid(above, 4),
+          "non-Unicode scalar rejected");
+    const char *control = "line\nfeed";
+    CHECK(!michi_http_utf8_text_valid(control, strlen(control)),
+          "embedded control rejected");
+    CHECK(!michi_http_utf8_text_valid(NULL, 0), "NULL text rejected");
+}
+
 int main(void)
 {
     test_get_string();
     test_get_int();
     test_get_bool();
+    test_strict_wire_parser();
+    test_utf8_metadata();
     if (failures == 0) {
         printf("PASS test_json_helpers\n");
         return 0;

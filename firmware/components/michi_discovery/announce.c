@@ -29,37 +29,59 @@
 static int append_canonical(const michi_discovery_announce_t *a,
                             char *out, size_t out_len)
 {
-    char home_fields[256] = "";
-    if (a->membership_fingerprint != NULL && a->membership_fingerprint[0] != '\0') {
-        snprintf(home_fields + strlen(home_fields), sizeof(home_fields) - strlen(home_fields),
-                 ",\"membership_fingerprint\":\"%s\"", a->membership_fingerprint);
+    /* cJSON escapes each string before signing. Manual interpolation was not
+     * safe for quotes, backslashes or control chars in user device names and
+     * could sign different bytes than the wire announce. Insertion order here
+     * is the Michi Link canonical lexicographic order, excluding signature. */
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) return -1;
+    cJSON *features = NULL;
+    cJSON *roles = NULL;
+    bool ok =
+        cJSON_AddStringToObject(root, "api_version", a->api_version) != NULL &&
+        cJSON_AddStringToObject(root, "device_id", a->device_id) != NULL;
+    if (ok) features = cJSON_AddObjectToObject(root, "features");
+    ok = ok && features != NULL &&
+         cJSON_AddBoolToObject(features, "heartbeat", a->feature_heartbeat) != NULL &&
+         cJSON_AddBoolToObject(features, "session", a->feature_session) != NULL &&
+         cJSON_AddBoolToObject(features, "volume", a->feature_volume) != NULL &&
+         cJSON_AddStringToObject(root, "host", a->host) != NULL;
+    if (ok && a->membership_fingerprint != NULL && a->membership_fingerprint[0] != '\0') {
+        ok = cJSON_AddStringToObject(root, "membership_fingerprint", a->membership_fingerprint) != NULL;
     }
-    if (a->michi_home_id != NULL && a->michi_home_id[0] != '\0') {
-        snprintf(home_fields + strlen(home_fields), sizeof(home_fields) - strlen(home_fields),
-                 ",\"michi_home_id\":\"%s\"", a->michi_home_id);
+    if (ok && a->michi_home_id != NULL && a->michi_home_id[0] != '\0') {
+        ok = cJSON_AddStringToObject(root, "michi_home_id", a->michi_home_id) != NULL;
     }
-
-    return snprintf(
-        out, out_len,
-        "{\"api_version\":\"%s\","
-        "\"device_id\":\"%s\","
-        "\"features\":{\"heartbeat\":%s,\"session\":%s,\"volume\":%s},"
-        "\"host\":\"%s\""
-        "%s,"
-        "\"michi_id\":\"%s\","
-        "\"name\":\"%s\","
-        "\"nonce\":\"%s\","
-        "\"port\":%u,"
-        "\"public_key\":\"%s\","
-        "\"roles\":[\"%s\"],"
-        "\"service\":\"%s\","
-        "\"timestamp_ms\":%" PRId64 "}",
-        a->api_version, a->device_id,
-        a->feature_heartbeat ? "true" : "false",
-        a->feature_session ? "true" : "false",
-        a->feature_volume ? "true" : "false",
-        a->host, home_fields, a->michi_id, a->name, a->nonce, (unsigned)a->port,
-        a->public_key, MICHI_DISCOVERY_ROLE, a->service, a->timestamp_ms);
+    ok = ok &&
+         cJSON_AddStringToObject(root, "michi_id", a->michi_id) != NULL &&
+         cJSON_AddStringToObject(root, "name", a->name) != NULL &&
+         cJSON_AddStringToObject(root, "nonce", a->nonce) != NULL &&
+         cJSON_AddNumberToObject(root, "port", a->port) != NULL &&
+         cJSON_AddStringToObject(root, "public_key", a->public_key) != NULL;
+    if (ok) roles = cJSON_AddArrayToObject(root, "roles");
+    if (ok && roles != NULL) {
+        cJSON *role = cJSON_CreateString(MICHI_DISCOVERY_ROLE);
+        if (role != NULL) {
+            if (!cJSON_AddItemToArray(roles, role)) {
+                cJSON_Delete(role);
+                ok = false;
+            }
+        } else ok = false;
+    } else ok = false;
+    ok = ok &&
+         cJSON_AddStringToObject(root, "service", a->service) != NULL &&
+         cJSON_AddNumberToObject(root, "timestamp_ms", (double)a->timestamp_ms) != NULL;
+    char *result = ok ? cJSON_PrintUnformatted(root) : NULL;
+    cJSON_Delete(root);
+    if (result == NULL) return -1;
+    const size_t needed = strlen(result);
+    if (needed >= out_len || needed > MICHI_DISCOVERY_MAX_DATAGRAM_BYTES) {
+        free(result);
+        return -1;
+    }
+    memcpy(out, result, needed + 1);
+    free(result);
+    return (int)needed;
 }
 
 /* Mandatory field validation: every announce string must exist and be
@@ -151,9 +173,9 @@ esp_err_t michi_discovery_build_announce(const michi_discovery_announce_t *a,
         cJSON_AddBoolToObject(features, "volume", a->feature_volume) !=
             NULL &&
         cJSON_AddStringToObject(root, "host", a->host) != NULL &&
-        (a->membership_fingerprint == NULL ||
+        (a->membership_fingerprint == NULL || a->membership_fingerprint[0] == '\0' ||
          cJSON_AddStringToObject(root, "membership_fingerprint", a->membership_fingerprint) != NULL) &&
-        (a->michi_home_id == NULL ||
+        (a->michi_home_id == NULL || a->michi_home_id[0] == '\0' ||
          cJSON_AddStringToObject(root, "michi_home_id", a->michi_home_id) != NULL) &&
         cJSON_AddStringToObject(root, "michi_id", a->michi_id) != NULL &&
         cJSON_AddStringToObject(root, "name", a->name) != NULL &&

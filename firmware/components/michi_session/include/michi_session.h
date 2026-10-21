@@ -111,7 +111,8 @@ typedef enum {
  * @brief Result of michi_session_heartbeat() (the HTTP layer maps it:
  *        TOKEN_MISMATCH -> 401, NO_SESSION/SESSION_MISMATCH -> 404,
  *        SEQUENCE_REPLAY -> 409 CONFLICT without renewing,
- *        SOURCE_MISMATCH -> 403 FORBIDDEN fail-closed).
+ *        SOURCE_MISMATCH -> 403 FORBIDDEN fail-closed,
+ *        WATCHDOG_ERROR -> 500 (never acknowledge an unarmed lease)).
  */
 typedef enum {
     MICHI_SESSION_HEARTBEAT_OK = 0,      /*!< Lease renewed to 30 s */
@@ -120,6 +121,7 @@ typedef enum {
     MICHI_SESSION_HEARTBEAT_SESSION_MISMATCH, /*!< session_id != active session */
     MICHI_SESSION_HEARTBEAT_SEQUENCE_REPLAY,  /*!< sequence repeated/older: no renew */
     MICHI_SESSION_HEARTBEAT_SOURCE_MISMATCH,  /*!< peer IP != session source IP: 403 forbidden */
+    MICHI_SESSION_HEARTBEAT_WATCHDOG_ERROR,   /*!< Timer restart failed: 500, lease NOT renewed */
 } michi_session_heartbeat_result_t;
 
 /**
@@ -147,6 +149,7 @@ typedef struct {
     uint16_t buffer_ms;                    /* jitter budget in effect (50..500) */
     uint8_t volume;                        /* APPLIED volume 0-100 */
     bool paused;                           /* true while playback is suspended */
+    uint32_t metadata_revision;             /* last accepted now-playing revision; 0 until received */
     uint32_t lease_remaining_ms;           /* REAL remaining window (monotonic
                                              deadline - now, floor, clamped
                                              >= 0; MS-08) */
@@ -384,6 +387,32 @@ esp_err_t michi_session_get_info(michi_session_info_t *out);
  *         session answers 404 / allows a new start instead of 409).
  */
 bool michi_session_active(void);
+
+/**
+ * @brief UI metadata extension result. No metadata may outlive its owning session.
+ * This is a local Michi Stream extension, NOT a v1-lite alpha.5 contract update.
+ */
+typedef enum {
+    MICHI_SESSION_METADATA_OK = 0,
+    MICHI_SESSION_METADATA_NO_SESSION,
+    MICHI_SESSION_METADATA_SESSION_MISMATCH,
+    MICHI_SESSION_METADATA_TOKEN_MISMATCH,
+    MICHI_SESSION_METADATA_OWNER_MISMATCH,
+    MICHI_SESSION_METADATA_STALE,
+    MICHI_SESSION_METADATA_DISPLAY_UNAVAILABLE,
+} michi_session_metadata_result_t;
+
+/**
+ * Applies title/artist/source to the display while holding the session mutex.
+ * Validates active lease, session id, Bearer owner and X-Michi-Session token.
+ * Clearing on stop/abort/lease expiration is handled by session teardown.
+ */
+michi_session_metadata_result_t michi_session_set_now_playing(
+    const char *session_token, const char *controller_id,
+    const char *session_id, uint32_t metadata_revision,
+    const char *source, const char *title, const char *artist);
+
+
 
 /**
  * @return true once michi_session_init() succeeded. Lets the API layer

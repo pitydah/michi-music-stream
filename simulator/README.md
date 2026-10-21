@@ -1,3 +1,11 @@
+> **H2 — Estado vigente:** la autenticación operativa es HOME_MEMBERSHIP.
+> Los modos `--pairing-open`, `--pairing-closed` y `--show-local-pairing-pin`
+> son fixtures de regresión histórica; el firmware físico no tiene botón
+> ni rutas de pairing. Para pruebas nuevas usar auth/challenge + auth/session.
+> La extensión now-playing con revisión monótona solo vive hoy en firmware
+> Stream como feature experimental desactivada; el simulador todavía no la
+> certifica.
+
 # Michi Music Stream Simulator
 
 Simulador HTTP canónico del protocolo Michi Link v1-lite para receptores Michi Music Stream. Permite que Micro Server integre receivers sin depender de hardware ESP32 real. Implementa EXCLUSIVAMENTE el contrato publicado en `contracts/michi-link/`; las rutas del dialecto legacy no existen.
@@ -93,3 +101,26 @@ python3 -m pytest simulator/tests -q
 - No envía ni recibe audio UDP real.
 - No implementa mDNS ni multicast firmado (el script no se anuncia en la red).
 - No persiste estado entre reinicios.
+
+## H3: extensión local de metadatos (NO certificada)
+
+El simulador expone en laboratorio `PUT /api/v1/receiver-lite/now-playing` para
+reproducir la validación de Stream sin placa física. Esta ruta NO forma parte
+del bundle v1-lite alpha.5 ni aparece como `features.now_playing=true`.
+
+Tras crear una sesión autorizada por Michi Home, enviar con el mismo Bearer:
+
+```bash
+curl -X PUT http://127.0.0.1:53319/api/v1/receiver-lite/now-playing \
+  -H 'Authorization: Bearer <HOME_BEARER>' \
+  -H 'X-Michi-Session: <RTP_SESSION_TOKEN>' \
+  -H 'Content-Type: application/json' \
+  -d '{"session_id":"<ACTIVE_SESSION_UUID>","source":"Living Room","title":"Teardrop","artist":"Massive Attack","revision":1}'
+```
+
+Una nueva canción debe usar revisión 2, 3, ... de la misma sesión; al iniciar
+una sesión nueva se reinicia desde 1. Devuelve 409 para revisiones obsoletas,
+403 si el Bearer pertenece a otro controlador, 401 si el token RTP es incorrecto
+y 404 si la sesión es inexistente o expiró. Los metadatos solo existen en RAM.
+La suite de integración HTTP comprueba estos casos, sin sustituir el ensayo
+real del dispositivo ni la implementación del productor en Micro Server.

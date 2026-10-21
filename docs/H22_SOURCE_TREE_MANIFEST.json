@@ -1,0 +1,3013 @@
+{
+  "baseline": "H22-DRIVE-SOURCE-PRETEST",
+  "files": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "sha256": "64da0ab277b7d2a83b913266ae2e7506a3a9be1588108099a751d4c12b9401b4",
+      "size": 8454
+    },
+    {
+      "path": ".gitignore",
+      "sha256": "8adb86f3273f2a88ca0f52564416163d9549f0e19673fdfd04c4b98908f50e15",
+      "size": 1127
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "63cfea5ef0d72822650e4e34fd39b28de453d3cf2931831705460f98bc5f9037",
+      "size": 1072
+    },
+    {
+      "path": "Michi Music Stream(1).png",
+      "sha256": "ea64879e7a17d422291adf2639471ff8afc231dcdb6436ad655794b732b0433a",
+      "size": 1528394
+    },
+    {
+      "path": "Michi Music Stream.svg",
+      "sha256": "ef478912c91504e6745d3c5e0324f17d4991c71549c923842f19bdb7d07c5431",
+      "size": 90881
+    },
+    {
+      "path": "README.md",
+      "sha256": "6e3b160d44ffc2db3606f57ffe5d59ca51dfd272a9c9d572f61c7abc3275a1c6",
+      "size": 8649
+    },
+    {
+      "path": "SOURCE_BASELINE_H21.md",
+      "sha256": "4b6ad58ac89b4a2957c26401959f0495e28ff9c20e397abcd9be438af8594912",
+      "size": 2772
+    },
+    {
+      "path": "SOURCE_BASELINE_H22.md",
+      "sha256": "309ef0c5790bc67e56bcda48bac187d90f1dbed3201f76a1322d1320d147c2e3",
+      "size": 3645
+    },
+    {
+      "path": "START_HERE.md",
+      "sha256": "04f2cb7f95b66f8a929aeb4343087336726cc9a6a244a8cfbbe2acc73f191484",
+      "size": 1119
+    },
+    {
+      "path": "contracts/michi-link/UPSTREAM_COMMIT",
+      "sha256": "de4d74530495859a75fd5f125c32393d2c3c4fe28cf59d21c9625c4f8f8657c8",
+      "size": 41
+    },
+    {
+      "path": "contracts/michi-link/VERSION",
+      "sha256": "4924621688fb73898590b40b786b606da259f4652c41c5b01aac494f9d113cb7",
+      "size": 14
+    },
+    {
+      "path": "contracts/michi-link/examples/negative/error-conflict.json",
+      "sha256": "dc6e6ec953610f6e95fe9fb9591353f80f9ccfb2961b44984e64db548174ae1b",
+      "size": 152
+    },
+    {
+      "path": "contracts/michi-link/examples/negative/error-forbidden.json",
+      "sha256": "ad973dd8f6cd0469e295a488f4ebf6ecf26a8b4c137a4aff1c49e5134cc6a102",
+      "size": 146
+    },
+    {
+      "path": "contracts/michi-link/examples/negative/error-internal.json",
+      "sha256": "4e326fbed5de7d4e8587a1d1f60081ea9942e37e4fc0ba9aa8b0864a4cc8b2d2",
+      "size": 152
+    },
+    {
+      "path": "contracts/michi-link/examples/negative/error-invalid-request.json",
+      "sha256": "5c112ac41049a1a229da65770526e4977f389307b7ff4f368672e055b0e25f59",
+      "size": 215
+    },
+    {
+      "path": "contracts/michi-link/examples/negative/error-not-found.json",
+      "sha256": "332ec4e7865ba20b862d959a0174340b22d58b74ff27727b1b78b1b905c749e9",
+      "size": 139
+    },
+    {
+      "path": "contracts/michi-link/examples/negative/error-not-implemented.json",
+      "sha256": "859dfb674c47d1729896db4d18a8e88bb302b14235cd9020c4c604c779276f68",
+      "size": 151
+    },
+    {
+      "path": "contracts/michi-link/examples/negative/error-rate-limited.json",
+      "sha256": "41a62ee04d2366dd6eccbd3128e6944afdd3b16b7cea43c181a8e4442ec20ed9",
+      "size": 150
+    },
+    {
+      "path": "contracts/michi-link/examples/negative/error-unauthorized.json",
+      "sha256": "7318f9c2eddf049c2bec87ff861be3d31c10c7eb9d6055b0c885eb69645d7ddb",
+      "size": 156
+    },
+    {
+      "path": "contracts/michi-link/examples/negative/receiver-heartbeat-repeated.json",
+      "sha256": "2ff4316fe0c747f765f34d3626bc91da67dc37891ece066165a12e7d043779ea",
+      "size": 107
+    },
+    {
+      "path": "contracts/michi-link/examples/negative/receiver-heartbeat-stale.json",
+      "sha256": "6995fbf7a50a127c50f2abe85dede8720519ba8b124500be50bc74925db54d32",
+      "size": 107
+    },
+    {
+      "path": "contracts/michi-link/examples/positive/receiver-heartbeat-response.json",
+      "sha256": "85823e43a7a8c141fcbdd3bddf510910be3dbeef8914a2003bc98d60e2d5dd3c",
+      "size": 135
+    },
+    {
+      "path": "contracts/michi-link/examples/positive/receiver-heartbeat.json",
+      "sha256": "e02d824a3ac033f257792212553073ce9e28482ecc45ecba0d30697147a996bc",
+      "size": 107
+    },
+    {
+      "path": "contracts/michi-link/examples/positive/receiver-session-create.json",
+      "sha256": "357b56cdb2135c863d082f863373b11e81a892ceff1f7383db5943609e3c1c49",
+      "size": 211
+    },
+    {
+      "path": "contracts/michi-link/examples/positive/receiver-session-created.json",
+      "sha256": "44cb975fd99572ed60ceb8084c01593b7420c54a7af9175836a0d2bef1f94278",
+      "size": 423
+    },
+    {
+      "path": "contracts/michi-link/examples/positive/receiver-session-patch.json",
+      "sha256": "cf3c991a7dd8d606ac3f7be7397a5aef1ac66e36b49545555669e7179a2f5065",
+      "size": 37
+    },
+    {
+      "path": "contracts/michi-link/examples/positive/receiver-session-status.json",
+      "sha256": "bab12a74501a87207494c54cda7c26fa188fe6b904b7e5aeea3bb74dbf973769",
+      "size": 284
+    },
+    {
+      "path": "contracts/michi-link/manifest.json",
+      "sha256": "4a3969588b6d1887a5159810f3973bbb5359ff7cd8b83415b323bf99b34d5040",
+      "size": 13699
+    },
+    {
+      "path": "contracts/michi-link/openapi/michi-link-v1.yaml",
+      "sha256": "165f04983b1cfbbcaacb59500c9c317bb5e7161ea119831269580c21f80b7dd7",
+      "size": 197782
+    },
+    {
+      "path": "contracts/michi-link/schemas/album.schema.json",
+      "sha256": "e6e35c182111d5ddbe1c1bdac0772cbc07f8f6d19e6508d1322e5ece6a561197",
+      "size": 1771
+    },
+    {
+      "path": "contracts/michi-link/schemas/artist.schema.json",
+      "sha256": "7399cb4815a9d679e81af7bf08198938a988d96d17bce2d9ebee19c0c4bce13f",
+      "size": 1565
+    },
+    {
+      "path": "contracts/michi-link/schemas/artwork.schema.json",
+      "sha256": "c9b5723b0987f3f2810744624a39d599944178c6566025795c57cffb8a5dfa26",
+      "size": 1651
+    },
+    {
+      "path": "contracts/michi-link/schemas/audio-capabilities.schema.json",
+      "sha256": "1e38a8bd70678055be2a8475de31090b9d5115d7d910eaed1a4ce2d6ddd94d09",
+      "size": 3348
+    },
+    {
+      "path": "contracts/michi-link/schemas/audio-chain.schema.json",
+      "sha256": "f87808e5a4e8d145237bbfb8a7ccb838b08f04b9d8fe3e954bd91aa65219f969",
+      "size": 2761
+    },
+    {
+      "path": "contracts/michi-link/schemas/continue-on-server.schema.json",
+      "sha256": "b327d28fffb9210e9b04bd773e842bfe7ff1c041ee5a82ba6d42396ed628bdaa",
+      "size": 2014
+    },
+    {
+      "path": "contracts/michi-link/schemas/device-auth-challenge-request.schema.json",
+      "sha256": "1abac28a785f4ef34233c0773479fcc5bfafa760d6d9b43860744db9a282a888",
+      "size": 963
+    },
+    {
+      "path": "contracts/michi-link/schemas/device-auth-challenge-response.schema.json",
+      "sha256": "954475297c122207099554cd29d927f31b4f69d15fbad9e2dcf6649f4ab48a56",
+      "size": 1367
+    },
+    {
+      "path": "contracts/michi-link/schemas/device-auth-session-request.schema.json",
+      "sha256": "ca50abb3fc92d302dcddbfb02ef2df4babf46467bbfd89c1ff63a6ed8014890a",
+      "size": 1253
+    },
+    {
+      "path": "contracts/michi-link/schemas/device-auth-session-response.schema.json",
+      "sha256": "5fc0aa92755369fa33bda31afb08981a2db747e30b6da5f41c49909347d16af2",
+      "size": 1589
+    },
+    {
+      "path": "contracts/michi-link/schemas/device-info.schema.json",
+      "sha256": "a2d01d3668bf79d6493ef2298b1cff7fda2b2ac164c2aca3d5ad1a90e184fc24",
+      "size": 1234
+    },
+    {
+      "path": "contracts/michi-link/schemas/discovery-announce.schema.json",
+      "sha256": "6e8331703167230d231e1b94621375a52d33ede9342db4663973954556c1e8fd",
+      "size": 4974
+    },
+    {
+      "path": "contracts/michi-link/schemas/e2e-report.schema.json",
+      "sha256": "0381a24364763d8276a84f25ef66683a536d204e85609d1639b4f52855be4433",
+      "size": 3177
+    },
+    {
+      "path": "contracts/michi-link/schemas/error.schema.json",
+      "sha256": "329c86c13b61693c80c22a5fcdf5765a619cc4ca2e358192fd5e82c21461efe6",
+      "size": 1892
+    },
+    {
+      "path": "contracts/michi-link/schemas/event.schema.json",
+      "sha256": "e55404b60a0a17af8beeb8d9f0aface7dd28c99103dd7e21e30103cf54ec4bad",
+      "size": 878
+    },
+    {
+      "path": "contracts/michi-link/schemas/home-device-revocation.schema.json",
+      "sha256": "66de058c64facf8dea937b515cb5a94063cfd458fcadf16258a777da2f6d4a23",
+      "size": 1445
+    },
+    {
+      "path": "contracts/michi-link/schemas/home-device-roster.schema.json",
+      "sha256": "2d8ab5cf01d0feea06c2bb0fc3642678286a1220a0b16d714d7d942413dd83f9",
+      "size": 2541
+    },
+    {
+      "path": "contracts/michi-link/schemas/import-commit-result.schema.json",
+      "sha256": "0ec46f17b56510c2c57c4ff7039963449589feafe1b168a30e8a825dd87e87b9",
+      "size": 1770
+    },
+    {
+      "path": "contracts/michi-link/schemas/import-preflight-response.schema.json",
+      "sha256": "cf75c6c8649e8c3886c69d8fe44d4e2cafd89da24f8396e55100daa145dd07db",
+      "size": 2181
+    },
+    {
+      "path": "contracts/michi-link/schemas/import-preflight.schema.json",
+      "sha256": "84c3c47d1943b885485af27333e9be78a47c9e5fdd338158c52e560b32aa8df2",
+      "size": 1830
+    },
+    {
+      "path": "contracts/michi-link/schemas/import-upload-result.schema.json",
+      "sha256": "4fdc6277776d34c4744bd7f31b64268bbd4792d0f75aebe7c7528cb73d5a0fd7",
+      "size": 930
+    },
+    {
+      "path": "contracts/michi-link/schemas/library-stats.schema.json",
+      "sha256": "f16e65e9fef36de2eb1c539aee178943615e5cb2f5b82b68f64dac65fca96506",
+      "size": 808
+    },
+    {
+      "path": "contracts/michi-link/schemas/michi-home.schema.json",
+      "sha256": "251913dac802a391b6c66c974ed199be846d2ec532adbf59cfe2f0d78fc52a51",
+      "size": 1566
+    },
+    {
+      "path": "contracts/michi-link/schemas/michi-identity.schema.json",
+      "sha256": "2662d04b1960533a87589acff5cbc36f666e085f4e3249de8f5380f03575d578",
+      "size": 1461
+    },
+    {
+      "path": "contracts/michi-link/schemas/michi-membership.schema.json",
+      "sha256": "b0bc3df55f2eeae71bb753b0aa277def947254aa837bbad961cf9ab8b31218a6",
+      "size": 2405
+    },
+    {
+      "path": "contracts/michi-link/schemas/pair-confirm-response.schema.json",
+      "sha256": "a56fc43c1271835aa35acf84682074a9273394c14c8dcc9596f3522ccea5c179",
+      "size": 1495
+    },
+    {
+      "path": "contracts/michi-link/schemas/pair-confirm.schema.json",
+      "sha256": "06583cb370719a84029b3b6cd7726a6ad3fff0bb0b2a351d4e735b9ad09c2f70",
+      "size": 1450
+    },
+    {
+      "path": "contracts/michi-link/schemas/pair-recover-response.schema.json",
+      "sha256": "56a7b4e7af0c42dcba9d1ccabdde1ac850992a0fa0a8c4e2db375321aef1f517",
+      "size": 1151
+    },
+    {
+      "path": "contracts/michi-link/schemas/pair-recover-start-response.schema.json",
+      "sha256": "a759e176d7a68f17267e7734d60febcd37f0c25505705d0f3dd3c8e24d164fbf",
+      "size": 1453
+    },
+    {
+      "path": "contracts/michi-link/schemas/pair-recover-start.schema.json",
+      "sha256": "9e2244a86640e31e4a54d50b1d95ddd2ee136d08003a13b742664331aee274e1",
+      "size": 900
+    },
+    {
+      "path": "contracts/michi-link/schemas/pair-recover.schema.json",
+      "sha256": "679819baba504461eafa642a44cabb362ecca1d0341ce5ab7364fe659df000e8",
+      "size": 1493
+    },
+    {
+      "path": "contracts/michi-link/schemas/pair-start-response.schema.json",
+      "sha256": "057c28d5f601da4e577574002291011431b18d635ff5e147439b620f7cdfa8ab",
+      "size": 1557
+    },
+    {
+      "path": "contracts/michi-link/schemas/pair-start.schema.json",
+      "sha256": "091fe31822a02f6aa9dce0c3c9cb67b2a389fdd61c3b3ece217db621c7dd467e",
+      "size": 2823
+    },
+    {
+      "path": "contracts/michi-link/schemas/pair-status.schema.json",
+      "sha256": "5fc4abeb2a45de8b31d705e825be9f99d656b305cb943ad4360df2a4dc89df40",
+      "size": 1311
+    },
+    {
+      "path": "contracts/michi-link/schemas/playback-control.schema.json",
+      "sha256": "4e7bec36f18199c1fa8919cd616d1853dfd469b1402f5c433bb44278b6ddf452",
+      "size": 1311
+    },
+    {
+      "path": "contracts/michi-link/schemas/playback-state.schema.json",
+      "sha256": "5e446d74cb7c82d79dab2de464bab8a39a4a4f29d9efefabe90a7e929d24a011",
+      "size": 1824
+    },
+    {
+      "path": "contracts/michi-link/schemas/playlist.schema.json",
+      "sha256": "c43edb5809f2f37eafd052c00d581e07d6c882cf25e2cdb4f04a701b62f5c9c1",
+      "size": 2078
+    },
+    {
+      "path": "contracts/michi-link/schemas/qr-pairing.schema.json",
+      "sha256": "342dc1ba5f320217af0e01f99e70cd7f36e9957e8bb1ba4c9ecc2bcaf269f838",
+      "size": 2104
+    },
+    {
+      "path": "contracts/michi-link/schemas/queue-add-request.schema.json",
+      "sha256": "4e666e7eb2bfaf9663fa9e4363ca0d9387d6fa26cdeea661d6891254e5730fce",
+      "size": 710
+    },
+    {
+      "path": "contracts/michi-link/schemas/queue-bulk.schema.json",
+      "sha256": "d956e5b8399c3bf27f9c80c8d99b559755c0b2ce1908a1bfed3151709467deb0",
+      "size": 568
+    },
+    {
+      "path": "contracts/michi-link/schemas/queue-jump-request.schema.json",
+      "sha256": "bfb3a89bde8ad408ba46898d830b2e9ac52b889102e31e3bd2282d746ee1836c",
+      "size": 616
+    },
+    {
+      "path": "contracts/michi-link/schemas/queue-transfer-response.schema.json",
+      "sha256": "64efaab38c91ff2e128aa81a41efed900b21f371a0df46e49f0b8f64efcef8ea",
+      "size": 606
+    },
+    {
+      "path": "contracts/michi-link/schemas/queue-transfer.schema.json",
+      "sha256": "df7fcbcff09bb76de0adcf9c12a269f7bfaf6433c318e85f50e5d34a70e4b57e",
+      "size": 749
+    },
+    {
+      "path": "contracts/michi-link/schemas/queue.schema.json",
+      "sha256": "881ca473cfd88a71fb64aa386908defebaa3dbd03cc83ac41f2e077f808b7d50",
+      "size": 948
+    },
+    {
+      "path": "contracts/michi-link/schemas/receiver-heartbeat-response.schema.json",
+      "sha256": "7f5e5609e3e4414913d898b3ebd012dcf5e3f8646c9236dd0ae47ba678d5d85f",
+      "size": 1222
+    },
+    {
+      "path": "contracts/michi-link/schemas/receiver-heartbeat.schema.json",
+      "sha256": "e782056e070378b1471f2b471ae761a19298293b478b3e0f251876c673d8bff4",
+      "size": 1208
+    },
+    {
+      "path": "contracts/michi-link/schemas/receiver-now-playing.schema.json",
+      "sha256": "ebda5cfa3c2d9981e8067e77f1e171ef0de4af34fa3b59050bb95f5cc0ebb4a4",
+      "size": 529
+    },
+    {
+      "path": "contracts/michi-link/schemas/receiver-session-create.schema.json",
+      "sha256": "8c47b15f2e4a59f582301ce22c7b54e3ac6da64fb44984241124fa25da531a33",
+      "size": 2537
+    },
+    {
+      "path": "contracts/michi-link/schemas/receiver-session-patch.schema.json",
+      "sha256": "5ec56917eb5ee069870db63ee427468d7412b2d23a661a444b3ab36d534b6f16",
+      "size": 807
+    },
+    {
+      "path": "contracts/michi-link/schemas/receiver-session.schema.json",
+      "sha256": "e098ad14d1a76f1a929ca124440681ca58bfb7b40b12576f4932969050cea90d",
+      "size": 6910
+    },
+    {
+      "path": "contracts/michi-link/schemas/room.schema.json",
+      "sha256": "be64b2d8aca6aa89f0e347aa58b97f251b19c09ee3ad3ac558d1fbbe8293bba1",
+      "size": 1937
+    },
+    {
+      "path": "contracts/michi-link/schemas/search-results.schema.json",
+      "sha256": "934127bd2d8e4ed0257a998299c516e28d3c3a47052c58ccc0a93eeb9ad9b67f",
+      "size": 1384
+    },
+    {
+      "path": "contracts/michi-link/schemas/server-info.schema.json",
+      "sha256": "bd02a612889fc07fab6ee3813c69f75ae9c07869c01b98ca474c5a8fb9a153b9",
+      "size": 13463
+    },
+    {
+      "path": "contracts/michi-link/schemas/sync-delta.schema.json",
+      "sha256": "df127241cd5eb53969b82facd625fc94c2e2fc7ba699f5d226c6261453ccf8a7",
+      "size": 2858
+    },
+    {
+      "path": "contracts/michi-link/schemas/sync-manifest.schema.json",
+      "sha256": "828b85121120484d485074952b9b8a0008f74bf8c30e559eda3c39ce862cf655",
+      "size": 2325
+    },
+    {
+      "path": "contracts/michi-link/schemas/sync-state-request.schema.json",
+      "sha256": "109e0967018a13b64bf4eacc687abaaa65642169c4e0caa304463fa5c447702f",
+      "size": 1184
+    },
+    {
+      "path": "contracts/michi-link/schemas/token-refresh.schema.json",
+      "sha256": "94dd704373d9281b6c706834dcdd746f683c7da0cb7bef54623c9689b8a6d26c",
+      "size": 916
+    },
+    {
+      "path": "contracts/michi-link/schemas/track-bulk.schema.json",
+      "sha256": "93b6667bd16d1a68b5a1d936c5b43e1882d1282cc9e02ff82e4f6cc686b4e745",
+      "size": 515
+    },
+    {
+      "path": "contracts/michi-link/schemas/track-identity.schema.json",
+      "sha256": "8c71e63be321982ce6ab0dd09f9a30f76c7dfa0b265482b0a229201fb66a5c4a",
+      "size": 2191
+    },
+    {
+      "path": "contracts/michi-link/schemas/track.schema.json",
+      "sha256": "084c371270f7a9609253457485dbd535e1cc0160bdaec23997bb1f018a2489f8",
+      "size": 3426
+    },
+    {
+      "path": "contracts/michi-link/vectors/discovery/announce-signature-altered.json",
+      "sha256": "0cb28f8213e1b8a1cf310a54a0128fbda390bccde5da25ae17b061589c62ed4c",
+      "size": 622
+    },
+    {
+      "path": "contracts/michi-link/vectors/discovery/announce-valid.json",
+      "sha256": "f68fed305862a56d36b40d21bee9dcea46b1e656fead6261d3dd083cb3ea7ff1",
+      "size": 622
+    },
+    {
+      "path": "contracts/michi-link/vectors/identity/server-info-hifi.json",
+      "sha256": "584ab38612b731b94d89f06d3a57c4de68ece26c492e5bbffe4dbf87c95bee1c",
+      "size": 1034
+    },
+    {
+      "path": "contracts/michi-link/vectors/identity/server-info-standard.json",
+      "sha256": "71ffbe5544e50ea3ba8427c9358ff5aa358ce7d18bae842a9d46f1ff21e6f2f5",
+      "size": 1038
+    },
+    {
+      "path": "contracts/michi-link/vectors/pairing/pair-confirm-replay.json",
+      "sha256": "bc93923f3e232129c856971247f05d3df4c433d333874d642b4035deb1cc0822",
+      "size": 202
+    },
+    {
+      "path": "contracts/michi-link/vectors/pairing/pair-confirm-response.json",
+      "sha256": "f1680db457298f2a63cc7ad9a86a6ed5e27b4faaf0950600bc539f27140800c3",
+      "size": 190
+    },
+    {
+      "path": "contracts/michi-link/vectors/pairing/pair-confirm-valid.json",
+      "sha256": "bc93923f3e232129c856971247f05d3df4c433d333874d642b4035deb1cc0822",
+      "size": 202
+    },
+    {
+      "path": "contracts/michi-link/vectors/pairing/pair-confirm-wrong-pin.json",
+      "sha256": "96b85d6fce15814dc9218ae53dd3a6a30a40700140343ce73f660e88cdb92f9f",
+      "size": 202
+    },
+    {
+      "path": "contracts/michi-link/vectors/pairing/pair-start-nonce-altered.json",
+      "sha256": "3c1609c854fe896c3e73177574834a87a73f8e75c1264ad72ac8b26e6e919867",
+      "size": 430
+    },
+    {
+      "path": "contracts/michi-link/vectors/pairing/pair-start-valid.json",
+      "sha256": "52b0a7cbd46b8a2f457851a40180c3a4d435e25c50fdc1986948bdf084b1ece5",
+      "size": 430
+    },
+    {
+      "path": "contracts/michi-link/vectors/pairing/pair-start-wrong-michi-id.json",
+      "sha256": "2ed5a6045c3e5bc543a75eeee3f2ef02c92304cdf120eadb5e9a9253b8a461ef",
+      "size": 430
+    },
+    {
+      "path": "docs/CURRENT_PRETEST_BASELINE.md",
+      "sha256": "e19094e0c16c9ac897e12d153b7e08301b83dbd321fcf66c2f7846189880d549",
+      "size": 1224
+    },
+    {
+      "path": "docs/DRIVE_PATCH_2026_10_18.md",
+      "sha256": "8f202b479b37defc4c36641a58d7d164d6d12083096a10882e8e6490561a1e0d",
+      "size": 3701
+    },
+    {
+      "path": "docs/ESTADO_CIERRE_FUENTES.md",
+      "sha256": "63bdb074113585c9350aef552c8c3624d5078463afd982dc5074fc0b54e82f45",
+      "size": 2861
+    },
+    {
+      "path": "docs/H10_I2S_RESOURCE_OWNERSHIP_KILLCRITIC.md",
+      "sha256": "7fc81d713e47b411ea8c7f5308462b71fc3435cc18ebac9723e11bac074902a7",
+      "size": 4258
+    },
+    {
+      "path": "docs/H11_KILLCRITIC_FIRMWARE_CLOSURE.md",
+      "sha256": "8727a968f15d1700339c28bc89fec59add06c96845bee21117f15e5b1b36a2a0",
+      "size": 6323
+    },
+    {
+      "path": "docs/H12_KILLCRITIC_PRETEST_HANDOFF.md",
+      "sha256": "6b88fd8df713e9e1e8abcc7bc665d6602a9c97c9df10c045069abc7e8401f721",
+      "size": 3816
+    },
+    {
+      "path": "docs/H12_SOURCE_MANIFEST.json",
+      "sha256": "8f930565c3bc71575ea96a23bd6b719bdf93e9e111e3b63a03b564346b975792",
+      "size": 3484
+    },
+    {
+      "path": "docs/H13_KILLCRITIC_CLOSURE.md",
+      "sha256": "91bd4cfbb5d99d798766670ef89798ee2535ca1fc587b34506ebadc4840089c3",
+      "size": 4465
+    },
+    {
+      "path": "docs/H13_SOURCE_MANIFEST.json",
+      "sha256": "d151d214fd804f872e9aac82dcc195b60b3e89902e149fbcf69b937e2a83a93b",
+      "size": 4208
+    },
+    {
+      "path": "docs/H14_KILLCRITIC_PRETEST_CLOSURE.md",
+      "sha256": "4d53b0728d464e6b178fa0e23b1f6d824192a371277825978bc357d67db0ee6a",
+      "size": 4609
+    },
+    {
+      "path": "docs/H14_SOURCE_MANIFEST.json",
+      "sha256": "180cc83b25e534bd6f6146d4b5ab2cbd71f5dd03ff80e3bdfbc04b9d1d0d727c",
+      "size": 5465
+    },
+    {
+      "path": "docs/H15_DRIVE_SCOPE_MATRIX.json",
+      "sha256": "0c3a29dc1f8fdd05bc6c4c03e8a5db522c2be7ca0157f7ddc0e1b987506844de",
+      "size": 1560
+    },
+    {
+      "path": "docs/H15_KILLCRITIC_SOURCE_CLOSURE.md",
+      "sha256": "9698356f4a56c82c9e768ba8179f71764b6aa54bd63471abf17c9922648bde42",
+      "size": 9172
+    },
+    {
+      "path": "docs/H15_SOURCE_MANIFEST.json",
+      "sha256": "5dcc4f6790a2ea5e1967c8e940250041c0624abddc009a668c03e8859c619592",
+      "size": 8491
+    },
+    {
+      "path": "docs/H16R_JITTER_INTEGRITY_RECOVERY.md",
+      "sha256": "34cffa19ceeb63ec5c07a5163bcd9deb3da7221c5ab546a830439b77e66423e7",
+      "size": 1944
+    },
+    {
+      "path": "docs/H16R_MANIFEST.json",
+      "sha256": "864aef68391025b918f2e9d2ccee2599eae2b08aa6f374aeaa567b6d265e192b",
+      "size": 2781
+    },
+    {
+      "path": "docs/H16_H18_SOURCE_CLOSURE_GATES.md",
+      "sha256": "301d8efe5f65e0d15841aeecf454275b632751ebe5b43c481080242bb03879a4",
+      "size": 3431
+    },
+    {
+      "path": "docs/H16_MANIFEST.json",
+      "sha256": "d36f5f87378d328a9a211c83632645c11adc786c2abd468861409e7eae7d0865",
+      "size": 1631
+    },
+    {
+      "path": "docs/H16_OPEN_CODE_VALIDATION.md",
+      "sha256": "9a1024bbce547bb71153d5ba72627aeb47013cb8b84a511f45ee54df9c5c8762",
+      "size": 946
+    },
+    {
+      "path": "docs/H16_WATCHDOG_INDEPENDENT_FAILCLOSED.md",
+      "sha256": "8daad9008ddd1cd385ee5644960f6aa391ece6fbf0e14c377f6cfd6c2b646421",
+      "size": 2915
+    },
+    {
+      "path": "docs/H17_KILLCRITIC_ENGINEERING_MATRIX.md",
+      "sha256": "4e46c96abb237cf95544f1d389f963fafd5c13f01dcc592a3056cc0559c435c3",
+      "size": 9034
+    },
+    {
+      "path": "docs/H17_SOURCE_SNAPSHOT_DELIVERY.md",
+      "sha256": "57dad381ed719515eb68f69ea91cd8fe9530e5253d5fbc5bcf5b85580feb6456",
+      "size": 2207
+    },
+    {
+      "path": "docs/H18_KILLCRITIC_SOURCE_CORRECTIONS.md",
+      "sha256": "f87a0043d4f1d510769dbd4ab5b88e42f21fd0649707d0934db1cd46110c7d14",
+      "size": 4752
+    },
+    {
+      "path": "docs/H18_SOURCE_MANIFEST.json",
+      "sha256": "41eeb7fb6001ebd8846647887ed4a5bdb9696809cf4b58f11eebed73c4a0f024",
+      "size": 2396
+    },
+    {
+      "path": "docs/H19_DRIVE_INTEGRATION_STATUS.md",
+      "sha256": "83fa9a5982f7654827b490c6aec22dfc37cb76ed39b28f049f0a79b78521a289",
+      "size": 2497
+    },
+    {
+      "path": "docs/H19_SOURCE_ENGINEERING_HANDOFF.md",
+      "sha256": "26c3238c3d2dd6d026f78304b6a02235773820179aaca825744eb46bb9c589a4",
+      "size": 4690
+    },
+    {
+      "path": "docs/H19_SOURCE_MANIFEST.json",
+      "sha256": "387e2438faddd468c97dc126f2df9cf44bddb35fdf3f692ad4be499577796bde",
+      "size": 3377
+    },
+    {
+      "path": "docs/H20_SOURCE_MANIFEST.json",
+      "sha256": "40202fad84dcc78f0de9b5c0aba25eecfcae8bd46ac3f3229065297fc22947e2",
+      "size": 1319
+    },
+    {
+      "path": "docs/H20_SOURCE_RECONCILIATION_AND_RELEASE.md",
+      "sha256": "668494cdc91b5221c0409e831cd919ef2a20823735d6b5f032ff64708a20b5c7",
+      "size": 3783
+    },
+    {
+      "path": "docs/H21_SOURCE_INTEGRITY.json",
+      "sha256": "869d85f5c5ca6f171a12eb3f8b8d56bf089be768bf25c8ecf59d01389c560a9b",
+      "size": 753
+    },
+    {
+      "path": "docs/H22_OPENCODE_LOCAL_VALIDATION.md",
+      "sha256": "1c1d4a3287eeb872b08ec69b2d1fd524f99f08a1cf07e6c685bc71a71daf1f6a",
+      "size": 2134
+    },
+    {
+      "path": "docs/H2_KILLCRITIC_DELIVERY.md",
+      "sha256": "62c154177451a08497bad0d85bf6f2d9fe6852019ab1bc82f43ab2e417ffb6f1",
+      "size": 2658
+    },
+    {
+      "path": "docs/H3_INTEROP_HANDOFF.md",
+      "sha256": "b1116d7ef04c8ab344191b4f3aeea8aa2b47b65deb119c0eabb61f49347a7b7f",
+      "size": 2710
+    },
+    {
+      "path": "docs/H4_AUDIO_RELIABILITY_HANDOFF.md",
+      "sha256": "18e80346f217c46a0df734b693d069d6472bdce1df47e8a61522c549f5bbf86b",
+      "size": 5345
+    },
+    {
+      "path": "docs/H5_KILLCRITIC_AUDIT.md",
+      "sha256": "9056a3bd593453433c4846f7c8fdaa75100c73528f7fbb26d1e95c91a53907bf",
+      "size": 4056
+    },
+    {
+      "path": "docs/H6_RTP_PLAYOUT_KILLCRITIC.md",
+      "sha256": "2b97899e78c9264a4ff8d5d23e3535d664cdaa2bb210431d88dc82ad2f2918b0",
+      "size": 4113
+    },
+    {
+      "path": "docs/H7_KILLCRITIC_AUDIO_CONTROL.md",
+      "sha256": "c9c6e068cc9da017def62c9dbedc7aefb5988f847486e4251c5983e8e8aa8348",
+      "size": 4574
+    },
+    {
+      "path": "docs/H8_FIRMWARE_PCM_RAMP_AND_FRAME_INTEGRITY.md",
+      "sha256": "75915e19008b5e7772bc55e9e2f7038cd1416582b21a29b2e93a014a56594e6d",
+      "size": 4986
+    },
+    {
+      "path": "docs/H9_KILLCRITIC_FIRMWARE_RELIABILITY.md",
+      "sha256": "35ef608d69f9087ef2d3b77552e9e51245213631b4b98dbbf0522b52d55cffdf",
+      "size": 6350
+    },
+    {
+      "path": "docs/HARDENING_SECURITY_SESSION.md",
+      "sha256": "de5c853850cde475e181b6333537701d0758d88e21d3d70c760e9bd03ec2d3dd",
+      "size": 3314
+    },
+    {
+      "path": "docs/HARDWARE_HIFI.md",
+      "sha256": "6dccf0ccf55f63b204e2eb1389d8d6ec3393f70b1bb0f32d89839972e324e72f",
+      "size": 4080
+    },
+    {
+      "path": "docs/HARDWARE_STANDARD.md",
+      "sha256": "e66ec21a81b720f3c8f62051406b1be0d816a876f66f0299140614acbf8a4760",
+      "size": 2456
+    },
+    {
+      "path": "docs/I1_I3_STREAM_INTEROPERABILITY_HANDOFF.md",
+      "sha256": "b982168eac6e4fe32ea5024d32e9c7804d300b42af1305374e4f12ce0b8d91a2",
+      "size": 5280
+    },
+    {
+      "path": "docs/MICHI_H8_IMPORTANTE_ESTADO_DRIVE.md",
+      "sha256": "897a13448ee4a99a1f82eee4dc02450e9b1bb56c539d4a380741f04227deab46",
+      "size": 2374
+    },
+    {
+      "path": "docs/NETWORKING.md",
+      "sha256": "971026aec0dd50b2325726adb37b3aa6e5897316ea01ed8498e552b673b07335",
+      "size": 1663
+    },
+    {
+      "path": "docs/NOW_PLAYING_EXTENSION.md",
+      "sha256": "17d316dafd03359e87600a4c143ecdac6b6e5b92ff6b5b517d6eab1151c07eef",
+      "size": 6391
+    },
+    {
+      "path": "docs/OPENCODE_H10_LOCAL_VALIDATION.md",
+      "sha256": "3bc68b4fa57438d58cea4c48d860aca269f69a7219236c07df7f7f86cd05bb1e",
+      "size": 2808
+    },
+    {
+      "path": "docs/OPENCODE_H11_LOCAL_VALIDATION.md",
+      "sha256": "5c83459230b03384724e14850c2bf841430326d41ef7508f119ce74a745a669a",
+      "size": 3401
+    },
+    {
+      "path": "docs/OPENCODE_H12_LOCAL_VALIDATION.md",
+      "sha256": "016df8840eb9a6c24e139f3415fd7847daf0fe5f04088477d738e349fe1c1b35",
+      "size": 3233
+    },
+    {
+      "path": "docs/OPENCODE_H13_LOCAL_VALIDATION.md",
+      "sha256": "be0b37711c8e5d72d235d7524f3d36b31051975114c944145e0b857eb2866585",
+      "size": 3119
+    },
+    {
+      "path": "docs/OPENCODE_H14_LOCAL_VALIDATION.md",
+      "sha256": "41ae43444be3a49b49294ad39a2417bac69c9e9b02582b2a7192e8f3032e164b",
+      "size": 3680
+    },
+    {
+      "path": "docs/OPENCODE_H15_VALIDATION.md",
+      "sha256": "c0e3a941718850e9e38783ad954c8f3a3b7e198cd75f53ecfa442ca623301bd7",
+      "size": 1868
+    },
+    {
+      "path": "docs/OPENCODE_H18_LOCAL_VALIDATION.md",
+      "sha256": "f7714a6831bb7a86bc806acc907e4f6822de581694fef3c95212d94fe706ea19",
+      "size": 1867
+    },
+    {
+      "path": "docs/OPENCODE_H19_LOCAL_VALIDATION.md",
+      "sha256": "f26802d097b11395d3b2f5408b894d5ff7a94c647736845d5d90c4e7b8972eaa",
+      "size": 1439
+    },
+    {
+      "path": "docs/OPENCODE_H20_VALIDATION.md",
+      "sha256": "50337b666c3c0f2c079d6821e95fae26032def2080ceb24729a155acd540215f",
+      "size": 1348
+    },
+    {
+      "path": "docs/OPENCODE_H2_VALIDATION.md",
+      "sha256": "4b51e05157f0d7d4ad1818b95ee5b28ba96122a742431da1de17bf9fdcae9d92",
+      "size": 2579
+    },
+    {
+      "path": "docs/OPENCODE_H3_LOCAL_VALIDATION.md",
+      "sha256": "887ded9d811412b39d258138806b7a238b22598fc04826aa5efc120176ddbc64",
+      "size": 2228
+    },
+    {
+      "path": "docs/OPENCODE_H4_AUDIO_VALIDATION.md",
+      "sha256": "bb48194bb7ec11a8cb6d28b40efdd2a6aef91892453fdcf132f4bcab1b1839c2",
+      "size": 2097
+    },
+    {
+      "path": "docs/OPENCODE_H5_LOCAL_VALIDATION.md",
+      "sha256": "f802fe8ee18300ce641012c6605c53b670e591f8f29519c0a590a24da78af8a0",
+      "size": 2079
+    },
+    {
+      "path": "docs/OPENCODE_H6_LOCAL_VALIDATION.md",
+      "sha256": "ed8b5e07665354dde9fbadb7639cfd1253fb44ad57cc9a9d7ce8bd4e3201a752",
+      "size": 2663
+    },
+    {
+      "path": "docs/OPENCODE_H7_LOCAL_VALIDATION.md",
+      "sha256": "e71aeb87b4ffb3d8767eef12f50a60e2912b6113e8c80ae6005b11bca02b74a3",
+      "size": 2368
+    },
+    {
+      "path": "docs/OPENCODE_H8_LOCAL_VALIDATION.md",
+      "sha256": "b9f2e944572bc8913845251c11ba49db1382afccf7b9fdd6cd83741705440d75",
+      "size": 2932
+    },
+    {
+      "path": "docs/OPENCODE_H9_LOCAL_VALIDATION.md",
+      "sha256": "9f45d88c258d23ee2b15be7697ac7d2371ea1964fd0df9dd3d63629248365c1f",
+      "size": 3328
+    },
+    {
+      "path": "docs/OPENCODE_HARDENING_LOCAL_VALIDATION.md",
+      "sha256": "246f3c8a90cc3bcf71f8c281fed1c5a351d4093ddf8840de079d4a15ff0c9e74",
+      "size": 2601
+    },
+    {
+      "path": "docs/OPENCODE_I1_I3_STREAM_VALIDATION.md",
+      "sha256": "53b15b9f7e119982fd05b9289bf9391dfbe995541f820b6777718778432eb5bc",
+      "size": 1938
+    },
+    {
+      "path": "docs/OPENCODE_LOCAL_VALIDATION_SPRINT_AB.md",
+      "sha256": "da2e9b8197957ef9dd3138df491c0ebc4773cfe6d624fe6c93af81c167b2262f",
+      "size": 2839
+    },
+    {
+      "path": "docs/OVERVIEW.md",
+      "sha256": "e59a9c1e17624f4394b85f456ded6fb6aecca62d09fff7b2d24390798abbad4b",
+      "size": 2249
+    },
+    {
+      "path": "docs/PAIRING_BUTTON.md",
+      "sha256": "b9113497e248abba1ea60322716665367647c240718e01b07328a6c28fd00b65",
+      "size": 1687
+    },
+    {
+      "path": "docs/RECEIVER_SIMULATOR.md",
+      "sha256": "469c0bec9637df35d0ceb653b1bd327b9f39bdfea553adfae4d5c442acdf58ff",
+      "size": 2283
+    },
+    {
+      "path": "docs/RECEIVER_SIMULATOR_CI.md",
+      "sha256": "b3476325913d4b893817b69db6f7d253041362a7177590c087c5262d251936aa",
+      "size": 8213
+    },
+    {
+      "path": "docs/ROADMAP.md",
+      "sha256": "0c4197d9f60b98ddac79065fdcb498c0151e2c90a13ea92ef43cb16fa01e5e52",
+      "size": 8141
+    },
+    {
+      "path": "docs/SPRINT_AB_DRIVE_HANDOFF.md",
+      "sha256": "104bd99cbd12f54d56a29c7ad28d7b7e3e23d49eeaae43290fc48c175cb75184",
+      "size": 2127
+    },
+    {
+      "path": "docs/ui/README.md",
+      "sha256": "6c8963b363eff5daf601292b402578ffac879c3b25b98769d335e41555368c55",
+      "size": 5302
+    },
+    {
+      "path": "docs/ui/UI01_QUIET_HIFI_DESIGN.md",
+      "sha256": "03549df130c78b901664ca3d82c56dfcdf4389c0d1bcb0d209256daa708867f1",
+      "size": 7361
+    },
+    {
+      "path": "docs/ui/UI02_LOCAL_VALIDATION_PROMPT.md",
+      "sha256": "c40199b2e9279ae317020b4a4dd647ff5d57e5c327b8fbb9e33faa0def7d1a92",
+      "size": 2978
+    },
+    {
+      "path": "docs/ui/UI02_SIGNATURE_HIFI_DESIGN.md",
+      "sha256": "46d7be8c336a49342e117e6c5f5fb6f3884630877104fa81b4c0d58d2edb4e25",
+      "size": 5826
+    },
+    {
+      "path": "docs/ui/UI03_OPENCODE_LOCAL_VALIDATION.md",
+      "sha256": "a68b798f04e5b7cd9e46a091c8b17a7366a1685f6b1be8e655b85e0d6b10dd18",
+      "size": 1483
+    },
+    {
+      "path": "docs/ui/UI03_WOVEN_WAVE_SECOND_PASS.md",
+      "sha256": "d250aaf623fa3516fda24fc75dc1cb38a2fb4cc9803541be467d1a164fc14851",
+      "size": 3958
+    },
+    {
+      "path": "docs/ui/UI04_OPENCODE_VALIDATION.md",
+      "sha256": "bf73767e3902bb25ecd8548585f5388b3989a8b778b3c6fceb3c9b1f5e3c5b09",
+      "size": 2428
+    },
+    {
+      "path": "docs/ui/UI04_SIGNATURE_HIFI_THIRD_PASS.md",
+      "sha256": "3f37648b1811cb1772e778d8ea95ce063035de56a264627f241e3dd3aa10e60a",
+      "size": 3341
+    },
+    {
+      "path": "docs/ui/UI06_KILLCRITIC_FIFTH_PASS.md",
+      "sha256": "a1939a41f1399a89db0a7a4065ae04d4bf8bfb4b7b4999f0a39c8d91dd7b0a3a",
+      "size": 4773
+    },
+    {
+      "path": "docs/ui/UI06_OPENCODE_VALIDATION.md",
+      "sha256": "0a320eeb04a87ceb963eb406a8806b7cdc5252123913fc01b4766df1257ea7a4",
+      "size": 2181
+    },
+    {
+      "path": "docs/ui/previews-ui02/signature_hi_fi_gallery.png",
+      "sha256": "f11fc14a4db92046171709edc89f638d8bf3eb489954041479749df753aa13de",
+      "size": 60591
+    },
+    {
+      "path": "docs/ui/previews-ui02/ui-01-boot.png",
+      "sha256": "6e811dbcdbea97309a038f9c9ed16540ab848165edd26a23f0020a60495f6a21",
+      "size": 5549
+    },
+    {
+      "path": "docs/ui/previews-ui02/ui-02-unprovisioned.png",
+      "sha256": "c674c86280c7b1df0a097d947f277685d8fc24275eb518e84c94fc9a8beb0440",
+      "size": 5104
+    },
+    {
+      "path": "docs/ui/previews-ui02/ui-02b-provisioning.png",
+      "sha256": "e2ad525e49b7d4c7b676a029fddc49eedac6902a4d385c63f495e7e4a2111014",
+      "size": 4810
+    },
+    {
+      "path": "docs/ui/previews-ui02/ui-03-ready-online.png",
+      "sha256": "a221162e7fb2d32114f9e63848107c1c2f87cce8d9eb9f993cf7403e1a665ca1",
+      "size": 4757
+    },
+    {
+      "path": "docs/ui/previews-ui02/ui-03b-ready-offline.png",
+      "sha256": "9f04ee1f2074e5d750b6211e05d7c62512c09729b294ae86322f5fbf8beec126",
+      "size": 4751
+    },
+    {
+      "path": "docs/ui/previews-ui02/ui-04-connecting-ssid.png",
+      "sha256": "5ce1dff436fe31a6fd1ce38e85de9701a47598ce21543f5bcaecedef738fc8c0",
+      "size": 2158
+    },
+    {
+      "path": "docs/ui/previews-ui02/ui-04b-connecting-nossid.png",
+      "sha256": "64e02a196c75c6e3a9e4286a1d4c369c9d0e2a4d9e9d122a5035c8fd01027ca7",
+      "size": 2213
+    },
+    {
+      "path": "docs/ui/previews-ui02/ui-07-session-pending.png",
+      "sha256": "5b1aeedbd09696ce85682db129877d1415a7e5c81ac754defe870682731277fd",
+      "size": 2453
+    },
+    {
+      "path": "docs/ui/previews-ui02/ui-08-buffering-meta.png",
+      "sha256": "933a2bf80b4caae95862129c57bd5ebb2cb5dfeea8a93de2c7c670d16623ca81",
+      "size": 3278
+    },
+    {
+      "path": "docs/ui/previews-ui02/ui-09-buffering-nometa.png",
+      "sha256": "6d7ffa328f6f6f0f7b4bd4b24b58b47691a7e6d2b323bbadca7dbe4aed3d8d1c",
+      "size": 3123
+    },
+    {
+      "path": "docs/ui/previews-ui02/ui-10-playing-meta.png",
+      "sha256": "2209177569e49f6cad8e709f00a8d89e829bf434b009b23d33589bf6a2323e50",
+      "size": 4152
+    },
+    {
+      "path": "docs/ui/previews-ui02/ui-11-playing-spanish-utf8.png",
+      "sha256": "5c1bd1314a47522ac7ac957d55ec155516f18ca5a108581b23fad4fedb7f7796",
+      "size": 4224
+    },
+    {
+      "path": "docs/ui/previews-ui02/ui-12-playing-fallback.png",
+      "sha256": "6f6f26c33ee4564b8b8ed8c23cdafa41cd6b600a92bddcd281e7975ebcebdf65",
+      "size": 2980
+    },
+    {
+      "path": "docs/ui/previews-ui02/ui-13-paused-meta.png",
+      "sha256": "476073e5818ae4c3562fb6a30f1c70b37b32598596b5b688feea23222e96f70f",
+      "size": 3124
+    },
+    {
+      "path": "docs/ui/previews-ui02/ui-14-paused-nometa.png",
+      "sha256": "266f8a8e6f74a22c3a0c41424d92c2a3f8273146528db5d9dd385ff9d3d07db5",
+      "size": 2873
+    },
+    {
+      "path": "docs/ui/previews-ui02/ui-15-updating-progress.png",
+      "sha256": "b720c6f54d41278698e5fe186b2f6336081157f7d1003f666cba18c9da50f5f8",
+      "size": 2379
+    },
+    {
+      "path": "docs/ui/previews-ui02/ui-15b-updating-unknown.png",
+      "sha256": "c4ab4d5edc4e70e07c4bfadf15a29ad4b3019c3be23f6c9a9cca9277c79090e0",
+      "size": 2109
+    },
+    {
+      "path": "docs/ui/previews-ui02/ui-16-recoverable-error-audio.png",
+      "sha256": "234a6c97c6b81bdd472d639046f0c0a5902da5766b4116acdb68055aa96cc57a",
+      "size": 2704
+    },
+    {
+      "path": "docs/ui/previews-ui02/ui-17-recoverable-error-network.png",
+      "sha256": "ad5e625f99de6477e7bcb3cceba13064322eced33dbcfee09e3e80e6c0e7d991",
+      "size": 2372
+    },
+    {
+      "path": "docs/ui/previews-ui02/ui-18-fatal-error.png",
+      "sha256": "9cc4c2cc88291c69e83f39bad46ea44add5af1f1acd9e2ebb683c28d53d05d4a",
+      "size": 2560
+    },
+    {
+      "path": "docs/ui/previews-ui02/ui-19-diagnostics-connected.png",
+      "sha256": "946838215ee505b15513388fd18298e1a061a0911c996207382145d7a0877ac9",
+      "size": 4521
+    },
+    {
+      "path": "docs/ui/previews-ui02/ui-19b-diagnostics-dac-absent.png",
+      "sha256": "14ec489787a1f30c342138b0223e9bbf26e5f06906daa824e28e6bee1b96e8c6",
+      "size": 4645
+    },
+    {
+      "path": "docs/ui/previews-ui02/ui-19c-diagnostics-dac-unknown.png",
+      "sha256": "60f5bddf1a13bdd4177c6607a76a99894cf80b4327183facfe345a986c497592",
+      "size": 4604
+    },
+    {
+      "path": "docs/ui/previews-ui02/ui-20-volume-overlay.png",
+      "sha256": "c0331dd3debb9dc87dcc19d1d040903cd067ce2d6b0f1a11952941db36d0bd57",
+      "size": 1145
+    },
+    {
+      "path": "docs/ui/previews-ui03/ui03_animation.gif",
+      "sha256": "12601a553e4af3e1ed97d29902d7a0567fec3d9b276d417b34d19711c21eae5e",
+      "size": 18138
+    },
+    {
+      "path": "docs/ui/previews-ui03/ui03_overview.png",
+      "sha256": "9ee60afabe537dad2c16b1cea9e514bb53eba6e887ce67e2babf048f5eb67926",
+      "size": 30505
+    },
+    {
+      "path": "docs/ui/previews-ui04/ui04_before_after.png",
+      "sha256": "39fa41f2a05c31dcf45d6a9d1b26f1db48d1dcd090dc778a201114fdf95197dc",
+      "size": 53955
+    },
+    {
+      "path": "docs/ui/previews-ui04/ui04_woven_wave.gif",
+      "sha256": "635742d7a84ca70dc6833037ccbc148fce4b7d0190d1388a7ff2ea92330eec84",
+      "size": 60401
+    },
+    {
+      "path": "docs/ui/previews-ui06/ui06_before_after.png",
+      "sha256": "3728ae5cc2474eaabdd56c18ccf2f178ecd204274cc700e03bdc011c320b3897",
+      "size": 31674
+    },
+    {
+      "path": "docs/ui/previews-ui06/ui06_gallery.png",
+      "sha256": "f528bfb92de7769cec49ecaf5c83ce7255378cd829e077e61e8ccef71fd21c46",
+      "size": 38057
+    },
+    {
+      "path": "docs/ui/previews-ui06/ui06_icon_optics.png",
+      "sha256": "1c29e457c772a9c3868a05c0e63b0bfc92442d4f07fd2f445c7ed7a1f44bbf3f",
+      "size": 10559
+    },
+    {
+      "path": "docs/ui/previews-ui06/ui06_wave_animation.gif",
+      "sha256": "545ea03f2d5b9a2c8568c0b3e140191320a28a2b132fc95b6fdb42da33c01847",
+      "size": 29325
+    },
+    {
+      "path": "docs/ui/previews/ui-01-boot.png",
+      "sha256": "5232a9625165ee5f08ef0d8557b4a50898cafed4743d700f770dd1e1d0a751b3",
+      "size": 1352
+    },
+    {
+      "path": "docs/ui/previews/ui-02-unprovisioned.png",
+      "sha256": "1a23af32c693700e1937c0351ec9ec58397a509ba91bb85212ed6499b8611d4a",
+      "size": 1900
+    },
+    {
+      "path": "docs/ui/previews/ui-03-ready.png",
+      "sha256": "97e1edeecf1e01a994e71103ff460019b4e918c985d8c63cd20df318be8f2a4f",
+      "size": 1685
+    },
+    {
+      "path": "docs/ui/previews/ui-04-connecting.png",
+      "sha256": "38afaf88126b59723bfdfe4020526d27e4cd6aa4eaaf09af63cd7706e7aeee1b",
+      "size": 1594
+    },
+    {
+      "path": "docs/ui/previews/ui-05-pairing-waiting.png",
+      "sha256": "9d682f0754db9bebc24d1a40f40bfe16dd7070af8ce26a3cd5c38cc9cf636602",
+      "size": 1629
+    },
+    {
+      "path": "docs/ui/previews/ui-06-pairing-pin.png",
+      "sha256": "7d3362ba7af688f5c38d423d89b0e869899cea1445bbf2fbaea49324dd6344fa",
+      "size": 2115
+    },
+    {
+      "path": "docs/ui/previews/ui-07-session-pending.png",
+      "sha256": "ce13ea1bbd4a2859e0f236c18a70eb9760da559289f9661f1a3c4aa43b5bf483",
+      "size": 1718
+    },
+    {
+      "path": "docs/ui/previews/ui-08-buffering-meta.png",
+      "sha256": "62972a26d87da77b38d2737784e5da0a7d622d08345085ddff4d30d9e2134af9",
+      "size": 1874
+    },
+    {
+      "path": "docs/ui/previews/ui-09-buffering-nometa.png",
+      "sha256": "e6122c9daf6d7ea1db05999a47ea0ee30b516cbc7e38b3cb926ea091fc495feb",
+      "size": 1843
+    },
+    {
+      "path": "docs/ui/previews/ui-10-playing-meta.png",
+      "sha256": "33633e7d53d605017650e32a286570fe6a4c230f2a1907c1285d4ae5bb5bf413",
+      "size": 2281
+    },
+    {
+      "path": "docs/ui/previews/ui-11-playing-spanish-utf8.png",
+      "sha256": "f73191a48d1d46a3632c9eaf2cff1d646aba2dd0a63cde9a6a3ef5e02bc69ec5",
+      "size": 2382
+    },
+    {
+      "path": "docs/ui/previews/ui-12-playing-fallback.png",
+      "sha256": "7a80f4aee8a799fcd45816b352564d04a9c6468d35a40dfb5b971dd3de4fa3c7",
+      "size": 1838
+    },
+    {
+      "path": "docs/ui/previews/ui-13-paused-meta.png",
+      "sha256": "d68bc739e011b9b30900a73fdfcd11ad8604698c05262ab63b2ca1b0a52fade8",
+      "size": 1761
+    },
+    {
+      "path": "docs/ui/previews/ui-14-paused-nometa.png",
+      "sha256": "5977f2a214ddea098d503a5fbda814b39ac5c9b90b1ef86c2f036e9d0a19a0ca",
+      "size": 1624
+    },
+    {
+      "path": "docs/ui/previews/ui-15-updating-progress.png",
+      "sha256": "61bd5f2a0d16770b2016267afa086a8beb0f5d4835a1dd4cacc9d5dc5077c0bb",
+      "size": 1739
+    },
+    {
+      "path": "docs/ui/previews/ui-15b-updating-unknown.png",
+      "sha256": "db1c7ace61e788c835cb79f9c0bf67e858f90670a26d9a9d4c4ecfa88d91fb12",
+      "size": 1650
+    },
+    {
+      "path": "docs/ui/previews/ui-16-recoverable-error-audio.png",
+      "sha256": "ffe5eeec1cf73454272d0aa7296549fa860cad6a4b4c87dc69654eb76bcc7663",
+      "size": 1823
+    },
+    {
+      "path": "docs/ui/previews/ui-17-recoverable-error-network.png",
+      "sha256": "c8bdb87832d005677485112cd8cd2b34f37fc4f2b0ef360080e52f09fc177c62",
+      "size": 1672
+    },
+    {
+      "path": "docs/ui/previews/ui-18-fatal-error.png",
+      "sha256": "42d324a569b9d03fe5ed5fe831772dab4f21ea5d885e2e3b50bd0050563cf522",
+      "size": 1922
+    },
+    {
+      "path": "docs/ui/previews/ui-19-diagnostics-connected.png",
+      "sha256": "6611091daf0efb74b876229ba6493377edbe23513c08caf4460cfa8c492ae2fe",
+      "size": 2158
+    },
+    {
+      "path": "docs/ui/previews/ui-19b-diagnostics-dac-absent.png",
+      "sha256": "6829b796a48a166a72704bee75aadb60d60bf4fefc4c399b00948fc745b02763",
+      "size": 2222
+    },
+    {
+      "path": "docs/ui/previews/ui-19c-diagnostics-dac-unknown.png",
+      "sha256": "9253ccc46e26e5ad1e418755f94ef2f0f6630d914be8ee0d67aa7f1ca266d796",
+      "size": 2031
+    },
+    {
+      "path": "docs/ui/previews/ui-20-volume-overlay.png",
+      "sha256": "f5461a8d9ea2879e5369503d0e96fc3d85837e181a34d98c5584f9de718aea70",
+      "size": 1156
+    },
+    {
+      "path": "examples/error-example.json",
+      "sha256": "64a6d8c343d08ddee8b079eb2dd63d3df2625fb0baba71312304fbca819bd27b",
+      "size": 192
+    },
+    {
+      "path": "examples/error-invalid-token.json",
+      "sha256": "fb50d891ab1ffc6d400e4ecde7459ce2789a91cfd6f3f12667cc74a5320889be",
+      "size": 156
+    },
+    {
+      "path": "examples/error-pairing-closed.json",
+      "sha256": "589e0729987174f799e7119aead85df12c5f2139b2a078430b25677c73fd6127",
+      "size": 159
+    },
+    {
+      "path": "examples/error-session-active.json",
+      "sha256": "6a5cb1a51eab46242adc4ac1462e58591fc2a8f3c7ebf8a232ac681176748daa",
+      "size": 228
+    },
+    {
+      "path": "examples/error-unsupported-rate.json",
+      "sha256": "9dd2d6a5aa5721f94d2429ea9ea6a005bbeca3ca0af8e0518606d2da982b1660",
+      "size": 214
+    },
+    {
+      "path": "examples/heartbeat-request.json",
+      "sha256": "81671df262cdef87cfd64c3e11654c4583a151cc0030175c60ac395369574be5",
+      "size": 107
+    },
+    {
+      "path": "examples/pair-confirm.json",
+      "sha256": "bc93923f3e232129c856971247f05d3df4c433d333874d642b4035deb1cc0822",
+      "size": 202
+    },
+    {
+      "path": "examples/pair-start.json",
+      "sha256": "52b0a7cbd46b8a2f457851a40180c3a4d435e25c50fdc1986948bdf084b1ece5",
+      "size": 430
+    },
+    {
+      "path": "examples/receiver-hifi-info.json",
+      "sha256": "3a1eb737708674d1006a25d2cb034240f7eaad2fb299b78fcc17c7e84b32e082",
+      "size": 1037
+    },
+    {
+      "path": "examples/receiver-standard-info.json",
+      "sha256": "3ac604526dfb89ebf0a628687c34492dcb07b303dd5554c07b02db5f0d3588aa",
+      "size": 1041
+    },
+    {
+      "path": "examples/session-patch.json",
+      "sha256": "fe19eb5204edac85982ef17eb34d4d50321212cc96828791509ffa0ac6f206db",
+      "size": 19
+    },
+    {
+      "path": "examples/session-start.json",
+      "sha256": "ac9660e800c5bc2e14b7488e9e8cc469a8d54c9f62645cc36d61e49ee595d82c",
+      "size": 211
+    },
+    {
+      "path": "firmware/CMakeLists.txt",
+      "sha256": "699a7cdad906bd9b8c2934c88b23353109ea472e7fd103ea1420557784ef4da3",
+      "size": 115
+    },
+    {
+      "path": "firmware/README.md",
+      "sha256": "ad136aad6aa7053e0b7a082d2fdece61c59b9ca3fecd022606c32a345723000d",
+      "size": 121476
+    },
+    {
+      "path": "firmware/components/michi_audio/CMakeLists.txt",
+      "sha256": "64b20f56bf33d62c57871641a771c57e60b13945fbd2f567c60a14907c242ecd",
+      "size": 299
+    },
+    {
+      "path": "firmware/components/michi_audio/Kconfig",
+      "sha256": "dfca28ae2e017c3d37257127906981ee6c2df6b81914baa4d10fa0bd8e39c4d0",
+      "size": 2439
+    },
+    {
+      "path": "firmware/components/michi_audio/include/michi_audio.h",
+      "sha256": "91c88b628371782b8f30d43c1276219cacb7de4f3ec72c88f5782a00472c2c57",
+      "size": 19525
+    },
+    {
+      "path": "firmware/components/michi_audio/include/michi_audio_diag.h",
+      "sha256": "a4f3265a05c375fb01d7591c37e45b9a22f0b279729bda2f9911767fba1039dd",
+      "size": 823
+    },
+    {
+      "path": "firmware/components/michi_audio/include/michi_audio_recv_policy.h",
+      "sha256": "8a21189cc9d6d11010cc509a7475d41e327d1c6952e93505ddc7903e806eb7b6",
+      "size": 962
+    },
+    {
+      "path": "firmware/components/michi_audio/include/michi_jb.h",
+      "sha256": "3b7d77ba365bb08e3daf2fa64c19a1c92fda20848142ed22076b64c2178c23a6",
+      "size": 2572
+    },
+    {
+      "path": "firmware/components/michi_audio/michi_audio.c",
+      "sha256": "4ee0aca75fd6400d1a3fdea3b514360207a63d0dfe870d4c1445bad1316b0157",
+      "size": 55137
+    },
+    {
+      "path": "firmware/components/michi_audio/michi_audio_buffer.c",
+      "sha256": "f755ce30ab1290b4e34fc0d0b627ff1790d307ad788943629c1017b62c11f600",
+      "size": 1741
+    },
+    {
+      "path": "firmware/components/michi_audio/michi_audio_pause_policy.h",
+      "sha256": "831585067627c6b611ad0cd850e3d451d6226d1ba494321146db012f70b1dcd0",
+      "size": 1049
+    },
+    {
+      "path": "firmware/components/michi_audio/michi_jb.c",
+      "sha256": "974bc8082bb7d816ac3892ac756b85408bee02226c9a8adc0b06c29d3fe302e7",
+      "size": 7324
+    },
+    {
+      "path": "firmware/components/michi_audio/michi_rtp_clock.h",
+      "sha256": "4e21e3251bd2ff2b0f48af612a8b7b83a86ecf43254d8ba18761930cd5ba8297",
+      "size": 2909
+    },
+    {
+      "path": "firmware/components/michi_audio/michi_rtp_jitter.h",
+      "sha256": "641f8ba52cd2d377664c7e31c929d3b9518f6af6b18fb641a98226204d960d71",
+      "size": 2929
+    },
+    {
+      "path": "firmware/components/michi_audio/rtp_guard.c",
+      "sha256": "eb759b31807be2f9593435a651c84c14d79e7badaef0ae85b234d07edbaaeb75",
+      "size": 2014
+    },
+    {
+      "path": "firmware/components/michi_audio/rtp_guard.h",
+      "sha256": "cdd06d8ac0609e815d788001b60bbcf463fc6a0a38e664a37826f489b6631e46",
+      "size": 4914
+    },
+    {
+      "path": "firmware/components/michi_audio_output/CMakeLists.txt",
+      "sha256": "0fe206d9cf678565053b83ca776e94637d900c9ff32b10c094a31c2342a74ab6",
+      "size": 144
+    },
+    {
+      "path": "firmware/components/michi_audio_output/Kconfig",
+      "sha256": "a5a77427314241037213f66c7d3b996d93c3eeb35f20e27c45916b6341d95387",
+      "size": 875
+    },
+    {
+      "path": "firmware/components/michi_audio_output/include/michi_audio_output.h",
+      "sha256": "178846f7bac68bfb9cc8f1092dba9b4ce52cae89c0a34ca1d03568a31c6ec011",
+      "size": 11793
+    },
+    {
+      "path": "firmware/components/michi_audio_output/michi_audio_output.c",
+      "sha256": "7434990fbd6965d406507b3dcfb5b8b6a9a5fe3775a0007d566335fbaeb56676",
+      "size": 55782
+    },
+    {
+      "path": "firmware/components/michi_board/CMakeLists.txt",
+      "sha256": "b23d36d3baf4e4c41bc7dbd0e9924ac54d10edcd0d4c1f99bcd787848043fc96",
+      "size": 189
+    },
+    {
+      "path": "firmware/components/michi_board/include/michi_board.h",
+      "sha256": "e548e04c3a39ce51c1a775fdccd0545bc5bcd80772898272efb6e736f4f93e2e",
+      "size": 9181
+    },
+    {
+      "path": "firmware/components/michi_board/include/michi_version.h",
+      "sha256": "72e8a5b4af5deb001f7e22be8cd5dbdda9c5a1c8bceacd860819a47168ee1ebb",
+      "size": 435
+    },
+    {
+      "path": "firmware/components/michi_board/waveshare_s3_lcd2/board_waveshare_s3_lcd2.c",
+      "sha256": "22ee7b0afb7999753790f15d9e2f89d35776e71eba74ddf7cddcc2fa5d03e0f3",
+      "size": 25053
+    },
+    {
+      "path": "firmware/components/michi_board/waveshare_s3_lcd2/font5x7.h",
+      "sha256": "8fb953157619d385788ce293fa15341d49ebbc5439ee98dbfe2a9badd5d83320",
+      "size": 5703
+    },
+    {
+      "path": "firmware/components/michi_dac/CMakeLists.txt",
+      "sha256": "ee45df3d4a236e6691503a9b38ad5a55d10d62bc3ad8265c73f707608e1831c7",
+      "size": 259
+    },
+    {
+      "path": "firmware/components/michi_dac/dac_classifier.c",
+      "sha256": "8f819e47de96e8fa14bd261fecea5fdd36e5eb205d2e838d34d544645fdad88b",
+      "size": 2444
+    },
+    {
+      "path": "firmware/components/michi_dac/dac_internal.h",
+      "sha256": "d276045a3ba5109048d28218fb1dc60bac2022eabf8354bb43698cd097dcb165",
+      "size": 1001
+    },
+    {
+      "path": "firmware/components/michi_dac/dac_manager.c",
+      "sha256": "47e42f182cae821d5d863b4aae5e26b1bf818bffdc429e7e0cab820f772960b1",
+      "size": 17084
+    },
+    {
+      "path": "firmware/components/michi_dac/dac_registry.c",
+      "sha256": "a2f512ce8d2edb8e183f0f02a1e2d54aa638bf8e219fa6d1caa894ef07d85eaa",
+      "size": 1466
+    },
+    {
+      "path": "firmware/components/michi_dac/drivers/mock_dac.c",
+      "sha256": "d20e2b0463697a70164209c20ab270f34b83a1fc6422af9f3d6e885b927acfd9",
+      "size": 3876
+    },
+    {
+      "path": "firmware/components/michi_dac/drivers/pcm5102a.c",
+      "sha256": "5698a4900cc7e8c86b6b7368ceec4d3c737370c2c5b6b4fcb88503bca9a44503",
+      "size": 4787
+    },
+    {
+      "path": "firmware/components/michi_dac/drivers/pcm512x.c",
+      "sha256": "6f1267252710ea432a9619a9bcf940e1d4c71d0a796deac8a267e6364a30fac5",
+      "size": 27335
+    },
+    {
+      "path": "firmware/components/michi_dac/include/michi_dac.h",
+      "sha256": "d2d67fd2027cf25995b3918fc0a4feb204834b08d0c16265aad17cc2bada0df9",
+      "size": 5911
+    },
+    {
+      "path": "firmware/components/michi_dac/include/michi_dac_types.h",
+      "sha256": "ff12055a1825521f03f634514cf938c19757665868e88a0f4e6b0185cc72899e",
+      "size": 4252
+    },
+    {
+      "path": "firmware/components/michi_discovery/CMakeLists.txt",
+      "sha256": "1a796bb5bd25ee7b6b9509c8a65627ba22e656445b5b4bb2a0af14a67ab5386b",
+      "size": 270
+    },
+    {
+      "path": "firmware/components/michi_discovery/announce.c",
+      "sha256": "bfae8ea996e2dde64f92293ee4e9460db877517073a0cac5644e62efec32188c",
+      "size": 9114
+    },
+    {
+      "path": "firmware/components/michi_discovery/discovery_nvs.c",
+      "sha256": "68288a284d36fa874f803913ef2a361603043566c129893cc0199964af6274ee",
+      "size": 4383
+    },
+    {
+      "path": "firmware/components/michi_discovery/discovery_nvs.h",
+      "sha256": "35119c578ec70341b55c3c34e90b36ddb9d755586d32d1058fd1c350c29637cc",
+      "size": 1498
+    },
+    {
+      "path": "firmware/components/michi_discovery/include/michi_discovery.h",
+      "sha256": "bf1c63b7759f5f72a9aab38c4974a6755946d916f98c30d682c3283886b69425",
+      "size": 10758
+    },
+    {
+      "path": "firmware/components/michi_discovery/michi_discovery.c",
+      "sha256": "f0e856cd26d2af720211c2817de0cc78ac6449d46ea9eae92d95546610e300cd",
+      "size": 34467
+    },
+    {
+      "path": "firmware/components/michi_display/CMakeLists.txt",
+      "sha256": "a120d4e1f5bcb659614e8caf3f4197c941886e62aa8bae109a6a0e0f1deeaccb",
+      "size": 839
+    },
+    {
+      "path": "firmware/components/michi_display/Kconfig",
+      "sha256": "16bbd10bd02bbcbbf8d28fc841c54d3888aa013730bfa0d8f70edf84a263a0db",
+      "size": 2842
+    },
+    {
+      "path": "firmware/components/michi_display/assets/brand/michi_stream_official.svg",
+      "sha256": "ef478912c91504e6745d3c5e0324f17d4991c71549c923842f19bdb7d07c5431",
+      "size": 90881
+    },
+    {
+      "path": "firmware/components/michi_display/assets/fonts/michi_ui_fonts_data.h",
+      "sha256": "a1c865e03745be332bb69163c75d6f213687a4959359e7420b6daeda10b636d6",
+      "size": 331780
+    },
+    {
+      "path": "firmware/components/michi_display/assets/icons/michi_precision_icons_data.h",
+      "sha256": "60f7e59dd4bdeec35c405d802436e12949845e3cb1ea28856c6f3dc9a64c285d",
+      "size": 12421
+    },
+    {
+      "path": "firmware/components/michi_display/assets/icons/michi_stream_brand_data.h",
+      "sha256": "086d4081dd530f957ee7dfa84729e6d0a00b746571073474fe873e8b3f5f7aff",
+      "size": 63760
+    },
+    {
+      "path": "firmware/components/michi_display/assets/icons/michi_ui_icons_data.h",
+      "sha256": "0c5a45ec67a16d29b39facdf29eb0150392a50e8b91bf140442a645634341b7b",
+      "size": 34557
+    },
+    {
+      "path": "firmware/components/michi_display/include/michi_display.h",
+      "sha256": "9340b7c6d2d3b7b7771a3306806dc0fe8a7b54612724c084dae6a01a7cd12d1e",
+      "size": 6222
+    },
+    {
+      "path": "firmware/components/michi_display/include/michi_ui.h",
+      "sha256": "49fec89323a0f1ed1072343092423aff42b949a2a316c8ec3bb283367e9e3c43",
+      "size": 1449
+    },
+    {
+      "path": "firmware/components/michi_display/include/michi_ui_components.h",
+      "sha256": "e17bf45ed47946dd3114ff5ad5e209045faa09f40f512c341c3c24cccdfc293a",
+      "size": 6241
+    },
+    {
+      "path": "firmware/components/michi_display/include/michi_ui_fonts.h",
+      "sha256": "f905680627158ebbe7833b80302ff35a57afc4e94500779618abccbfab994904",
+      "size": 4174
+    },
+    {
+      "path": "firmware/components/michi_display/include/michi_ui_icons.h",
+      "sha256": "92c7ee73d54a5c6caaab95149165c9229eac54343900e1118a248f0baad54957",
+      "size": 3582
+    },
+    {
+      "path": "firmware/components/michi_display/include/michi_ui_screens.h",
+      "sha256": "dcc798f01fa4464c8b2d3f668fe970f63de138200ec91588adff2bcb127269c0",
+      "size": 6511
+    },
+    {
+      "path": "firmware/components/michi_display/include/michi_ui_strings.h",
+      "sha256": "4c014223be831bf44612d9930a3932e9d0a86c900adc70809b9c186ba1433373",
+      "size": 3044
+    },
+    {
+      "path": "firmware/components/michi_display/include/michi_ui_text.h",
+      "sha256": "d9d356eb301b5fcf0901129dcc55bb3f840bcbfe166aebd51b29db2e7809ae6d",
+      "size": 4820
+    },
+    {
+      "path": "firmware/components/michi_display/include/michi_ui_theme.h",
+      "sha256": "713b621ba778949e339d6a0b7cf0875bb162f347716954fb84a0fcabf8bbe515",
+      "size": 2867
+    },
+    {
+      "path": "firmware/components/michi_display/michi_display.c",
+      "sha256": "7f2ff9fa5ec0909e483a049dc2d26839e8f9ce7a152004add249942529d8a327",
+      "size": 19165
+    },
+    {
+      "path": "firmware/components/michi_display/michi_ui_components.c",
+      "sha256": "7e5944a6c515aa4b4d89ce7fd18119d9681f623c8d46504218d975464aa2e18c",
+      "size": 13162
+    },
+    {
+      "path": "firmware/components/michi_display/michi_ui_fonts.c",
+      "sha256": "50ba907ea82102580dd99b7875cb19936720f1f88b7c14d159e7b3ed23e21be3",
+      "size": 7893
+    },
+    {
+      "path": "firmware/components/michi_display/michi_ui_icons.c",
+      "sha256": "7a4ca7516a08b8fa8473062c425be165fac728058b2c670aef9d0da70f1ce53c",
+      "size": 10300
+    },
+    {
+      "path": "firmware/components/michi_display/michi_ui_screens.c",
+      "sha256": "b5ee0a9fa5fe51babdee9f59c0cf6d89d503b2466ffc009312b9a93a49539120",
+      "size": 34013
+    },
+    {
+      "path": "firmware/components/michi_display/michi_ui_text.c",
+      "sha256": "377e9f661b2645487d4bba09849e878cc7ec9db43c1c721f3f59d66ed171be7b",
+      "size": 11888
+    },
+    {
+      "path": "firmware/components/michi_display/michi_ui_theme.c",
+      "sha256": "5065dfd6c8ec25ec03dac070b856546c0e654c94b4863d4499dec352cb3b5b94",
+      "size": 888
+    },
+    {
+      "path": "firmware/components/michi_display/tools/assets.lock",
+      "sha256": "4ef98489b48f3a083b02149149fee4af8fd7cf67c06eee60ad1efb43f3de4d47",
+      "size": 395
+    },
+    {
+      "path": "firmware/components/michi_display/tools/gen_michi_brand.py",
+      "sha256": "049f37f6d89c86fe14cc91738df0a8c1fa07795ad9b84b2d90997159442d2f8e",
+      "size": 2038
+    },
+    {
+      "path": "firmware/components/michi_display/tools/gen_michi_ui_assets.py",
+      "sha256": "7aeb31fd9984dd79008e10e9a35845b2d4041290693b443c5705f2c0f6d36fa9",
+      "size": 24783
+    },
+    {
+      "path": "firmware/components/michi_display/tools/gen_precision_icons.py",
+      "sha256": "9007ab7210c83d4115774e4e8462831549b2232b982aac997b63899b7718192c",
+      "size": 4069
+    },
+    {
+      "path": "firmware/components/michi_display/tools/requirements.txt",
+      "sha256": "b4265a6a37398750e676cbe3d9e18784dff735d35de7319ae4926bc462303abf",
+      "size": 252
+    },
+    {
+      "path": "firmware/components/michi_home/CMakeLists.txt",
+      "sha256": "eb1083b531a273c894ae5b4a45573eeb7a795bcfd72b667b270bbcb9765af3e8",
+      "size": 190
+    },
+    {
+      "path": "firmware/components/michi_home/factory_cfg.c",
+      "sha256": "2fa20f4cb7af48801effcfbf7ee8c313e67b1d0f1b8e43e7787511f1cc453822",
+      "size": 30211
+    },
+    {
+      "path": "firmware/components/michi_home/include/michi_auth.h",
+      "sha256": "c6ad9adbad6c9e80183e7ee39965801f101fb619b1760a7926eff5f59e63a22c",
+      "size": 2285
+    },
+    {
+      "path": "firmware/components/michi_home/include/michi_home.h",
+      "sha256": "8ff87cf6d93cc4c1fd3a7eed0cdd6ae835ec1d959eb079eb6ae6d9250f1e5471",
+      "size": 6136
+    },
+    {
+      "path": "firmware/components/michi_home/include/validators.h",
+      "sha256": "6d51de0afcaf111013504e35a4ad13ff7be5c10eaec5005fcd3fa277f70bf2bb",
+      "size": 614
+    },
+    {
+      "path": "firmware/components/michi_home/michi_auth.c",
+      "sha256": "351d64af0d02167e647784b1b7375a4d043f755110ceb78939e3ea301338b565",
+      "size": 16437
+    },
+    {
+      "path": "firmware/components/michi_home/michi_home.c",
+      "sha256": "718004ff295aa26d0dd8ac57b54b98a359e0984fc0202f19196fc47e9e63b6bc",
+      "size": 17701
+    },
+    {
+      "path": "firmware/components/michi_home/validators.c",
+      "sha256": "12bfe3e4a934b517e2e399562666509c98288d3314d7be6d4cf501ae5205ce51",
+      "size": 990
+    },
+    {
+      "path": "firmware/components/michi_http/CMakeLists.txt",
+      "sha256": "ed31fd99ea81a53e34ca7e6dc143a3797bd365572760139cd6fae16f14635e56",
+      "size": 408
+    },
+    {
+      "path": "firmware/components/michi_http/canonical_json.c",
+      "sha256": "3a9fa3f3a361d7563d41c184d2b727d87ac7f4258a211ce9163b1584ca13dffd",
+      "size": 9074
+    },
+    {
+      "path": "firmware/components/michi_http/http_server.c",
+      "sha256": "181562c7d16ea58db31cf8c43bfb35ef5a745abfd8aec3e1901d4d3b5bb5ad1f",
+      "size": 76489
+    },
+    {
+      "path": "firmware/components/michi_http/include/michi_http.h",
+      "sha256": "779460e7fb6b4999c60270923ab41bf337b64e76fe97290b59f89cd1d3f5a5d9",
+      "size": 16226
+    },
+    {
+      "path": "firmware/components/michi_http/json_helpers.c",
+      "sha256": "42e8897f1f51a91569ec5a9caa56f85945beaf0ce59b7d579aa69bef6fa54186",
+      "size": 26120
+    },
+    {
+      "path": "firmware/components/michi_identity/CMakeLists.txt",
+      "sha256": "41dbd1865c88665b97fec420975c4bc43c0ab3579ced1c8a12c2080d92dda140",
+      "size": 838
+    },
+    {
+      "path": "firmware/components/michi_identity/README.md",
+      "sha256": "400362d7db10f0695e11a37a50b6a9619de68aaadbed5098c8503f374eabd745",
+      "size": 3943
+    },
+    {
+      "path": "firmware/components/michi_identity/blake3/LICENSE_A2",
+      "sha256": "00fcc7a934ddbc9ece2a7cc063ac788e284b703b1d705ccbba72d462aa97921e",
+      "size": 11361
+    },
+    {
+      "path": "firmware/components/michi_identity/blake3/LICENSE_A2LLVM",
+      "sha256": "a5695f57ea0c221e0e8b7d784ff774c35e88c3d3270353646a925880bb3492cc",
+      "size": 12267
+    },
+    {
+      "path": "firmware/components/michi_identity/blake3/LICENSE_CC0",
+      "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499",
+      "size": 7048
+    },
+    {
+      "path": "firmware/components/michi_identity/blake3/blake3.c",
+      "sha256": "b118ddf7cf9e6e5ef3fded72dcb1acf9dfdc4ea923cbe4605900ad6ee9afe1af",
+      "size": 28945
+    },
+    {
+      "path": "firmware/components/michi_identity/blake3/blake3.h",
+      "sha256": "905b20212f4ecd6bfd71b6d1642a46546f33e7c9807a5a18635b4bae555b965d",
+      "size": 2923
+    },
+    {
+      "path": "firmware/components/michi_identity/blake3/blake3_dispatch.c",
+      "sha256": "134f21550138c0af6312925c988aeee35df287e4119e8ad1d206fccdb2238fe3",
+      "size": 9189
+    },
+    {
+      "path": "firmware/components/michi_identity/blake3/blake3_impl.h",
+      "sha256": "d388dca3574602c8849805ea3c8c0a12d082ac0e428756f305e111942f099af4",
+      "size": 12054
+    },
+    {
+      "path": "firmware/components/michi_identity/blake3/blake3_portable.c",
+      "sha256": "2bc25b0dad67b4329d0b49cfa075ab2b0d04e424addbddc4e9c389c52a192524",
+      "size": 5889
+    },
+    {
+      "path": "firmware/components/michi_identity/identity_nvs.c",
+      "sha256": "b4d19b707d3cd2c2654f12187eb363251f7fdb5754d25461e8163ebbf4156e27",
+      "size": 2063
+    },
+    {
+      "path": "firmware/components/michi_identity/identity_storage.h",
+      "sha256": "36b010f15a7905ba62592979e831098e1d00a536a82004c5c8ac665203fa7a08",
+      "size": 1723
+    },
+    {
+      "path": "firmware/components/michi_identity/include/michi_identity.h",
+      "sha256": "e5a8828b5ccf8eb3ab3daf09f38e897aba1623e70585dcd29ac2ab5bb43a89db",
+      "size": 8916
+    },
+    {
+      "path": "firmware/components/michi_identity/michi_identity.c",
+      "sha256": "0a703cc7e06f3ffd0343bd713acac59624d25c7e8e1a5211241822d6282fea1a",
+      "size": 14283
+    },
+    {
+      "path": "firmware/components/michi_identity/monocypher/LICENCE.md",
+      "sha256": "a5781770269d2516e52ba4863f790c10a16da4089a1e81823aee19ff1e9026b0",
+      "size": 9256
+    },
+    {
+      "path": "firmware/components/michi_identity/monocypher/monocypher-ed25519.c",
+      "sha256": "ce0d2f8e32ca8f66398ba5b3456cc74327c3eff14e7b950ce7d57be9025cc453",
+      "size": 16526
+    },
+    {
+      "path": "firmware/components/michi_identity/monocypher/monocypher-ed25519.h",
+      "sha256": "3a3035181f991a158d0e1c7567258f0bae8ba0f1f23c5512b4a1db1b3c9730ce",
+      "size": 5451
+    },
+    {
+      "path": "firmware/components/michi_identity/monocypher/monocypher.c",
+      "sha256": "f1f838cdd483bdebe0df0ff5c5ed60535e496f769c6a2f933ac4c0b114207123",
+      "size": 102582
+    },
+    {
+      "path": "firmware/components/michi_identity/monocypher/monocypher.h",
+      "sha256": "fcaf6ed771358bb4f40fba016f6518ae86ec02b1b877d2cc35ad92d3a26fd7b3",
+      "size": 12177
+    },
+    {
+      "path": "firmware/components/michi_led/CMakeLists.txt",
+      "sha256": "8cabebfcb81d86702418b2d0ab954f93e6c0efa7b118ecbff60ebd76b72506d7",
+      "size": 120
+    },
+    {
+      "path": "firmware/components/michi_led/Kconfig",
+      "sha256": "ef050aa109d23f762a054d5b2a741aa26da894b9ff02620bc4fccfe946e2e980",
+      "size": 1207
+    },
+    {
+      "path": "firmware/components/michi_led/idf_component.yml.yaml",
+      "sha256": "2b1e32ac2f7e58af767e702fbd856972c071e581965d5db2d6fd319de4a349ed",
+      "size": 46
+    },
+    {
+      "path": "firmware/components/michi_led/include/michi_led.h",
+      "sha256": "42cb68fab24bbc5595717938700ca9fd72d3ca227947e9e2ae40dde6fb712d4b",
+      "size": 2781
+    },
+    {
+      "path": "firmware/components/michi_led/michi_led.c",
+      "sha256": "bbe0047f277ef5121ead313520ff5ae8a02eed85bf313d954e2f9c7f0c7b13dc",
+      "size": 15659
+    },
+    {
+      "path": "firmware/components/michi_log/CMakeLists.txt",
+      "sha256": "0731970aaaac5f112028dcf818cb7d7ac25f93b8bec033cd5c22d4eb58ed5fbe",
+      "size": 166
+    },
+    {
+      "path": "firmware/components/michi_log/Kconfig",
+      "sha256": "1c4fc036c1e382e6bd0d2b6116ef3ec35f64a08df0bd31e57a61a7f2b56b50ba",
+      "size": 3608
+    },
+    {
+      "path": "firmware/components/michi_log/include/michi_log.h",
+      "sha256": "6323c3dadfe2428800af6f66d29a4730aa9842abe614b8c03f76e6fd9093f8e7",
+      "size": 8508
+    },
+    {
+      "path": "firmware/components/michi_log/michi_log.c",
+      "sha256": "2971eb91bd712e97183d07214bf5ac09bb489c47df99ad395618e57566c572ee",
+      "size": 43039
+    },
+    {
+      "path": "firmware/components/michi_ota/CMakeLists.txt",
+      "sha256": "50043ba30c4703b841320e4ded1a8fbc77ae2a80baea937bdc415c2d2adf6b5e",
+      "size": 591
+    },
+    {
+      "path": "firmware/components/michi_ota/Kconfig",
+      "sha256": "aaab55e7d1d05888592caa74282ac60e74ae70e1dd70dd37fa37e7f5c5565a34",
+      "size": 1866
+    },
+    {
+      "path": "firmware/components/michi_ota/include/michi_ota.h",
+      "sha256": "8b789654673063571a037f94f0458423e96c8356f782bdccd25b277181235945",
+      "size": 12639
+    },
+    {
+      "path": "firmware/components/michi_ota/include/michi_ota_logic.h",
+      "sha256": "d6d943c260ac3cb55afae2090358110c7fb5458bfc9e6c3df3be40e087c6156c",
+      "size": 1589
+    },
+    {
+      "path": "firmware/components/michi_ota/include/michi_ota_pubkey.h",
+      "sha256": "7b6ca802b3ee6813e6eff70d1a105cc542806bb94d30a8f47e71ea0604870e8a",
+      "size": 2581
+    },
+    {
+      "path": "firmware/components/michi_ota/michi_ota.c",
+      "sha256": "b3ef8a3026edd719bbf464fc21a8cd5b52510fed053be0051cd0d8cfd0ad9bae",
+      "size": 73293
+    },
+    {
+      "path": "firmware/components/michi_ota/michi_ota_logic.c",
+      "sha256": "3059b68357a60583c867073b126c2a9aa3f0e5dc2181b2c804916f33e896a568",
+      "size": 2758
+    },
+    {
+      "path": "firmware/components/michi_ota/semver.c",
+      "sha256": "12d44b84a6dba3c5e7360714dce09e47b4383146fbc98ad205d7c0c1e0e89ad1",
+      "size": 7711
+    },
+    {
+      "path": "firmware/components/michi_ota/semver.h",
+      "sha256": "be4ffba72c3bc7ec664539befbb7b51021cfe74273e6c99b61f57dd5f5d048fb",
+      "size": 2507
+    },
+    {
+      "path": "firmware/components/michi_product_profile/CMakeLists.txt",
+      "sha256": "a7b40030d869e6e2cc58c5d06cf96c2bc58429c770faaa96f4f583765a64051e",
+      "size": 172
+    },
+    {
+      "path": "firmware/components/michi_product_profile/capabilities.c",
+      "sha256": "4c4b11388779c53bbfcf9ea8a6b94bad6a890db2bde66523700c674914248dd5",
+      "size": 3216
+    },
+    {
+      "path": "firmware/components/michi_product_profile/include/michi_product_profile.h",
+      "sha256": "58f9785d2c92e8b8330df2fe817c6e61e237080889a34f738a9c9bca8ffda679",
+      "size": 8773
+    },
+    {
+      "path": "firmware/components/michi_product_profile/include/michi_profile_logic.h",
+      "sha256": "10a8491adfc2e744149e3d810f927a23417c2b27e7a5b29a076aa335b78053dd",
+      "size": 319
+    },
+    {
+      "path": "firmware/components/michi_product_profile/michi_product_profile.c",
+      "sha256": "172aa5181b79b21dc6c6b2dc3ddaf0b3fdf226fb924e869ef7e145dbc637a001",
+      "size": 9357
+    },
+    {
+      "path": "firmware/components/michi_product_profile/profile_logic.c",
+      "sha256": "26ebaab52ee158975997fe93066d1fe8b3a6530775017904179fc6197a8aaa02",
+      "size": 378
+    },
+    {
+      "path": "firmware/components/michi_sd/CMakeLists.txt",
+      "sha256": "738fb20cdc1ed153800a3f3b7ea981c1d3cbe600a6db0f956b7c35a05f2f4865",
+      "size": 180
+    },
+    {
+      "path": "firmware/components/michi_sd/Kconfig",
+      "sha256": "f04147caa053e44f7126105921f958475b9bedea4ecd61abe2385de97939d317",
+      "size": 2802
+    },
+    {
+      "path": "firmware/components/michi_sd/include/michi_sd.h",
+      "sha256": "40dfb6b775306c649573106f1c958610a0aee21f6ef157b2dd58617bb8ab0be5",
+      "size": 4829
+    },
+    {
+      "path": "firmware/components/michi_sd/michi_sd.c",
+      "sha256": "a637972310157ff7e993ab91ff772fcb60809ae89c4fe8a2ce3dd0f434ab1b9e",
+      "size": 9794
+    },
+    {
+      "path": "firmware/components/michi_session/CMakeLists.txt",
+      "sha256": "e04baf1cdefe206540d1b53d5ed3ab7f5a0b1d074654c7d7c82cc602d32dd98d",
+      "size": 201
+    },
+    {
+      "path": "firmware/components/michi_session/include/michi_session.h",
+      "sha256": "4ce64ecac08d7817af5c043a644a2c5d3128aa5a573bff395afb88feac5ff647",
+      "size": 21058
+    },
+    {
+      "path": "firmware/components/michi_session/michi_session.c",
+      "sha256": "5bd843e6a0076e4c6faf9405e302541491231c93e1250acfa5af7c1b8634b27a",
+      "size": 46582
+    },
+    {
+      "path": "firmware/components/michi_state/CMakeLists.txt",
+      "sha256": "5b98b8348f2bb07e3aebc13ce09d04467fcba1ded5b26c5453be1990df7705d1",
+      "size": 100
+    },
+    {
+      "path": "firmware/components/michi_state/Kconfig",
+      "sha256": "da3551c975b262a34d46768b235d63475a0437b8662431c9f3b1f4a055c1bc34",
+      "size": 1349
+    },
+    {
+      "path": "firmware/components/michi_state/include/michi_state.h",
+      "sha256": "6f6d07df1f60aee0ac26eff220eccdcf02140636b5f95819a208c58200c3b485",
+      "size": 14282
+    },
+    {
+      "path": "firmware/components/michi_state/michi_state.c",
+      "sha256": "9ceb938cb6c999cbca7b602c730c1485df0f508eadf7c36e368763ae4cfd96d4",
+      "size": 26264
+    },
+    {
+      "path": "firmware/components/michi_time/CMakeLists.txt",
+      "sha256": "d4c4f280e7ddae014bb9a0555d8da28a7d2b1be82248861e2872258c64d9a148",
+      "size": 124
+    },
+    {
+      "path": "firmware/components/michi_time/Kconfig",
+      "sha256": "cbd47b9fa61a80e4c5fc75a685cd9afd40f0ac90bcdf68ce73e2b1133c6a06c2",
+      "size": 2337
+    },
+    {
+      "path": "firmware/components/michi_time/include/michi_time.h",
+      "sha256": "21b889a5f4b0f352f957e0af94c1f8c40ecf723630d47e8efadd2eb17bd3c921",
+      "size": 5324
+    },
+    {
+      "path": "firmware/components/michi_time/michi_time.c",
+      "sha256": "9b51599309498aaf7c26f987e6f608b5113429aae092cdc5b24761c1730d8847",
+      "size": 13704
+    },
+    {
+      "path": "firmware/components/michi_volume/CMakeLists.txt",
+      "sha256": "2b852875d69573a3cf473f0cbdf4c798525e101dc4a285aae4008a69a28a5565",
+      "size": 102
+    },
+    {
+      "path": "firmware/components/michi_volume/include/michi_volume.h",
+      "sha256": "5e656e714677bd8db7a743036609b3d5abe2b783b3cb82a0b3e8e730684e0448",
+      "size": 4240
+    },
+    {
+      "path": "firmware/components/michi_volume/michi_volume.c",
+      "sha256": "70d8cca69dcae0190adde0be6c7c5570f3befa49862b202d9e2a0a6710696ef0",
+      "size": 8178
+    },
+    {
+      "path": "firmware/components/michi_wifi/CMakeLists.txt",
+      "sha256": "b58236c1a2d5dc83141edec9740ac0b7d6c52fb184bc484c3c8b94746cfcec5a",
+      "size": 545
+    },
+    {
+      "path": "firmware/components/michi_wifi/Kconfig",
+      "sha256": "a75ca68baad15b249d39799a3d050866a1a3af2b9f1c67688e86c1069be06c56",
+      "size": 4133
+    },
+    {
+      "path": "firmware/components/michi_wifi/idf_component.yml.yaml",
+      "sha256": "fdf22a52273ef33ac77a727f1502c6f0adf4431d690e74254ae53ebfe057b6de",
+      "size": 41
+    },
+    {
+      "path": "firmware/components/michi_wifi/include/michi_wifi.h",
+      "sha256": "3eb896cb08f2d6ac0cadf8ac394ebc771c927302e5e9a2d36b430e50ae023791",
+      "size": 7641
+    },
+    {
+      "path": "firmware/components/michi_wifi/include/michi_wifi_secret.h",
+      "sha256": "932d288dd2a5d645c0b2d7b6f3ae95fb3053b4831e1acff37170fa6db269d5ec",
+      "size": 503
+    },
+    {
+      "path": "firmware/components/michi_wifi/michi_wifi.c",
+      "sha256": "7bdec7bbb2047860a264b72a9e85eed750b706ade77c58ae3515c01985fc9900",
+      "size": 57255
+    },
+    {
+      "path": "firmware/dependencies.lock",
+      "sha256": "edd3d3e64687c2cfb6fcdce6ee2e89e96f3da0b23ec521855a1657f302be146e",
+      "size": 821
+    },
+    {
+      "path": "firmware/main/CMakeLists.txt",
+      "sha256": "556a586fef6ccda9f4debd52d7f0120b3e721fc9e4fe80a8108d08da0d45c52a",
+      "size": 637
+    },
+    {
+      "path": "firmware/main/Kconfig.projbuild",
+      "sha256": "0e1a2092dc15e157ae89edf70ec8d768904e304fae60169f52d0eb71e657f548",
+      "size": 5314
+    },
+    {
+      "path": "firmware/main/app_main.c",
+      "sha256": "4ad9a5c82df7a5eaf343cbde812161a180eb98fcc8fea6a6cf1dffe5638e621b",
+      "size": 23842
+    },
+    {
+      "path": "firmware/partitions.csv",
+      "sha256": "59fe57b97b56e6af1b4f274f055262562bb0e56d6afcf770fb516ca1ac2b8d72",
+      "size": 358
+    },
+    {
+      "path": "firmware/sdkconfig.defaults",
+      "sha256": "261a30568bc70a88b4818b02261b091031276d3f4824a36b09227a118390213f",
+      "size": 1803
+    },
+    {
+      "path": "firmware/sdkconfig.production.defaults",
+      "sha256": "09b4b6d75e5541c17f78d1c4dca48f1665383e04c77ade0953d088fd68705e3c",
+      "size": 323
+    },
+    {
+      "path": "previews/ui-01-boot.png",
+      "sha256": "5232a9625165ee5f08ef0d8557b4a50898cafed4743d700f770dd1e1d0a751b3",
+      "size": 1352
+    },
+    {
+      "path": "previews/ui-01-boot.ppm",
+      "sha256": "ba513cbb8d35090d12c5973730f70a1a5f6f0d52171f21388611cb128af04e5e",
+      "size": 230415
+    },
+    {
+      "path": "previews/ui-02-unprovisioned.png",
+      "sha256": "1a23af32c693700e1937c0351ec9ec58397a509ba91bb85212ed6499b8611d4a",
+      "size": 1900
+    },
+    {
+      "path": "previews/ui-02-unprovisioned.ppm",
+      "sha256": "350db55f05790e830a2494db6f7273742958b4e7103bac8777e3ef4c5437e0e6",
+      "size": 230415
+    },
+    {
+      "path": "previews/ui-03-ready.png",
+      "sha256": "97e1edeecf1e01a994e71103ff460019b4e918c985d8c63cd20df318be8f2a4f",
+      "size": 1685
+    },
+    {
+      "path": "previews/ui-03-ready.ppm",
+      "sha256": "281ae9d8bbcce362b840165789958dac00dfff68afa1f970a85e9e964f2d18b2",
+      "size": 230415
+    },
+    {
+      "path": "previews/ui-04-connecting.png",
+      "sha256": "38afaf88126b59723bfdfe4020526d27e4cd6aa4eaaf09af63cd7706e7aeee1b",
+      "size": 1594
+    },
+    {
+      "path": "previews/ui-04-connecting.ppm",
+      "sha256": "6c541c63a429e92f5ad882367643cf5a026317a44adff5c90360d30555e391a8",
+      "size": 230415
+    },
+    {
+      "path": "previews/ui-05-pairing-waiting.png",
+      "sha256": "9d682f0754db9bebc24d1a40f40bfe16dd7070af8ce26a3cd5c38cc9cf636602",
+      "size": 1629
+    },
+    {
+      "path": "previews/ui-05-pairing-waiting.ppm",
+      "sha256": "8dea45e64d98a8b9c062fc94084b5d4d3b1d68c68f94f1c4bcd0608f53e25741",
+      "size": 230415
+    },
+    {
+      "path": "previews/ui-06-pairing-pin.png",
+      "sha256": "7d3362ba7af688f5c38d423d89b0e869899cea1445bbf2fbaea49324dd6344fa",
+      "size": 2115
+    },
+    {
+      "path": "previews/ui-06-pairing-pin.ppm",
+      "sha256": "e9284d0fac878d9dfb5978883d18b639eb0c4a4893da6f1bb79d343640b6b70b",
+      "size": 230415
+    },
+    {
+      "path": "previews/ui-07-session-pending.png",
+      "sha256": "ce13ea1bbd4a2859e0f236c18a70eb9760da559289f9661f1a3c4aa43b5bf483",
+      "size": 1718
+    },
+    {
+      "path": "previews/ui-07-session-pending.ppm",
+      "sha256": "e3fc579f233c88c2dac6a914c312ffbd4d3ab68b60020ab9fbd66c7928fd9172",
+      "size": 230415
+    },
+    {
+      "path": "previews/ui-08-buffering-meta.png",
+      "sha256": "62972a26d87da77b38d2737784e5da0a7d622d08345085ddff4d30d9e2134af9",
+      "size": 1874
+    },
+    {
+      "path": "previews/ui-08-buffering-meta.ppm",
+      "sha256": "1e866a37ca32db1a5abbb3ccd175d5b38be229ba29deb52223a0c6d12882476f",
+      "size": 230415
+    },
+    {
+      "path": "previews/ui-09-buffering-nometa.png",
+      "sha256": "e6122c9daf6d7ea1db05999a47ea0ee30b516cbc7e38b3cb926ea091fc495feb",
+      "size": 1843
+    },
+    {
+      "path": "previews/ui-09-buffering-nometa.ppm",
+      "sha256": "fe400f75b3bc576f60150e06ea61299ef9c38c1ad4f87636c2fc96a4c1c8cdce",
+      "size": 230415
+    },
+    {
+      "path": "previews/ui-10-playing-meta.png",
+      "sha256": "33633e7d53d605017650e32a286570fe6a4c230f2a1907c1285d4ae5bb5bf413",
+      "size": 2281
+    },
+    {
+      "path": "previews/ui-10-playing-meta.ppm",
+      "sha256": "b8bdc8e2e0bf75092d7fc242fa4c9934ea1f6dca7b6a7b6054e4f9268c23810c",
+      "size": 230415
+    },
+    {
+      "path": "previews/ui-11-playing-spanish-utf8.png",
+      "sha256": "f73191a48d1d46a3632c9eaf2cff1d646aba2dd0a63cde9a6a3ef5e02bc69ec5",
+      "size": 2382
+    },
+    {
+      "path": "previews/ui-11-playing-spanish-utf8.ppm",
+      "sha256": "8725b9db0a4b14022f47df089179bb4e08bfc24a58e21473541f3e9277b02f13",
+      "size": 230415
+    },
+    {
+      "path": "previews/ui-12-playing-fallback.png",
+      "sha256": "7a80f4aee8a799fcd45816b352564d04a9c6468d35a40dfb5b971dd3de4fa3c7",
+      "size": 1838
+    },
+    {
+      "path": "previews/ui-12-playing-fallback.ppm",
+      "sha256": "a5f265998d6c9a0d335955159a06aaf4b2cc50ab392716ad036b533c6833750f",
+      "size": 230415
+    },
+    {
+      "path": "previews/ui-13-paused-meta.png",
+      "sha256": "d68bc739e011b9b30900a73fdfcd11ad8604698c05262ab63b2ca1b0a52fade8",
+      "size": 1761
+    },
+    {
+      "path": "previews/ui-13-paused-meta.ppm",
+      "sha256": "c7ed39799d4172fbd9ba9a300ecf0117f2b16fa66d5e0dc5d769be90543547a2",
+      "size": 230415
+    },
+    {
+      "path": "previews/ui-14-paused-nometa.png",
+      "sha256": "5977f2a214ddea098d503a5fbda814b39ac5c9b90b1ef86c2f036e9d0a19a0ca",
+      "size": 1624
+    },
+    {
+      "path": "previews/ui-14-paused-nometa.ppm",
+      "sha256": "96829c41bb9c474dc220b325ce5232c151706b76356dc2687da6d950dbdec9e0",
+      "size": 230415
+    },
+    {
+      "path": "previews/ui-15-updating-progress.png",
+      "sha256": "61bd5f2a0d16770b2016267afa086a8beb0f5d4835a1dd4cacc9d5dc5077c0bb",
+      "size": 1739
+    },
+    {
+      "path": "previews/ui-15-updating-progress.ppm",
+      "sha256": "18192d8e497cf950a9e080d6c297318e3927c17f4a5a46f19c1fb94745cc22b4",
+      "size": 230415
+    },
+    {
+      "path": "previews/ui-15b-updating-unknown.png",
+      "sha256": "db1c7ace61e788c835cb79f9c0bf67e858f90670a26d9a9d4c4ecfa88d91fb12",
+      "size": 1650
+    },
+    {
+      "path": "previews/ui-15b-updating-unknown.ppm",
+      "sha256": "4954b6a38f576ebaedb1c886fc943e6b4acaa3dab6edfdddd90a7f99a4b65340",
+      "size": 230415
+    },
+    {
+      "path": "previews/ui-16-recoverable-error-audio.png",
+      "sha256": "ffe5eeec1cf73454272d0aa7296549fa860cad6a4b4c87dc69654eb76bcc7663",
+      "size": 1823
+    },
+    {
+      "path": "previews/ui-16-recoverable-error-audio.ppm",
+      "sha256": "c4a079a6954260a67a9b77ff4c0c837995be9ee22e7aea014a0462a26bc6f960",
+      "size": 230415
+    },
+    {
+      "path": "previews/ui-17-recoverable-error-network.png",
+      "sha256": "c8bdb87832d005677485112cd8cd2b34f37fc4f2b0ef360080e52f09fc177c62",
+      "size": 1672
+    },
+    {
+      "path": "previews/ui-17-recoverable-error-network.ppm",
+      "sha256": "3cbcd889df076a050912e7fe599a95309d459de8df07cc71b3eda4c11f98fc90",
+      "size": 230415
+    },
+    {
+      "path": "previews/ui-18-fatal-error.png",
+      "sha256": "42d324a569b9d03fe5ed5fe831772dab4f21ea5d885e2e3b50bd0050563cf522",
+      "size": 1922
+    },
+    {
+      "path": "previews/ui-18-fatal-error.ppm",
+      "sha256": "fcd8b3983ae3293c758b5e0e4c9a9c0e31b8e69331a9bd036e344c247ca5ac50",
+      "size": 230415
+    },
+    {
+      "path": "previews/ui-19-diagnostics-connected.png",
+      "sha256": "6611091daf0efb74b876229ba6493377edbe23513c08caf4460cfa8c492ae2fe",
+      "size": 2158
+    },
+    {
+      "path": "previews/ui-19-diagnostics-connected.ppm",
+      "sha256": "ef186c7348334f46c9ebdd4a98129845e0b9f413123b4cd1e7bf4f36a98ced92",
+      "size": 230415
+    },
+    {
+      "path": "previews/ui-19b-diagnostics-dac-absent.png",
+      "sha256": "6829b796a48a166a72704bee75aadb60d60bf4fefc4c399b00948fc745b02763",
+      "size": 2222
+    },
+    {
+      "path": "previews/ui-19b-diagnostics-dac-absent.ppm",
+      "sha256": "e786b8bb20e9deba0fd157884e7f1aa057a26c09aa62269f9dbeadebca4eaeea",
+      "size": 230415
+    },
+    {
+      "path": "previews/ui-19c-diagnostics-dac-unknown.png",
+      "sha256": "9253ccc46e26e5ad1e418755f94ef2f0f6630d914be8ee0d67aa7f1ca266d796",
+      "size": 2031
+    },
+    {
+      "path": "previews/ui-19c-diagnostics-dac-unknown.ppm",
+      "sha256": "dc37541f97a6349f36e271dfdb5aecade5d549164be466bd96ad5b59f1fa35b6",
+      "size": 230415
+    },
+    {
+      "path": "previews/ui-20-volume-overlay.png",
+      "sha256": "f5461a8d9ea2879e5369503d0e96fc3d85837e181a34d98c5584f9de718aea70",
+      "size": 1156
+    },
+    {
+      "path": "previews/ui-20-volume-overlay.ppm",
+      "sha256": "f195eaa6ab27e21e45ac850805a0d53d805cbc2b81f1b559f74c2093e7dc4cb4",
+      "size": 230415
+    },
+    {
+      "path": "requirements.in",
+      "sha256": "878095b527d07a4ca2179abd5eaa7247c343a060c2f96340b93bfca286be5124",
+      "size": 617
+    },
+    {
+      "path": "requirements.txt",
+      "sha256": "3f812a34733b04fb3d88d59e64c913654d68cec63a24a47642248a1fb2bfd28f",
+      "size": 785
+    },
+    {
+      "path": "scripts/build_factory_manifest.py",
+      "sha256": "89924facc61f422c95e14b79a98ce52b53293edf2e0144b725f8b9bea7a47d4a",
+      "size": 8091
+    },
+    {
+      "path": "scripts/build_firmware.sh",
+      "sha256": "851fe74684fcad6dc020dc73f802bff591a6fceaaff2d99792c27c3a49599f5a",
+      "size": 172
+    },
+    {
+      "path": "scripts/check_release_profile.py",
+      "sha256": "76ba8da83c40d66a716ed7e607d6d5a5c75f7beb08bad7502d5a6f3b4e20dae6",
+      "size": 3231
+    },
+    {
+      "path": "scripts/check_source_identity.py",
+      "sha256": "a5d234d17682f00368ab339b506fe51bbc2ce0e6def4666d842260816429fa03",
+      "size": 2402
+    },
+    {
+      "path": "scripts/flash_firmware.sh",
+      "sha256": "9424377c6dd67099353b36f2abdfad91df11f30a3da646954939059f2b56d60f",
+      "size": 182
+    },
+    {
+      "path": "scripts/install_drive_sources.py",
+      "sha256": "60f4d8ba39948b3b1db22ae0a1470a605e611f23e33b78c96a7e576f71c9ffef",
+      "size": 7148
+    },
+    {
+      "path": "scripts/package_source_snapshot.py",
+      "sha256": "bf60c8313033d9fd13f964dff169bb26330169abcd453147c7af11569798e8fc",
+      "size": 11423
+    },
+    {
+      "path": "scripts/reconcile_drive_sources.py",
+      "sha256": "ff01615ad994890b4bd9708a236794d1708a7ddad89331614fe053d242d5e523",
+      "size": 7585
+    },
+    {
+      "path": "scripts/run_receiver_sim_hifi.sh",
+      "sha256": "5109ed9844f653bb178d462e9e51b4b9c4025a74e2a7d9c8e0c4f063da4b9ebd",
+      "size": 351
+    },
+    {
+      "path": "scripts/run_receiver_sim_pairing_closed.sh",
+      "sha256": "6d272c7e171c35cdf860ce91d82c3e3c7a85c366c089a114e8ce8176e0660dcb",
+      "size": 427
+    },
+    {
+      "path": "scripts/run_receiver_sim_standard.sh",
+      "sha256": "908a9a8ad05c44e2c2f22d1502303626f7f47cedc264485224767ec964c6751d",
+      "size": 362
+    },
+    {
+      "path": "scripts/run_tests.sh",
+      "sha256": "418d58ff21b6ddfd86ec280618a612dde71dcb73156f480e6e5370e35edb3da8",
+      "size": 9280
+    },
+    {
+      "path": "scripts/sign_manifest.py",
+      "sha256": "92e93597e62139fb88061aa0b57f03baf61c3f055d6a81858bc58e7bd8d48abf",
+      "size": 8306
+    },
+    {
+      "path": "scripts/sync_michi_link_contract.py",
+      "sha256": "a82c8eff7c44210942a178527f5e22c00ce63fcb2135e055fca761fe755de5be",
+      "size": 9869
+    },
+    {
+      "path": "scripts/test_receiver_simulator.sh",
+      "sha256": "dbab0f0791609da2bbeb0e6e04ee2bb1ab442b56693916d6d7d7bc17b07d2cff",
+      "size": 2426
+    },
+    {
+      "path": "scripts/verify_source_snapshot.py",
+      "sha256": "9388f8d4f897b439bd03a75d450ced372b76ade0ddede0a82d2e8bbed3a1f2fa",
+      "size": 4980
+    },
+    {
+      "path": "simulator/README.md",
+      "sha256": "e0e9107e677f80edc3c98be6ef0e3d46ad4bac6005577c756664a52b8b2280ea",
+      "size": 5282
+    },
+    {
+      "path": "simulator/config.example.json",
+      "sha256": "40708722e60139d9d911c8209f39c5378bb4938b43b43eed9ad2f4d18312ff30",
+      "size": 883
+    },
+    {
+      "path": "simulator/receiver_sim.py",
+      "sha256": "8416aec5781e1e1515a93422737c708ed3e281f82dab6025c8423ea74db84264",
+      "size": 61766
+    },
+    {
+      "path": "simulator/tests/test_integration_http.py",
+      "sha256": "c528bca21758c8e831897ca682429b3ef450343181e442b31b3a793ce50e8ee5",
+      "size": 22732
+    },
+    {
+      "path": "simulator/tests/test_scenarios.py",
+      "sha256": "da33c22eecddf4284f84fa3e08476d175194d08887e675a41d0447904beb4b6f",
+      "size": 9201
+    },
+    {
+      "path": "simulator/tests/test_simulator.py",
+      "sha256": "de511202351eee746df5b16993af5ad56e22a3dac1d1ced6295ed8170f01547c",
+      "size": 28322
+    },
+    {
+      "path": "tests/contract/test_contract.py",
+      "sha256": "ee159b777067f982ac494d070ff5a457b13f354eb446eb231478022a6c4627ee",
+      "size": 22713
+    },
+    {
+      "path": "tests/contract/test_examples.py",
+      "sha256": "c98206b3ca047c9092aabd896ccd472ca7d76290e09fc81e5d1acb652460ee99",
+      "size": 6018
+    },
+    {
+      "path": "tests/contract/test_schema.py",
+      "sha256": "983cbdf9c83a00371cbdae1cc1a28fd8a17bd0e83145f8e888452ff169619840",
+      "size": 8742
+    },
+    {
+      "path": "tests/e2e/conftest.py",
+      "sha256": "8cde7876477e1b4ef014488c306b342c0c74c6c8b1836851bd3defad30dd2744",
+      "size": 310
+    },
+    {
+      "path": "tests/e2e/harness.py",
+      "sha256": "696df9418b988ba1598aadd2a8cac9148c3071f5981e2f9b32ecbda4aee02ae8",
+      "size": 5620
+    },
+    {
+      "path": "tests/e2e/results/michi-link-alpha2.json",
+      "sha256": "b22cd9c23d407629a9251b0203700525cfab88bb1fd8d1f0d3782ba575cd4c45",
+      "size": 3291
+    },
+    {
+      "path": "tests/e2e/results/michi-link-alpha3.json",
+      "sha256": "c4e0f0e8080f422189f526ddaf2f9bc9347898bd57d4db9be0d6b63591c5854a",
+      "size": 3323
+    },
+    {
+      "path": "tests/e2e/results/michi-link-alpha4.json",
+      "sha256": "cf24c2987bc6316081ec40e9a8ac09a82a4d59e5a3ab6f078af71bcadb888088",
+      "size": 3323
+    },
+    {
+      "path": "tests/e2e/results/michi-link-alpha6_HISTORICAL_BUNDLE_ALPHA5.json",
+      "sha256": "e967079aa6b24c115264297f238b37ff87c3e57159da893677648672320bd924",
+      "size": 3323
+    },
+    {
+      "path": "tests/e2e/rtp_client.py",
+      "sha256": "effcb0417ee3cfc6e510d820f7c7bb0bde74f1695aff0ff7d5842d8745540956",
+      "size": 1193
+    },
+    {
+      "path": "tests/e2e/run_e2e.py",
+      "sha256": "12b35009372e4a85c505a95ca2ce51a32a28a747f4ac9fd86e5c409a858d2e89",
+      "size": 8608
+    },
+    {
+      "path": "tests/e2e/test_e2e_micro_stream.py",
+      "sha256": "596466c8d421b8e62694eb45459e6daf405a7e03b6f698c4192e3db731632c34",
+      "size": 20085
+    },
+    {
+      "path": "tests/e2e/test_manual_pairing_smoke.py",
+      "sha256": "f0f3d0783f183cce88ab8ab6ec94f4fbe43599ec6b02670dc82dda45a0abd204",
+      "size": 12331
+    },
+    {
+      "path": "tests/host/Makefile",
+      "sha256": "4ebabf698432a365543474de81b6151b79ad9a85f871ae43bf1c9518a07ce736",
+      "size": 24851
+    },
+    {
+      "path": "tests/host/render_ui_previews.c",
+      "sha256": "c2c803b3bb378ec1f2549a01da1db6bd9a785296fd48dcea8ecea6658d8dee78",
+      "size": 10575
+    },
+    {
+      "path": "tests/host/shim/driver/gpio.h",
+      "sha256": "b795cf6443b952e77ca8e53659043c4be027624ba3cba9fa449431d6b6bbebe7",
+      "size": 1246
+    },
+    {
+      "path": "tests/host/shim/driver/i2c_master.h",
+      "sha256": "2c139b27baca98947a43c83bdaa9e0e4f958c74fe5751c89c415d28c15be38a8",
+      "size": 1763
+    },
+    {
+      "path": "tests/host/shim/driver/i2s_std.h",
+      "sha256": "f4ecf73b00a1283665fd519fd5c7a16e4bd60d8715cf0aebebc96454de4628e3",
+      "size": 3157
+    },
+    {
+      "path": "tests/host/shim/driver/spi_master.h",
+      "sha256": "e197e14ee6c1fd0db04d3e8fe7a9fac35e41851e8fb9863064e45d1d1ab3daf1",
+      "size": 568
+    },
+    {
+      "path": "tests/host/shim/esp_attr.h",
+      "sha256": "ff1d871e5f46ad8432759490d697aeeb8b656a0064cc56827268d792d5f9be23",
+      "size": 56
+    },
+    {
+      "path": "tests/host/shim/esp_chip_info.h",
+      "sha256": "be7fd024762d32230d74c85768638678d183650e79e88ad37cb688c82b223d43",
+      "size": 510
+    },
+    {
+      "path": "tests/host/shim/esp_err.h",
+      "sha256": "07a923544b2b9942c014813c17233042a2b6599405bd1e95ca0bee3fba3fe969",
+      "size": 2113
+    },
+    {
+      "path": "tests/host/shim/esp_flash.h",
+      "sha256": "6a983b5eceabed7144d21f871b8ffb7931a8f1bbd0c49143222ee86b14da35b3",
+      "size": 271
+    },
+    {
+      "path": "tests/host/shim/esp_heap_caps.h",
+      "sha256": "5bf50d434ed5bf46bd294c7d85c3e1f5e90d23f4a24b849938bd638182781c9c",
+      "size": 476
+    },
+    {
+      "path": "tests/host/shim/esp_http_server.h",
+      "sha256": "63dd18711f87e46f035b25f8f5c6e566ee7e46671e1e3ca3481abe9fabacc748",
+      "size": 1216
+    },
+    {
+      "path": "tests/host/shim/esp_http_server_shim.c",
+      "sha256": "3e0cf1b2b7bf44bd17060c504ac27077a2ec5cd8099fcdd2a565154735c781ca",
+      "size": 2868
+    },
+    {
+      "path": "tests/host/shim/esp_lcd_io_spi.h",
+      "sha256": "1627f0bf11cc71715d2be721a883d339f47cb8a8acb86a70afdafbe774e287ee",
+      "size": 668
+    },
+    {
+      "path": "tests/host/shim/esp_lcd_panel_dev.h",
+      "sha256": "fda21d9dfd947e7ba1a35719f3766422e83b14484fb1dfe7738e438745d024f7",
+      "size": 380
+    },
+    {
+      "path": "tests/host/shim/esp_lcd_panel_io.h",
+      "sha256": "92722e5b1fa9139d7d142dea0741a31da3a6b5905bf88fa9b6d81bb46e6ee0a4",
+      "size": 597
+    },
+    {
+      "path": "tests/host/shim/esp_lcd_panel_ops.h",
+      "sha256": "4a33ff3fa1d5444b7bf3ed588db2dcedb0ad6c39c7a76e10f665ccd0b877ca17",
+      "size": 864
+    },
+    {
+      "path": "tests/host/shim/esp_lcd_panel_st7789.h",
+      "sha256": "8e37cf6e84164aead5ffde7897697fe6300fc177c04683fb12cc88d31d6f4ab1",
+      "size": 398
+    },
+    {
+      "path": "tests/host/shim/esp_lcd_shim.c",
+      "sha256": "2ce1e2c0d992940a69600b46eddc05f4d65e847b260955b56babd4e30a713fd2",
+      "size": 6842
+    },
+    {
+      "path": "tests/host/shim/esp_log.h",
+      "sha256": "34722bdef2d3f414cfce2b77aab2e1d46844ad67fb08d471d284776ed7aee794",
+      "size": 616
+    },
+    {
+      "path": "tests/host/shim/esp_mac.h",
+      "sha256": "0a8740701e79ab8701f116b3781a098e83612ea4a9e00fcb6fffc7f975c354d3",
+      "size": 385
+    },
+    {
+      "path": "tests/host/shim/esp_mac_shim.c",
+      "sha256": "4199bcafe94e060f2b411bf1fe13c92c15b8ab75adcddf99f559d6871a8c6b1a",
+      "size": 330
+    },
+    {
+      "path": "tests/host/shim/esp_netif_sntp.c",
+      "sha256": "64b72cf8636959228cde392fb02dcce98946722e2edade184427ca314b3bc221",
+      "size": 5339
+    },
+    {
+      "path": "tests/host/shim/esp_netif_sntp.h",
+      "sha256": "52b6689c0dd70f00689dcc24791871ee09776d62da852b9964093e1ab5ced3de",
+      "size": 3483
+    },
+    {
+      "path": "tests/host/shim/esp_psram.h",
+      "sha256": "b114dff530f4819b711a953cabc471a07ea8a19b383ee09e1a37b6ebefc82dcb",
+      "size": 115
+    },
+    {
+      "path": "tests/host/shim/esp_random.h",
+      "sha256": "931667f403825f7b40b44e8eaaf28579e67988b1a028806f5ff74b11286476ce",
+      "size": 1316
+    },
+    {
+      "path": "tests/host/shim/esp_system.c",
+      "sha256": "f083ae14e4896acf2e3e99aeef45b7caaf97e6bff68c34c5bd940ff7e58a50b6",
+      "size": 315
+    },
+    {
+      "path": "tests/host/shim/esp_system.h",
+      "sha256": "71e5d08193e262f4994735c402b645b0544faa3289a886f7eed8cb0953914acd",
+      "size": 448
+    },
+    {
+      "path": "tests/host/shim/esp_timer.c",
+      "sha256": "633f2c3fdc688e5eb051a0c76e52a62864d9f23c1b2bb846d4775d439d716949",
+      "size": 2997
+    },
+    {
+      "path": "tests/host/shim/esp_timer.h",
+      "sha256": "a6ea0982d51ed9cff3a35a4810567f6a976d399428533d56363c60673369d290",
+      "size": 2038
+    },
+    {
+      "path": "tests/host/shim/freertos/FreeRTOS.h",
+      "sha256": "c796155d20f61bfa03a744ea4c8ab26eca6fa3200391da6331d6c573ee0988a9",
+      "size": 1836
+    },
+    {
+      "path": "tests/host/shim/freertos/queue.c",
+      "sha256": "52e0a2048be43212b994a9f528ee2577c3a1691f66e6d004bb366b8e1097c015",
+      "size": 3464
+    },
+    {
+      "path": "tests/host/shim/freertos/queue.h",
+      "sha256": "a6c512fb0a3c1932f4a08fea956c4894552ff117e2913b910778ac31660139ae",
+      "size": 777
+    },
+    {
+      "path": "tests/host/shim/freertos/semphr.h",
+      "sha256": "dfc51770ad6043cfd33418711e51d9a6a447ff646225cfe0da54872183091345",
+      "size": 4462
+    },
+    {
+      "path": "tests/host/shim/freertos/task.c",
+      "sha256": "c49e2f70707cd68a93d0716781a2abfaa0130d8c381af8c078197242d24dd9f5",
+      "size": 7752
+    },
+    {
+      "path": "tests/host/shim/freertos/task.h",
+      "sha256": "90690513478bcf7cfe6a5734ef3ff49795784e7982c8bf11403fd2beefe92d6d",
+      "size": 2554
+    },
+    {
+      "path": "tests/host/shim/i2c_master_shim.c",
+      "sha256": "114dd300a18bbae3d4aba060c39046e6ea7f5fb467266d849055d8e1664c594e",
+      "size": 2234
+    },
+    {
+      "path": "tests/host/shim/i2s_shim.c",
+      "sha256": "ad6f540d6c7a6c3941db4d7c63cd132273fd3d0fd23daf44d351def7e4db598f",
+      "size": 9684
+    },
+    {
+      "path": "tests/host/shim/lwip/inet.h",
+      "sha256": "7a924ba7b0f87234a35001d3013fe03d36c22ec8253df2bc399fb14cd6ad5aed",
+      "size": 334
+    },
+    {
+      "path": "tests/host/shim/lwip/sockets.h",
+      "sha256": "32c66227b77da794c44a576c3fc57e8552c3ce15b908830c19068427a1707b26",
+      "size": 2097
+    },
+    {
+      "path": "tests/host/shim/lwip_sockets.c",
+      "sha256": "d3245021ec577160765669eb37cdca170725bcbb90292baf1174e81a342dee19",
+      "size": 3534
+    },
+    {
+      "path": "tests/host/shim/mbedtls/sha256.c",
+      "sha256": "259edb41b8203b07e99cbc213358b03d20af808b5f2c362513ec06441d983194",
+      "size": 3787
+    },
+    {
+      "path": "tests/host/shim/mbedtls/sha256.h",
+      "sha256": "f7ad7ec0a4a0dbbdfebfab7abc975ca8e4658afdf25cda73dae8f68d1a78b920",
+      "size": 743
+    },
+    {
+      "path": "tests/host/shim/mdns.h",
+      "sha256": "625a6d65168d406d869271de84d700b721c5329edc890e306714261fb3fe2d2e",
+      "size": 982
+    },
+    {
+      "path": "tests/host/shim/mdns_shim.c",
+      "sha256": "db1f91cb387fab369131243a6d9ac5ab634bdd5c5e874202542fe31947be9f93",
+      "size": 1061
+    },
+    {
+      "path": "tests/host/shim/michi_audio_fake.c",
+      "sha256": "632aa7cf1808488148b095102ceeb7be6cd47501bb119873dbfd8711bf513fda",
+      "size": 4761
+    },
+    {
+      "path": "tests/host/shim/michi_audio_fake.h",
+      "sha256": "6c4b7c08e978b6983c4e847af6188c366afcd0e8a3be762b80fb934feb0694f6",
+      "size": 1199
+    },
+    {
+      "path": "tests/host/shim/michi_dac_fake.c",
+      "sha256": "7ce7b4854ae008e6e133a8fb8d758baba92ae35da04e89fb1f7afcfbb6fd8c3e",
+      "size": 1272
+    },
+    {
+      "path": "tests/host/shim/michi_display_fake.c",
+      "sha256": "3bb4bb0907189b13039c71945fdc8c7c6737218adae72e461fffa35a3eae2244",
+      "size": 1288
+    },
+    {
+      "path": "tests/host/shim/michi_display_fake.h",
+      "sha256": "666014308c584f69af3f01738db6cdce896a5e72af4c8af076b553713c994a70",
+      "size": 289
+    },
+    {
+      "path": "tests/host/shim/michi_home_fake.c",
+      "sha256": "e4bf9d83ff0f5186abb58d598bf4c3edae3ac52b86faa555d9bae5e55c97ca88",
+      "size": 1569
+    },
+    {
+      "path": "tests/host/shim/michi_home_fake.h",
+      "sha256": "7d180eb7fb99dbafaf12e9e2ca4d209fdb9ba13ca1cf9d8390cdb6caf6ac96d1",
+      "size": 228
+    },
+    {
+      "path": "tests/host/shim/michi_ota_fake.c",
+      "sha256": "b4c9c6030a54e044e41d0edeeef8c0d0099066b056c5b0547af1590461b3b4e5",
+      "size": 228
+    },
+    {
+      "path": "tests/host/shim/michi_ota_fake.h",
+      "sha256": "6c9937b6effe20b591cba0072f986428e5d4dce433c7caee4ea90d7b687adc88",
+      "size": 77
+    },
+    {
+      "path": "tests/host/shim/michi_product_profile_fake.c",
+      "sha256": "19c854149f326eb9628f19e2f0186a6ed74f0a8bdf94fb4c9646b663431a7494",
+      "size": 1337
+    },
+    {
+      "path": "tests/host/shim/michi_product_profile_fake.h",
+      "sha256": "1f025987268baef9f3872cb654679d066a857500b4d813434339f2087572503d",
+      "size": 832
+    },
+    {
+      "path": "tests/host/shim/michi_state.c",
+      "sha256": "6262d2ca5e4d561cb3e61b5ef1048d105e0f8e7ba241143814658628090af75d",
+      "size": 3270
+    },
+    {
+      "path": "tests/host/shim/michi_state.h",
+      "sha256": "ef5c0f873e43a51b1a6fa6aa8bc214320df9bbbe653c296f8b7354e4698f2540",
+      "size": 2023
+    },
+    {
+      "path": "tests/host/shim/michi_volume_fake.c",
+      "sha256": "30f418b2072df7d033dff5999290e94d239e7146258e598f925745208d2582bb",
+      "size": 1150
+    },
+    {
+      "path": "tests/host/shim/michi_volume_fake.h",
+      "sha256": "e8c5ae7a4a21234c1281e1d93cd47bf5fae7c56d7a54640437d861962f5b0f53",
+      "size": 225
+    },
+    {
+      "path": "tests/host/shim/nvs.h",
+      "sha256": "e34ca38475d10525749d869129125f5d43bd09a738780a9aea322b013bf1a85e",
+      "size": 2688
+    },
+    {
+      "path": "tests/host/shim/nvs_fake.c",
+      "sha256": "2678782494f59deb2302ff1518fd2d3ede8632e41014f4f450449e9b52c54c40",
+      "size": 8496
+    },
+    {
+      "path": "tests/host/shim/nvs_flash.c",
+      "sha256": "5e1f375a2e5eb7d26cc82513f80a2192b2cf297285772670fe694726fab6d853",
+      "size": 519
+    },
+    {
+      "path": "tests/host/shim/nvs_flash.h",
+      "sha256": "1512846820441610db02ef0d8368b30cbd1dcb94f9664ce170aad22d7b6ec5f6",
+      "size": 599
+    },
+    {
+      "path": "tests/host/shim/sdkconfig.h",
+      "sha256": "82712468c6ead5bf313367d5684edd49650bab6c4643d13b3ea5083385aa776f",
+      "size": 1779
+    },
+    {
+      "path": "tests/host/shim/soc/gpio_num.h",
+      "sha256": "c19135e7ff691189f31a4924a6f23f2f4ec5048d05de02966adc519dad824a6d",
+      "size": 84
+    },
+    {
+      "path": "tests/host/shim/time_shim.c",
+      "sha256": "33a55ed85e753ca6ce124fa79b198512255cd29a8d0f468d9e17b95156955273",
+      "size": 782
+    },
+    {
+      "path": "tests/host/shim/time_shim.h",
+      "sha256": "5ed57af0730343340baad30ba9d218a272441436839b148fb4005acad31b4e85",
+      "size": 803
+    },
+    {
+      "path": "tests/host/shim_rtp/esp_heap_caps.h",
+      "sha256": "2b6a0740893a1a2bed559106216f170ccbaea236faf82730bd375b4916967718",
+      "size": 848
+    },
+    {
+      "path": "tests/host/shim_rtp/lwip/ip4_addr.h",
+      "sha256": "27a05fca87176bf2e28ab8dcf22a6b0f071a1c27e374e337842584b6ab10d9a9",
+      "size": 688
+    },
+    {
+      "path": "tests/host/shim_rtp/lwip/sockets.h",
+      "sha256": "034783be27791eba3072ded6681cd73715e2929b34d54e7ac2838926dd59c228",
+      "size": 328
+    },
+    {
+      "path": "tests/host/shim_rtp/rtp_faults.c",
+      "sha256": "fdcfd3e0f746bab1556652bdc0928de4360fc1d495cabeb29bb2465408982488",
+      "size": 724
+    },
+    {
+      "path": "tests/host/shim_rtp/rtp_output_fake.c",
+      "sha256": "6d79269d9a446d6d91f99ea47952462ef7e2885ed79ced56779c978c78a72fc9",
+      "size": 3364
+    },
+    {
+      "path": "tests/host/shim_rtp/rtp_output_fake.h",
+      "sha256": "ae157f0397b89b7ab4c595249f2be6fa9ea9ec078d01ec5de0dd7bf80d5fa463",
+      "size": 410
+    },
+    {
+      "path": "tests/host/shim_rtp/rtp_time.c",
+      "sha256": "cae9f205b8ed18333781a503fde4569a5a706382e1c70e933add0dbe21e492ae",
+      "size": 331
+    },
+    {
+      "path": "tests/host/test_auth_http.c",
+      "sha256": "1b755c3ef76f8bc13134c863638382cfb016f7b78c9f5d7a7b86b1c506e543d9",
+      "size": 5432
+    },
+    {
+      "path": "tests/host/test_capability_parity.c",
+      "sha256": "2329bcec3b85753f748daa922a2ebda1282300c64868568e763c4018b983a59f",
+      "size": 9003
+    },
+    {
+      "path": "tests/host/test_discovery_disc.c",
+      "sha256": "3e0ee702d6ee626be1e573eebad59a1fb2b29946a2998a1daf1e6d77f5bc8846",
+      "size": 57307
+    },
+    {
+      "path": "tests/host/test_http_canonical.c",
+      "sha256": "925e9d4f7c48c49baa9c7ce79ee29309e6dbdb597228d3597ce491e541b8aa43",
+      "size": 25548
+    },
+    {
+      "path": "tests/host/test_json_helpers.c",
+      "sha256": "0782d8ed97494d01a4431d1034aebf876f91afe363b76eeaaff39c73eb0641f9",
+      "size": 7367
+    },
+    {
+      "path": "tests/host/test_michi_audio_buffer.c",
+      "sha256": "4da27ab1ae2183fda1321b545b5bd2d2560c47c43f4a6bd216f0a3806a0a8a8e",
+      "size": 4724
+    },
+    {
+      "path": "tests/host/test_michi_audio_diagnostics.c",
+      "sha256": "1634ac96c1171f007603d1c70ca5a166403ba156243ca18952e89aefd9d2e546",
+      "size": 1266
+    },
+    {
+      "path": "tests/host/test_michi_audio_engine.c",
+      "sha256": "860160cdf7489d65087046e1d37127d7d4fde1c44585ba6fc990e7705df8acf4",
+      "size": 6656
+    },
+    {
+      "path": "tests/host/test_michi_audio_output.c",
+      "sha256": "245b816dc1c575c70b7aaaf795b11daa353b88baf850e1d5ea7fc55504bdf99b",
+      "size": 63449
+    },
+    {
+      "path": "tests/host/test_michi_audio_pause_policy.c",
+      "sha256": "7ecfadd5c38b9138feb7b905775adc9959e56686852c9ff38c3256cd254f271f",
+      "size": 1194
+    },
+    {
+      "path": "tests/host/test_michi_dac.c",
+      "sha256": "46afaa42476fb4abc733dc260dfdf8d0df96018bb3b20c532ddf8be45e48fb0b",
+      "size": 5498
+    },
+    {
+      "path": "tests/host/test_michi_discovery.c",
+      "sha256": "5ae40a4f8dc923011d50c8504b2682d263c95a0fd5d41dde192792696232ad58",
+      "size": 24504
+    },
+    {
+      "path": "tests/host/test_michi_display_dma.c",
+      "sha256": "1c5602e80d47a71a7aa26c8749b8c626dbbb4b7274d834ba219eb0a13f41ad8d",
+      "size": 10223
+    },
+    {
+      "path": "tests/host/test_michi_home.c",
+      "sha256": "e76e1027022d90bfb38b4fde49cff8971664394b8457441cf2ec68f223125430",
+      "size": 38223
+    },
+    {
+      "path": "tests/host/test_michi_identity.c",
+      "sha256": "a49ad722b200fc85bee27ea722ab09a5b498747321c522e7ef31d0255d433952",
+      "size": 22041
+    },
+    {
+      "path": "tests/host/test_michi_jb.c",
+      "sha256": "a46cd7148dcca2c58766df7682a52fa5905b8ac5c63fae9e9e11be70631900df",
+      "size": 16044
+    },
+    {
+      "path": "tests/host/test_michi_ota_logic.c",
+      "sha256": "a9fa8918750dae2fe598e098fa72dc30fd8c0971e36d79536b76447d2fc9937e",
+      "size": 17172
+    },
+    {
+      "path": "tests/host/test_michi_profile_logic.c",
+      "sha256": "5ad6aacfd9e1a69a98967c85bbfb7b9432c66e2a59db84a633e28bc4a48d991a",
+      "size": 8830
+    },
+    {
+      "path": "tests/host/test_michi_session.c",
+      "sha256": "fd0a2857c70717a2fff5992a3a4d487b1d4cdd9c9d7cd8350eadb36aefecf1eb",
+      "size": 43962
+    },
+    {
+      "path": "tests/host/test_michi_time.c",
+      "sha256": "a55f14cc0a366a73aea1957922775305b8d43db3b91f36ef09a4a8d396969992",
+      "size": 21849
+    },
+    {
+      "path": "tests/host/test_michi_ui.c",
+      "sha256": "1bc4239500e7d771ef273d670eb609e483ec478e9962a0f09e3769a7efcd72d3",
+      "size": 32597
+    },
+    {
+      "path": "tests/host/test_michi_volume.c",
+      "sha256": "b1f707ebe517f8c0219af08d20fb3b505a4d4ae1d57d3ecd0463c3a30a4266dd",
+      "size": 9726
+    },
+    {
+      "path": "tests/host/test_michi_wifi_secret.c",
+      "sha256": "be83cd70e88eec242144808f5937e147c53d5a5fad513b71440f66546ebe899c",
+      "size": 735
+    },
+    {
+      "path": "tests/host/test_rtp_clock.c",
+      "sha256": "b731ef5eac459f280d3e1cf718c92a9ecfd1cc0ce355b442f77efb7b519e92e0",
+      "size": 10550
+    },
+    {
+      "path": "tests/host/test_rtp_guard.c",
+      "sha256": "0797aa0448be355c1fdcf4539a0ef7e73a4b91551f0e8b0181a74fe4c9fcb636",
+      "size": 7707
+    },
+    {
+      "path": "tests/host/test_rtp_jitter.c",
+      "sha256": "a0c2a421fb0b92a2ed3832ee5ebd9636783a64298b7f88f04af91a05fe68f9a0",
+      "size": 5411
+    },
+    {
+      "path": "tests/host/test_semver.c",
+      "sha256": "4e8f0f51f1342e0c6b82629296828d9dc1602699e80dc4b498243bb39c4579ae",
+      "size": 6779
+    },
+    {
+      "path": "tests/host/test_session_http.c",
+      "sha256": "557df68744c90bec92c0dbc6943414f816f7f67d590f28c42766bc445633961b",
+      "size": 27656
+    },
+    {
+      "path": "tests/host/test_spiffs_journal.c",
+      "sha256": "ae464a899ef8e6d2f159dcb39c2c4bdc3d022a57ca6f70f8f4f9fc08bb5649f2",
+      "size": 8474
+    },
+    {
+      "path": "tests/host/test_ui02_brand_assets.py",
+      "sha256": "a14ca227b3041e628d1d5e9d9dd41386164757e72ce3c76069c1ec2f5d88b831",
+      "size": 1303
+    },
+    {
+      "path": "tests/host/test_ui03_wave_previews.py",
+      "sha256": "55736d0e13c10b86bcff5c5042c3c89ef7c0833f731431f41c927b72a4bf213d",
+      "size": 1798
+    },
+    {
+      "path": "tests/host/test_ui04_visual_invariants.py",
+      "sha256": "728c31b13a9656a6d0e84bafbb6c7ff0d54f9d573c1715c47f40cca4ab23d042",
+      "size": 2087
+    },
+    {
+      "path": "tests/host/test_ui06_visual_contracts.py",
+      "sha256": "3a34567009eb5ab5c0e2b1d0c8b9270c708b721ae603833db6fdfa9036ff4fb9",
+      "size": 2701
+    },
+    {
+      "path": "tests/test_factory_manifest_builder.py",
+      "sha256": "85c5d08f704b8d73435db1da683d26c01d659e739ab0ec9d6403693bf0ee7a5a",
+      "size": 3389
+    },
+    {
+      "path": "tests/test_reconcile_drive_sources.py",
+      "sha256": "46504725cf78eda8f56f89d9ace65f72f778d532bd1a1586c56d6d2466946eda",
+      "size": 3685
+    },
+    {
+      "path": "tests/test_release_profile.py",
+      "sha256": "a01d17e343d2b38b7da46a516d80d174ccb9ab8fa19f231ec33f901e4cfa1dae",
+      "size": 1795
+    },
+    {
+      "path": "tests/test_source_snapshot.py",
+      "sha256": "61bb3b998d71e3bde4142b0add5ab86a72b33b940577f3ecd0e249b89276f6b9",
+      "size": 6573
+    }
+  ],
+  "format_version": 1,
+  "kind": "source-only-not-tested-not-certified",
+  "project": "michi-music-stream"
+}

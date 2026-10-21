@@ -37,6 +37,15 @@ extern "C" {
  * first; phase 11 may optimize.
  *
  * ------------------------------------------------------------------
+ * H11 owner rules: INIT/START/STOP/DEINIT are serialized by a static,
+ * non-blocking lifecycle lease. Simultaneous lifecycle transitions return
+ * ESP_ERR_INVALID_STATE and must be retried by the caller. Deinit refuses
+ * to release the ring while an admitted producer write is in flight;
+ * START refuses to reuse it until that write finishes. A worker cannot
+ * publish STOPPED before the owner disables I2S successfully. H13 protects
+ * admitted QUIESCE/RESUME callers across the entire command wait; DEINIT
+ * refuses to delete their semaphores until all references have returned.
+ *
  * Lifecycle (P0-7 fixed by construction)
  * ------------------------------------------------------------------
  *   init():   allocate the ring, create the I2S channel and init standard
@@ -53,11 +62,10 @@ extern "C" {
  *             nothing is reset - the task may still be alive - and the
  *             subsystem requires deinit after timeout: retry stop()
  *             until ESP_OK, then deinit().
- *   deinit(): refuses (ESP_ERR_INVALID_STATE) while the I2S task may
- *             still be alive (task handle or done flag still set) -
- *             never free under a live task; otherwise deletes the
- *             channel (also after init() without start()), frees the
- *             ring and returns to the uninitialized state.
+ *   deinit(): refuses while the worker may be alive. If I2S channel
+ *             deletion fails, returns that error and retains channel,
+ *             ring, semaphores and initialized state for a safe retry;
+ *             start() refuses until teardown succeeds.
  *
  * Tasks are NEVER deleted from outside. The I2S task self-deletes AFTER
  * releasing its resources; no external vTaskDelete ever, no dangling
@@ -67,9 +75,10 @@ extern "C" {
  * Error propagation (P0-5 fixed)
  * ------------------------------------------------------------------
  * Every failure (malloc, i2s_new_channel, i2s_channel_enable, task
- * creation) is propagated to the caller as an esp_err_t and cleaned up -
- * no ESP_ERROR_CHECK, no swallowed errors, no half-initialized state
- * behind a "success".
+ * creation) is propagated to the caller. H10: stop() propagates channel
+ * disable failure and latches FAULTED until a retry succeeds; deinit()
+ * propagates channel deletion failure, retains live resources and rejects
+ * start() until retry deinit succeeds. No half-initialized success claim.
  *
  * ------------------------------------------------------------------
  * Volume (P0-12 delegated)
@@ -233,11 +242,26 @@ michi_audio_output_state_t michi_audio_output_get_state(void);
  */
 esp_err_t michi_audio_output_get_error_count(uint32_t *out);
 
+/** H9: cumulative boot-local output diagnostics. No implied analog certification. */
+typedef struct {
+    uint32_t i2s_errors;             /*!< Failed or partial I2S writes + stop errors */
+    uint32_t short_dma_writes;       /*!< Driver accepted fewer PCM bytes than submitted */
+    uint32_t backpressure_timeouts;  /*!< Producer blocked beyond bounded wait */
+    uint32_t fatal_dma_streaks;      /*!< Consecutive DMA failures tripped output fault */
+} michi_audio_output_quality_t;
+
+/** Read thread-safe audio output diagnostics; NULL -> ESP_ERR_INVALID_ARG. */
+esp_err_t michi_audio_output_get_quality(michi_audio_output_quality_t *quality);
+
 #ifdef MICHI_HOST_TEST
 /* Test hooks for host unit tests */
 void test_michi_audio_output_set_cmd_timeout_ms(uint32_t ms);
 void test_michi_audio_output_set_join_timeout_ms(uint32_t ms);
 void test_michi_audio_output_hold_worker(bool hold);
+void test_michi_audio_output_hold_producer(bool hold);
+void test_michi_audio_output_hold_control_exit(bool hold);
+bool test_michi_audio_output_control_exit_is_held(void);
+bool test_michi_audio_output_producer_is_held(void);
 uint32_t test_michi_audio_output_get_quiesce_barrier_race_count(void);
 void test_michi_audio_output_reset_quiesce_barrier_race_count(void);
 #endif

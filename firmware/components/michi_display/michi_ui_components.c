@@ -91,7 +91,6 @@ void michi_ui_draw_header_landscape(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
                                     bool wifi_connected, int8_t wifi_rssi,
                                     bool server_connected)
 {
-    (void)wifi_rssi;
     const char *name = brand != NULL ? brand : MICHI_UI_STR_BRAND;
     const michi_ui_font_t *font_sm = michi_ui_font_get(MICHI_FONT_SM);
 
@@ -99,7 +98,9 @@ void michi_ui_draw_header_landscape(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
     ui_draw_text(fb, fb_w, fb_h, y_origin, 16, 14, name, font_sm, MICHI_UI_TEXT_PRIMARY);
 
     /* Wi-Fi Icon at x=265, y=14, size 16 */
-    uint16_t wifi_color = wifi_connected ? MICHI_UI_TEXT_SECONDARY : MICHI_UI_MUTED;
+    /* Weak RSSI is visible without fabricating disconnection. RSSI=0 is unknown. */
+    uint16_t wifi_color = !wifi_connected ? MICHI_UI_MUTED :
+                          (wifi_rssi < -76 ? MICHI_UI_WARNING : MICHI_UI_TEXT_SECONDARY);
     michi_ui_draw_icon(fb, fb_w, fb_h, y_origin, 265, 14, MICHI_ICON_WIFI, 16, wifi_color);
 
     /* Server Icon at x=290, y=14, size 16 */

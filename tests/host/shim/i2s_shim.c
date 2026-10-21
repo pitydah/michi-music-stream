@@ -11,9 +11,18 @@ static size_t s_bytes_written = 0;
 static uint32_t s_write_count = 0;
 static bool s_last_was_silence = false;
 static esp_err_t s_injected_write_err = ESP_OK;
+/* SIZE_MAX disables injection; next write otherwise completes partially. */
+static size_t s_next_short_write = SIZE_MAX;
 static esp_err_t s_injected_new_chan_err = ESP_OK;
 static esp_err_t s_injected_init_std_err = ESP_OK;
+static esp_err_t s_injected_disable_err = ESP_OK;
+static esp_err_t s_injected_delete_err = ESP_OK;
 static uint32_t s_write_delay_ms = 0;
+/* H11 deterministic lifecycle interleaving windows (host only). */
+static uint32_t s_enable_delay_ms = 0;
+static uint32_t s_delete_delay_ms = 0;
+static bool s_enable_entered = false;
+static bool s_delete_entered = false;
 static pthread_t s_writer_thread = 0;
 static bool s_has_writer_thread = false;
 static bool s_multiple_writers = false;
@@ -31,9 +40,16 @@ void test_i2s_reset(void)
     s_write_count = 0;
     s_last_was_silence = false;
     s_injected_write_err = ESP_OK;
+    s_next_short_write = SIZE_MAX;
     s_injected_new_chan_err = ESP_OK;
     s_injected_init_std_err = ESP_OK;
+    s_injected_disable_err = ESP_OK;
+    s_injected_delete_err = ESP_OK;
     s_write_delay_ms = 0;
+    s_enable_delay_ms = 0;
+    s_delete_delay_ms = 0;
+    s_enable_entered = false;
+    s_delete_entered = false;
     s_writer_thread = 0;
     s_has_writer_thread = false;
     s_multiple_writers = false;
@@ -62,10 +78,71 @@ void test_i2s_set_init_std_mode_fail(esp_err_t err)
     pthread_mutex_unlock(&s_i2s_shim_mux);
 }
 
+void test_i2s_set_disable_fail(esp_err_t err)
+{
+    pthread_mutex_lock(&s_i2s_shim_mux);
+    s_injected_disable_err = err;
+    pthread_mutex_unlock(&s_i2s_shim_mux);
+}
+
+void test_i2s_set_delete_fail(esp_err_t err)
+{
+    pthread_mutex_lock(&s_i2s_shim_mux);
+    s_injected_delete_err = err;
+    pthread_mutex_unlock(&s_i2s_shim_mux);
+}
+
+void test_i2s_set_enable_delay_ms(uint32_t ms)
+{
+    pthread_mutex_lock(&s_i2s_shim_mux);
+    s_enable_delay_ms = ms;
+    s_enable_entered = false;
+    pthread_mutex_unlock(&s_i2s_shim_mux);
+}
+
+void test_i2s_set_delete_delay_ms(uint32_t ms)
+{
+    pthread_mutex_lock(&s_i2s_shim_mux);
+    s_delete_delay_ms = ms;
+    s_delete_entered = false;
+    pthread_mutex_unlock(&s_i2s_shim_mux);
+}
+
+bool test_i2s_enable_entered(void)
+{
+    pthread_mutex_lock(&s_i2s_shim_mux);
+    bool b = s_enable_entered;
+    pthread_mutex_unlock(&s_i2s_shim_mux);
+    return b;
+}
+
+bool test_i2s_delete_entered(void)
+{
+    pthread_mutex_lock(&s_i2s_shim_mux);
+    bool b = s_delete_entered;
+    pthread_mutex_unlock(&s_i2s_shim_mux);
+    return b;
+}
+
+bool test_i2s_is_enabled(void)
+{
+    pthread_mutex_lock(&s_i2s_shim_mux);
+    bool enabled = s_enabled;
+    pthread_mutex_unlock(&s_i2s_shim_mux);
+    return enabled;
+}
+
 void test_i2s_set_write_fail(esp_err_t err)
 {
     pthread_mutex_lock(&s_i2s_shim_mux);
     s_injected_write_err = err;
+    pthread_mutex_unlock(&s_i2s_shim_mux);
+}
+
+void test_i2s_set_next_write_short(size_t bytes)
+{
+    pthread_mutex_lock(&s_i2s_shim_mux);
+    s_next_short_write = bytes;
     pthread_mutex_unlock(&s_i2s_shim_mux);
 }
 
@@ -142,6 +219,13 @@ esp_err_t i2s_channel_enable(i2s_chan_handle_t handle)
 {
     (void)handle;
     pthread_mutex_lock(&s_i2s_shim_mux);
+    uint32_t delay_ms = s_enable_delay_ms;
+    s_enable_entered = true;
+    pthread_mutex_unlock(&s_i2s_shim_mux);
+    if (delay_ms > 0) {
+        usleep(delay_ms * 1000);
+    }
+    pthread_mutex_lock(&s_i2s_shim_mux);
     s_enabled = true;
     pthread_mutex_unlock(&s_i2s_shim_mux);
     return ESP_OK;
@@ -151,9 +235,13 @@ esp_err_t i2s_channel_disable(i2s_chan_handle_t handle)
 {
     (void)handle;
     pthread_mutex_lock(&s_i2s_shim_mux);
-    s_enabled = false;
+    esp_err_t err = s_injected_disable_err;
+    s_injected_disable_err = ESP_OK; /* H10 one-shot fault injection */
+    if (err == ESP_OK) {
+        s_enabled = false;
+    }
     pthread_mutex_unlock(&s_i2s_shim_mux);
-    return ESP_OK;
+    return err;
 }
 
 esp_err_t i2s_channel_write(i2s_chan_handle_t handle, const void *src, size_t size, size_t *bytes_written, uint32_t timeout_ms)
@@ -178,7 +266,12 @@ esp_err_t i2s_channel_write(i2s_chan_handle_t handle, const void *src, size_t si
     uint32_t delay_ms = s_write_delay_ms;
     esp_err_t injected_err = s_injected_write_err;
     if (injected_err != ESP_OK) {
-        s_injected_write_err = ESP_OK; /* One-shot injection */
+        /* Sticky injection: set_write_fail(ESP_FAIL) models a channel that
+         * keeps failing, which is what H9 needs to accumulate the consecutive
+         * failure streak that latches FAULTED. Cleared explicitly with
+         * set_write_fail(ESP_OK) or by test_i2s_reset(). A one-shot error
+         * cannot reach a streak threshold, so it silently made the fail-closed
+         * contract untestable. */
         pthread_mutex_unlock(&s_i2s_shim_mux);
         return injected_err;
     }
@@ -189,16 +282,21 @@ esp_err_t i2s_channel_write(i2s_chan_handle_t handle, const void *src, size_t si
     }
 
     pthread_mutex_lock(&s_i2s_shim_mux);
-    if (bytes_written != NULL) {
-        *bytes_written = size;
+    size_t delivered = size;
+    if (s_next_short_write != SIZE_MAX) {
+        delivered = s_next_short_write < size ? s_next_short_write : size;
+        s_next_short_write = SIZE_MAX;
     }
-    s_bytes_written += size;
+    if (bytes_written != NULL) {
+        *bytes_written = delivered;
+    }
+    s_bytes_written += delivered;
     s_write_count++;
 
     /* Check if src buffer is silence (all zeros) */
     s_last_was_silence = true;
     const uint8_t *p = (const uint8_t *)src;
-    for (size_t i = 0; i < size; i++) {
+    for (size_t i = 0; i < delivered; i++) {
         if (p[i] != 0) {
             s_last_was_silence = false;
             break;
@@ -207,7 +305,7 @@ esp_err_t i2s_channel_write(i2s_chan_handle_t handle, const void *src, size_t si
 
     /* Record into capture buffer */
     if (s_captured_size < CAPTURE_BUF_SIZE) {
-        size_t to_copy = size;
+        size_t to_copy = delivered;
         if (s_captured_size + to_copy > CAPTURE_BUF_SIZE) {
             to_copy = CAPTURE_BUF_SIZE - s_captured_size;
         }
@@ -223,9 +321,20 @@ esp_err_t i2s_del_channel(i2s_chan_handle_t handle)
 {
     (void)handle;
     pthread_mutex_lock(&s_i2s_shim_mux);
-    s_enabled = false;
+    uint32_t delay_ms = s_delete_delay_ms;
+    s_delete_entered = true;
     pthread_mutex_unlock(&s_i2s_shim_mux);
-    return ESP_OK;
+    if (delay_ms > 0) {
+        usleep(delay_ms * 1000);
+    }
+    pthread_mutex_lock(&s_i2s_shim_mux);
+    esp_err_t err = s_injected_delete_err;
+    s_injected_delete_err = ESP_OK; /* H10 one-shot fault injection */
+    if (err == ESP_OK) {
+        s_enabled = false;
+    }
+    pthread_mutex_unlock(&s_i2s_shim_mux);
+    return err;
 }
 
 size_t test_i2s_get_captured_bytes(uint8_t *dst, size_t max_len)

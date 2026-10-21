@@ -165,6 +165,25 @@ static void test_canonical_with_home_metadata(void)
     CHECK(p_host < p_mf && p_mf < p_hid && p_hid < p_mid, "exact lexicographical key ordering maintained");
 }
 
+static void test_canonical_escaped_name(void)
+{
+    printf("canonical: names with JSON escapes remain signed consistently\n");
+    michi_discovery_announce_t a = vec_announce();
+    a.name = "Sala \"Living\" \\ Hi-Fi";
+    a.michi_home_id = "HOME123456789012345678901234567890123456789";
+    char out[1024];
+    CHECK(michi_discovery_canonical_json(&a, out, sizeof(out)) == ESP_OK,
+          "canonical handles quotes and backslashes");
+    cJSON *doc = cJSON_Parse(out);
+    CHECK(doc != NULL, "canonical escape output parses as valid JSON");
+    if (doc != NULL) {
+        const cJSON *name = cJSON_GetObjectItemCaseSensitive(doc, "name");
+        CHECK(cJSON_IsString(name) && strcmp(name->valuestring, a.name) == 0,
+              "escaping round-trips device name");
+        cJSON_Delete(doc);
+    }
+}
+
 static void test_canonical_rejects_invalid(void)
 {
     printf("canonical: invalid fields rejected\n");
@@ -541,6 +560,7 @@ int main(void)
     test_constants();
     test_canonical_golden();
     test_canonical_with_home_metadata();
+    test_canonical_escaped_name();
     test_canonical_rejects_invalid();
     test_canonical_serializes_false_flags();
     test_datagram_golden_signature();

@@ -1,0 +1,5 @@
+# Optional production-only overlay. IDF uses this *after* sdkconfig.defaults.
+# For example: idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.production.defaults" build
+# The base image remains compatible with laboratory/open SSIDs.
+CONFIG_MICHI_WIFI_REQUIRE_WPA2=y
+CONFIG_MICHI_WIFI_ALLOW_BLE_PROVISIONING_LAB=n

@@ -6,9 +6,10 @@
  * (contracts/michi-link/) are registered - no legacy route is kept:
  *
  *   GET    /api/v1/server/info
- *   POST   /api/v1/pair/start
- *   GET    /api/v1/pair/status
- *   POST   /api/v1/pair/confirm
+ *   POST   /api/v1/auth/challenge
+ *   POST   /api/v1/auth/session
+ *   GET    /api/v1/home/revocations
+ *   POST   /api/v1/home/revocations
  *   POST   /api/v1/receiver-lite/session
  *   GET    /api/v1/receiver-lite/session
  *   PATCH  /api/v1/receiver-lite/session
@@ -20,10 +21,10 @@
  *   POST   /api/v1/receiver-lite/firmware
  *
  * /server/info emits the exact receiver v1-lite profile (build_info_json,
- * canonical_json.c). The receiver-button pairing flow (MS-06) is
- * implemented: pair/start (physical 120 s window + Ed25519 challenge +
- * local PIN), pair/status and pair/confirm (receiver-issued token,
- * SHA-256 digest only in NVS, expires_in 0). The canonical RTP session
+ * canonical_json.c). Authentication uses Home membership certificates and
+ * challenge/session endpoints (Michi Home Root Authority). No physical
+ * pairing or PIN endpoint is registered. Revocation requests are verified
+ * cryptographically by michi_home_add_revocation(). The canonical RTP session
  * lifecycle (MS-07) is implemented: POST/GET/PATCH/DELETE
  * /receiver-lite/session with strict body gates, the receiver-picked UDP
  * stream port, the RAM-only 43-char base64url session token and the
@@ -31,10 +32,10 @@
  * /receiver-lite/heartbeat renews the 30 s monotonic lease (strictly
  * increasing sequence; replay answers 409 without renewing; the session
  * watchdog closes at 30 s even while RTP flows). The certified
- * now-playing payload and the OTA flow are NOT implemented yet: their
- * handlers still enforce the route-table auth and the strict JSON body
- * gate, then answer 501 NOT_IMPLEMENTED, and the matching feature flag
- * in /server/info is false. Diagnostics is the only optional extension
+ * OTA flow is NOT implemented yet; metadata is a local, authenticated
+ * opt-in extension (not part of the frozen alpha.5 bundle). The
+ * firmware handlers still enforce the route-table auth and JSON body
+ * gate, then answer 501 NOT_IMPLEMENTED. Diagnostics is another extension
  * implemented (its response shape is not frozen by the contract, so the
  * existing snapshot conforms). Unknown routes answer the canonical 404
  * error envelope via the registered httpd 404 handler.
@@ -71,8 +72,10 @@
 #include "cJSON.h"
 
 #include "michi_audio.h"
+#include "michi_audio_diag.h"
 #include "michi_audio_output.h"
 #include "michi_dac.h"
+#include "michi_display.h"
 #include "michi_discovery.h"
 #include "michi_http.h"
 #include "michi_identity.h"
@@ -108,6 +111,7 @@ static void status_to_str(int status, const char **out)
     case 403: *out = "403 Forbidden"; break;
     case 404: *out = "404 Not Found"; break;
     case 409: *out = "409 Conflict"; break;
+    case 415: *out = "415 Unsupported Media Type"; break;
     case 429: *out = "429 Too Many Requests"; break;
     case 500: *out = "500 Internal Server Error"; break;
     case 501: *out = "501 Not Implemented"; break;
@@ -126,6 +130,7 @@ static const char *status_to_code(int status)
     case 403: return "FORBIDDEN";
     case 404: return "NOT_FOUND";
     case 409: return "CONFLICT";
+    case 415: return "INVALID_REQUEST"; /* experimental metadata extension */
     case 429: return "RATE_LIMITED";
     case 501: return "NOT_IMPLEMENTED";
     case 500: /* fall through */
@@ -285,11 +290,8 @@ static cJSON *read_json_body(httpd_req_t *req)
                               "a JSON request body is required", NULL);
         return NULL;
     }
-    cJSON *root = cJSON_Parse(body);
-    if (root == NULL || !cJSON_IsObject(root)) {
-        if (root != NULL) {
-            cJSON_Delete(root);
-        }
+    cJSON *root = michi_http_json_parse_strict(body, body_len);
+    if (root == NULL) {
         michi_http_send_error(req, 400,
                               "the request body is not a JSON object", NULL);
         return NULL;
@@ -299,7 +301,7 @@ static cJSON *read_json_body(httpd_req_t *req)
 
 /* 501 NOT_IMPLEMENTED for a canonical route whose semantics are deferred
  * to a later package (MS-03 deferral: Ed25519 pairing, RTP session,
- * lease, certified now-playing and OTA). */
+ * lease, and OTA; the local now-playing extension is implemented separately). */
 static esp_err_t send_not_implemented(httpd_req_t *req, const char *message)
 {
     return michi_http_send_error(req, 501, message, NULL);
@@ -933,6 +935,14 @@ static esp_err_t v1lite_heartbeat_handler(httpd_req_t *req)
         return michi_http_send_error(req, 403,
                                      "heartbeat source IP does not match session",
                                      NULL);
+    case MICHI_SESSION_HEARTBEAT_WATCHDOG_ERROR:
+        /* The lease watchdog could not be restarted, so the lease was NOT
+         * renewed. Reporting 200 here would tell the controller the session is
+         * alive on a lease nobody is refreshing (fail-open); 500 keeps the
+         * contract honest and lets the controller re-establish the session. */
+        return michi_http_send_error(req, 500,
+                                     "heartbeat lease watchdog unavailable; "
+                                     "lease not renewed", NULL);
     case MICHI_SESSION_HEARTBEAT_OK:
         break;
     }
@@ -967,19 +977,123 @@ static esp_err_t v1lite_heartbeat_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* PUT /api/v1/receiver-lite/now-playing (Bearer): deferred - the payload
- * shape is not frozen by the contract until the extension is certified.
- */
+/* Local Michi extension: optional now-playing metadata. It does not
+ * amend the vendored Michi Link alpha.5 schema. The controller MUST have
+ * an active session and present its per-session token (anti-stale-write).
+ * All string fields are required (empty string = unknown/clear); arbitrary
+ * keys, wrong types, oversized strings and unknown sessions fail closed. */
 static esp_err_t now_playing_put_handler(httpd_req_t *req)
 {
     char client_id[MICHI_HOME_ID_LEN] = {0};
-    if (!auth_gate(req, MICHI_PERM_PLAYBACK, client_id,
-                     sizeof(client_id))) {
-        return ESP_OK; /* 401/403 already sent (P0-5) */
+    if (!auth_gate(req, MICHI_PERM_PLAYBACK, client_id, sizeof(client_id))) {
+        return ESP_OK;
     }
-    return not_implemented_with_body(req,
-                                     "now-playing metadata is not "
-                                     "implemented");
+    /* Contract v2 experimental: JSON media type is mandatory. */
+    char content_type[64] = {0};
+    if (httpd_req_get_hdr_value_str(req, "Content-Type", content_type,
+                                    sizeof(content_type)) != ESP_OK ||
+        strcmp(content_type, "application/json") != 0) {
+        return michi_http_send_error(req, 415, "Content-Type must be application/json", NULL);
+    }
+    if (!michi_session_active()) {
+        return michi_http_send_error(req, 404, "no active session", NULL);
+    }
+    char token[MICHI_SESSION_TOKEN_LEN];
+    if (read_session_token(req, token, sizeof(token)) != ESP_OK) {
+        return ESP_OK; /* 401 already sent */
+    }
+    cJSON *root = read_json_body(req);
+    if (root == NULL) return ESP_OK;
+
+    const char *names[5] = {"session_id", "source", "title", "artist", "revision"};
+    size_t limits[4] = {MICHI_SESSION_ID_LEN - 1,
+                        MICHI_DISPLAY_SOURCE_MAX,
+                        MICHI_DISPLAY_TITLE_MAX,
+                        MICHI_DISPLAY_ARTIST_MAX};
+    char session_id[MICHI_SESSION_ID_LEN] = {0};
+    char source[MICHI_DISPLAY_SOURCE_MAX + 1] = {0};
+    char title[MICHI_DISPLAY_TITLE_MAX + 1] = {0};
+    char artist[MICHI_DISPLAY_ARTIST_MAX + 1] = {0};
+    char *dest[4] = {session_id, source, title, artist};
+    const char *invalid_field = NULL;
+    unsigned key_count = 0;
+    for (const cJSON *node = root->child; node != NULL; node = node->next) {
+        key_count++;
+        bool known = false;
+        for (unsigned i = 0; i < 5; i++) {
+            if (node->string != NULL && strcmp(node->string, names[i]) == 0) {
+                known = true;
+                break;
+            }
+        }
+        if (!known || key_count > 5) {
+            invalid_field = "body";
+            break;
+        }
+    }
+    if (invalid_field == NULL && key_count != 5) invalid_field = "body";
+    const cJSON *rev_node = cJSON_GetObjectItemCaseSensitive(root, "revision");
+    uint32_t revision = 0;
+    if (invalid_field == NULL &&
+        (!cJSON_IsNumber(rev_node) ||
+         !(rev_node->valuedouble >= 1.0 &&
+           rev_node->valuedouble <= 4294967295.0) ||
+         (double)(uint32_t)rev_node->valuedouble != rev_node->valuedouble)) {
+        invalid_field = "revision";
+    } else if (invalid_field == NULL) {
+        revision = (uint32_t)rev_node->valuedouble;
+    }
+    for (unsigned i = 0; invalid_field == NULL && i < 4; i++) {
+        const cJSON *node = cJSON_GetObjectItemCaseSensitive(root, names[i]);
+        if (!cJSON_IsString(node) || node->valuestring == NULL) {
+            invalid_field = names[i];
+            break;
+        }
+        size_t len = strlen(node->valuestring);
+        if (len > limits[i] || (i == 0 && len != 36)) {
+            invalid_field = names[i];
+            break;
+        }
+        if (!michi_http_utf8_text_valid(node->valuestring, len)) {
+            invalid_field = names[i];
+            break;
+        }
+        memcpy(dest[i], node->valuestring, len + 1);
+    }
+    cJSON_Delete(root); /* no borrowed JSON pointers remain */
+    if (invalid_field != NULL) {
+        return michi_http_send_error(req, 400, "invalid now-playing body",
+                                     invalid_field);
+    }
+    const michi_session_metadata_result_t result = michi_session_set_now_playing(
+        token, client_id, session_id, revision, source, title, artist);
+    switch (result) {
+    case MICHI_SESSION_METADATA_NO_SESSION:
+    case MICHI_SESSION_METADATA_SESSION_MISMATCH:
+        return michi_http_send_error(req, 404, "no matching active session", NULL);
+    case MICHI_SESSION_METADATA_TOKEN_MISMATCH:
+        return michi_http_send_error(req, 401, "invalid session token", NULL);
+    case MICHI_SESSION_METADATA_OWNER_MISMATCH:
+        return michi_http_send_error(req, 403, "session belongs to another controller", NULL);
+    case MICHI_SESSION_METADATA_STALE:
+        return michi_http_send_error(req, 409, "stale or duplicate metadata revision", "revision");
+    case MICHI_SESSION_METADATA_DISPLAY_UNAVAILABLE:
+        return michi_http_send_error(req, 500, "display unavailable", NULL);
+    case MICHI_SESSION_METADATA_OK:
+        break;
+    }
+    cJSON *response = cJSON_CreateObject();
+    if (response == NULL) return michi_http_send_error(req, 500, "out of memory", NULL);
+    esp_err_t err = ESP_OK;
+    if (cJSON_AddBoolToObject(response, "accepted", true) == NULL ||
+        cJSON_AddStringToObject(response, "session_id", session_id) == NULL ||
+        cJSON_AddNumberToObject(response, "revision", (double)revision) == NULL) {
+        err = ESP_ERR_NO_MEM;
+    } else {
+        err = michi_http_send_json(req, 200, response);
+    }
+    cJSON_Delete(response);
+    return err;
 }
 
 /* GET /api/v1/receiver-lite/firmware (Bearer): deferred - update
@@ -1096,6 +1210,10 @@ static esp_err_t diagnostics_get_handler(httpd_req_t *req)
                                      "diagnostics response", NULL);
     }
     esp_err_t send_err = ESP_OK;
+    /* Diagnostic observations are sampled at different instants. A session
+     * may close concurrently; never imply an atomic end-to-end audio proof. */
+    bool observation_session_present = false;
+    bool observation_paused = false;
     if (cJSON_AddNumberToObject(root, "uptime_seconds",
                                 (double)(uint64_t)(esp_timer_get_time() / 1000000)) == NULL ||
         cJSON_AddNumberToObject(root, "heap_free",
@@ -1117,16 +1235,23 @@ static esp_err_t diagnostics_get_handler(httpd_req_t *req)
         } else {
             int8_t rssi = 0;
             uint32_t reconnects = 0;
-            const esp_err_t rssi_err = michi_wifi_get_rssi(&rssi);
-            if (cJSON_AddBoolToObject(wifi, "connected",
-                                      rssi_err == ESP_OK) == NULL ||
+            char ipv4[16] = {0};
+            const bool link_associated = michi_wifi_get_rssi(&rssi) == ESP_OK;
+            const bool ip_ready = michi_wifi_get_ipv4(ipv4, sizeof(ipv4)) == ESP_OK;
+            /* "connected" is kept for existing WebUI clients but now means
+             * actual IP readiness; "link_associated" captures STA link. */
+            if (cJSON_AddBoolToObject(wifi, "connected", ip_ready) == NULL ||
+                cJSON_AddBoolToObject(wifi, "link_associated", link_associated) == NULL ||
+                cJSON_AddBoolToObject(wifi, "ip_ready", ip_ready) == NULL ||
+                cJSON_AddBoolToObject(wifi, "provisioned",
+                                      michi_wifi_is_provisioned()) == NULL ||
+                cJSON_AddStringToObject(wifi, "ipv4", ip_ready ? ipv4 : "") == NULL ||
                 cJSON_AddStringToObject(wifi, "ssid",
                                         michi_wifi_get_ssid()) == NULL ||
-                (rssi_err == ESP_OK &&
+                (link_associated &&
                  cJSON_AddNumberToObject(wifi, "rssi_dbm", rssi) == NULL) ||
                 (michi_wifi_get_reconnect_count(&reconnects) == ESP_OK &&
-                 cJSON_AddNumberToObject(wifi, "reconnects",
-                                         reconnects) == NULL)) {
+                 cJSON_AddNumberToObject(wifi, "reconnects", reconnects) == NULL)) {
                 send_err = ESP_ERR_NO_MEM;
             }
         }
@@ -1217,7 +1342,10 @@ static esp_err_t diagnostics_get_handler(httpd_req_t *req)
             if (cJSON_AddBoolToObject(session, "active", false) == NULL) {
                 send_err = ESP_ERR_NO_MEM;
             }
-        } else if (cJSON_AddBoolToObject(session, "active", true) == NULL ||
+        } else {
+            observation_session_present = true;
+            observation_paused = info.paused;
+            if (cJSON_AddBoolToObject(session, "active", true) == NULL ||
                    cJSON_AddStringToObject(session, "session_id",
                                            info.session_id) == NULL ||
                    cJSON_AddStringToObject(session, "codec",
@@ -1236,11 +1364,71 @@ static esp_err_t diagnostics_get_handler(httpd_req_t *req)
                                            (double)info.volume) == NULL ||
                    cJSON_AddBoolToObject(session, "paused",
                                          info.paused) == NULL ||
+                   cJSON_AddNumberToObject(session, "metadata_revision",
+                                           (double)info.metadata_revision) == NULL ||
                    cJSON_AddNumberToObject(session, "ssrc",
                                            (double)info.ssrc) == NULL ||
                    cJSON_AddStringToObject(session, "source_addr",
                                            info.source_addr) == NULL) {
+                send_err = ESP_ERR_NO_MEM;
+            }
+        }
+    }
+    if (send_err == ESP_OK) {
+        /* H19: explicitly separate RTP reception, buffering, PCM ring
+         * admission and I2S fault. This does not change the v1-lite session
+         * contract and does not assert analog playback. */
+        michi_audio_metrics_t metric_snapshot = {0};
+        const bool have_metrics =
+            michi_audio_get_metrics(&metric_snapshot) == ESP_OK;
+        const bool engine_active = michi_audio_session_active();
+        const bool i2s_faulted = michi_audio_output_get_state() ==
+                                 MICHI_AUDIO_STATE_FAULTED;
+        const char *stage = michi_audio_observation_stage(
+            observation_session_present, engine_active, observation_paused,
+            i2s_faulted, have_metrics ? metric_snapshot.received : 0,
+            have_metrics ? metric_snapshot.pcm_packets_submitted : 0);
+        cJSON *obs = cJSON_AddObjectToObject(root, "audio_observation");
+        if (obs == NULL ||
+            cJSON_AddStringToObject(obs, "stage", stage) == NULL ||
+            cJSON_AddBoolToObject(obs, "rtp_worker_active", engine_active) == NULL ||
+            cJSON_AddBoolToObject(obs, "i2s_faulted", i2s_faulted) == NULL ||
+            cJSON_AddBoolToObject(obs, "pcm_ring_admission_observed",
+                                  have_metrics &&
+                                  metric_snapshot.pcm_packets_submitted > 0) == NULL ||
+            cJSON_AddNumberToObject(obs, "rtp_packets_accepted",
+                                    have_metrics ? metric_snapshot.received : 0) == NULL ||
+            cJSON_AddNumberToObject(obs, "pcm_packets_submitted",
+                                    have_metrics ? metric_snapshot.pcm_packets_submitted : 0) == NULL ||
+            cJSON_AddNumberToObject(obs, "pcm_bytes_submitted",
+                                    have_metrics ? (double)metric_snapshot.pcm_bytes_submitted : 0) == NULL ||
+            cJSON_AddNumberToObject(obs, "last_pcm_submit_monotonic_ms",
+                                    have_metrics && metric_snapshot.last_pcm_submit_monotonic_us > 0
+                                        ? (double)metric_snapshot.last_pcm_submit_monotonic_us / 1000.0
+                                        : 0) == NULL ||
+            cJSON_AddBoolToObject(obs, "analog_audio_verified", false) == NULL) {
             send_err = ESP_ERR_NO_MEM;
+        }
+    }
+    if (send_err == ESP_OK) {
+        /* H9: more granular diagnostics, no credentials, host or track
+         * metadata, and no change to the existing i2s_errors field.
+         * Available to authorized diagnostics clients only. */
+        michi_audio_output_quality_t quality = {0};
+        if (michi_audio_output_get_quality(&quality) == ESP_OK) {
+            cJSON *dq = cJSON_AddObjectToObject(root, "i2s_quality");
+            if (dq == NULL ||
+                cJSON_AddNumberToObject(dq, "short_dma_writes",
+                                        (double)quality.short_dma_writes) == NULL ||
+                cJSON_AddNumberToObject(dq, "backpressure_timeouts",
+                                        (double)quality.backpressure_timeouts) == NULL ||
+                cJSON_AddNumberToObject(dq, "fatal_dma_streaks",
+                                        (double)quality.fatal_dma_streaks) == NULL ||
+                cJSON_AddBoolToObject(dq, "faulted",
+                                      michi_audio_output_get_state() ==
+                                      MICHI_AUDIO_STATE_FAULTED) == NULL) {
+                send_err = ESP_ERR_NO_MEM;
+            }
         }
     }
     if (send_err == ESP_OK) {
