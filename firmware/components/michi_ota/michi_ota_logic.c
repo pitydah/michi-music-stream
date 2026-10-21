@@ -93,6 +93,46 @@ ota_selftest_res_t evaluate_trial_boot_gate(bool critical_checks_ok,
  * H23-A boot classification and policy
  * ========================================================================= */
 
+michi_ota_read_result_t michi_ota_normalize_read_result(int err_code)
+{
+    /* Values from esp_err.h (IDF 5.3.5). Kept as literals so this file stays
+     * free of ESP headers; the host test asserts them against the header
+     * values documented above. */
+    switch (err_code) {
+    case 0:      /* ESP_OK */
+        return MICHI_OTA_READ_OK;
+    case 0x105:  /* ESP_ERR_NOT_FOUND */
+        return MICHI_OTA_READ_NOT_FOUND;
+    case 0x106:  /* ESP_ERR_NOT_SUPPORTED */
+        return MICHI_OTA_READ_NOT_SUPPORTED;
+    case 0x102:  /* ESP_ERR_INVALID_ARG */
+        return MICHI_OTA_READ_INVALID_ARG;
+    default:     /* ESP_FAIL and anything unexpected: nothing can be proven */
+        return MICHI_OTA_READ_ERROR;
+    }
+}
+
+michi_ota_image_state_t michi_ota_normalize_image_state(unsigned int state_code)
+{
+    /* Values from esp_flash_partitions.h (esp_ota_img_states_t). */
+    switch (state_code) {
+    case 0x0u:
+        return MICHI_OTA_IMG_NEW;
+    case 0x1u:
+        return MICHI_OTA_IMG_PENDING_VERIFY;
+    case 0x2u:
+        return MICHI_OTA_IMG_VALID;
+    case 0x3u:
+        return MICHI_OTA_IMG_INVALID;
+    case 0x4u:
+        return MICHI_OTA_IMG_ABORTED;
+    case 0xFFFFFFFFu:
+        return MICHI_OTA_IMG_UNDEFINED;
+    default:
+        return MICHI_OTA_IMG_UNKNOWN;
+    }
+}
+
 const char *michi_boot_ota_state_name(michi_boot_ota_state_t state)
 {
     switch (state) {

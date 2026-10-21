@@ -100,6 +100,19 @@ michi_boot_ota_state_t michi_ota_classify_boot_state(
     michi_ota_image_state_t image_state);
 
 /**
+ * @brief Normalise the raw IDF results into the neutral enums above.
+ *
+ * Exposed so the adapter's mapping is covered by host tests using the REAL
+ * numeric codes rather than a reimplementation:
+ *   esp_err.h:          ESP_OK 0, ESP_FAIL -1, ESP_ERR_INVALID_ARG 0x102,
+ *                       ESP_ERR_NOT_FOUND 0x105, ESP_ERR_NOT_SUPPORTED 0x106
+ *   esp_flash_partitions.h: NEW 0x0, PENDING_VERIFY 0x1, VALID 0x2,
+ *                       INVALID 0x3, ABORTED 0x4, UNDEFINED 0xFFFFFFFF
+ */
+michi_ota_read_result_t michi_ota_normalize_read_result(int err_code);
+michi_ota_image_state_t michi_ota_normalize_image_state(unsigned int state_code);
+
+/**
  * @brief Full boot policy: boot class + self-test inputs -> verdict and actions.
  *
  * - Restart for rollback only on PENDING_VERIFY with a failed critical check or

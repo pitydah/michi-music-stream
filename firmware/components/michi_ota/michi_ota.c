@@ -1803,42 +1803,6 @@ bool michi_ota_busy(void)
     return busy;
 }
 
-static michi_ota_read_result_t read_result_from_err(esp_err_t err)
-{
-    switch (err) {
-    case ESP_OK:
-        return MICHI_OTA_READ_OK;
-    case ESP_ERR_NOT_FOUND:
-        return MICHI_OTA_READ_NOT_FOUND;
-    case ESP_ERR_NOT_SUPPORTED:
-        return MICHI_OTA_READ_NOT_SUPPORTED;
-    case ESP_ERR_INVALID_ARG:
-        return MICHI_OTA_READ_INVALID_ARG;
-    default:
-        return MICHI_OTA_READ_ERROR;
-    }
-}
-
-static michi_ota_image_state_t image_state_from_idf(esp_ota_img_states_t st)
-{
-    switch (st) {
-    case ESP_OTA_IMG_NEW:
-        return MICHI_OTA_IMG_NEW;
-    case ESP_OTA_IMG_PENDING_VERIFY:
-        return MICHI_OTA_IMG_PENDING_VERIFY;
-    case ESP_OTA_IMG_VALID:
-        return MICHI_OTA_IMG_VALID;
-    case ESP_OTA_IMG_INVALID:
-        return MICHI_OTA_IMG_INVALID;
-    case ESP_OTA_IMG_ABORTED:
-        return MICHI_OTA_IMG_ABORTED;
-    case ESP_OTA_IMG_UNDEFINED:
-        return MICHI_OTA_IMG_UNDEFINED;
-    default:
-        return MICHI_OTA_IMG_UNKNOWN;
-    }
-}
-
 esp_err_t michi_ota_classify_boot(michi_boot_ota_state_t *out_state)
 {
     if (out_state == NULL) {
@@ -1862,10 +1826,11 @@ esp_err_t michi_ota_classify_boot(michi_boot_ota_state_t *out_state)
 
     esp_ota_img_states_t st = ESP_OTA_IMG_UNDEFINED;
     const esp_err_t err = esp_ota_get_state_partition(running, &st);
-    const michi_ota_read_result_t read = read_result_from_err(err);
+    const michi_ota_read_result_t read =
+        michi_ota_normalize_read_result((int)err);
 
-    *out_state = michi_ota_classify_boot_state(true, is_ota_slot, read,
-                                               image_state_from_idf(st));
+    *out_state = michi_ota_classify_boot_state(
+        true, is_ota_slot, read, michi_ota_normalize_image_state((unsigned)st));
     ESP_LOGI(TAG, "ota: boot_classify state=%s partition=%s read_err=%s ota_slot=%d",
              michi_boot_ota_state_name(*out_state), running->label,
              err == ESP_OK ? "OK" : esp_err_to_name(err), (int)is_ota_slot);

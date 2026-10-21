@@ -451,6 +451,64 @@ static void test_boot_classification(void)
           "BOOT-CLASS-14: unknown image state -> UNKNOWN_ERROR");
 }
 
+/* H23 Phase 2.5: the adapter's mapping, exercised with the REAL IDF numeric
+ * codes (esp_err.h / esp_flash_partitions.h, IDF 5.3.5). This is the seam that
+ * caused the original misclassification: ESP_ERR_NOT_FOUND must never look like
+ * a pending verification. */
+static void test_boot_adapter_normalisation(void)
+{
+    printf("BOOT-ADAPTER: raw IDF codes normalise without inventing pending verify\n");
+
+    /* esp_err.h: ESP_OK 0, ESP_ERR_INVALID_ARG 0x102, NOT_FOUND 0x105,
+     * NOT_SUPPORTED 0x106, ESP_FAIL -1. */
+    CHECK(michi_ota_normalize_read_result(0) == MICHI_OTA_READ_OK,
+          "BOOT-ADAPTER-01: ESP_OK -> OK");
+    CHECK(michi_ota_normalize_read_result(0x105) == MICHI_OTA_READ_NOT_FOUND,
+          "BOOT-ADAPTER-02: ESP_ERR_NOT_FOUND -> NOT_FOUND (no OTA history)");
+    CHECK(michi_ota_normalize_read_result(0x106) == MICHI_OTA_READ_NOT_SUPPORTED,
+          "BOOT-ADAPTER-03: ESP_ERR_NOT_SUPPORTED -> NOT_SUPPORTED (factory image)");
+    CHECK(michi_ota_normalize_read_result(0x102) == MICHI_OTA_READ_INVALID_ARG,
+          "BOOT-ADAPTER-04: ESP_ERR_INVALID_ARG -> INVALID_ARG");
+    CHECK(michi_ota_normalize_read_result(-1) == MICHI_OTA_READ_ERROR,
+          "BOOT-ADAPTER-05: ESP_FAIL -> ERROR");
+    CHECK(michi_ota_normalize_read_result(0x999) == MICHI_OTA_READ_ERROR,
+          "BOOT-ADAPTER-06: unknown code -> ERROR (never optimistically OK)");
+
+    /* esp_flash_partitions.h: NEW 0x0 .. UNDEFINED 0xFFFFFFFF. */
+    CHECK(michi_ota_normalize_image_state(0x0u) == MICHI_OTA_IMG_NEW,
+          "BOOT-ADAPTER-07: NEW 0x0");
+    CHECK(michi_ota_normalize_image_state(0x1u) == MICHI_OTA_IMG_PENDING_VERIFY,
+          "BOOT-ADAPTER-08: PENDING_VERIFY 0x1");
+    CHECK(michi_ota_normalize_image_state(0x2u) == MICHI_OTA_IMG_VALID,
+          "BOOT-ADAPTER-09: VALID 0x2");
+    CHECK(michi_ota_normalize_image_state(0x3u) == MICHI_OTA_IMG_INVALID,
+          "BOOT-ADAPTER-10: INVALID 0x3");
+    CHECK(michi_ota_normalize_image_state(0x4u) == MICHI_OTA_IMG_ABORTED,
+          "BOOT-ADAPTER-11: ABORTED 0x4");
+    CHECK(michi_ota_normalize_image_state(0xFFFFFFFFu) == MICHI_OTA_IMG_UNDEFINED,
+          "BOOT-ADAPTER-12: UNDEFINED 0xFFFFFFFF");
+    CHECK(michi_ota_normalize_image_state(0x7u) == MICHI_OTA_IMG_UNKNOWN,
+          "BOOT-ADAPTER-13: unknown state -> UNKNOWN");
+
+    /* End to end through the classifier: the combination that used to restart a
+     * freshly flashed DAC-less board is UNINITIALIZED, never PENDING_VERIFY. */
+    CHECK(michi_ota_classify_boot_state(
+              true, true,
+              michi_ota_normalize_read_result(0x105),
+              michi_ota_normalize_image_state(0xFFFFFFFFu)) == MICHI_BOOT_OTA_UNINITIALIZED,
+          "BOOT-ADAPTER-14: first USB flash (NOT_FOUND + UNDEFINED) -> UNINITIALIZED");
+    CHECK(michi_ota_classify_boot_state(
+              true, true,
+              michi_ota_normalize_read_result(0),
+              michi_ota_normalize_image_state(0x1u)) == MICHI_BOOT_OTA_PENDING_VERIFY,
+          "BOOT-ADAPTER-15: OK + PENDING_VERIFY -> PENDING_VERIFY");
+    CHECK(!michi_boot_ota_rollback_available(michi_ota_classify_boot_state(
+              true, true,
+              michi_ota_normalize_read_result(-1),
+              michi_ota_normalize_image_state(0x1u))),
+          "BOOT-ADAPTER-16: a read error can never invent a rollback target");
+}
+
 static void test_boot_decision_walk(void)
 {
     printf("BOOT-DECIDE: class + critical + expected_audio + audio_available -> verdict/actions\n");
@@ -521,6 +579,7 @@ int main(void)
     test_boot_latch_decision();
     test_trial_boot_audio_health_gate();
     test_boot_classification();
+    test_boot_adapter_normalisation();
     test_boot_decision_walk();
 
     if (failures == 0) {
