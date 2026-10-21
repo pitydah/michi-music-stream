@@ -60,10 +60,16 @@ const michi_product_capabilities_t *michi_product_profile_capabilities(void)
     return &s_capabilities;
 }
 
+bool michi_product_profile_session_allowed(const michi_product_profile_t *p)
+{
+    /* No profile means no proof that audio works: fail closed. */
+    return p != NULL && p->audio_available;
+}
+
 michi_product_capabilities_t michi_product_profile_capabilities_for(const michi_product_profile_t *p)
 {
     michi_product_capabilities_t caps = s_capabilities;
-    if (p != NULL && !p->audio_available) {
+    if (!michi_product_profile_session_allowed(p)) {
         /* Signal Truth: no session or volume can be accepted if audio pipeline is not available */
         caps.session = false;
         caps.heartbeat = false;

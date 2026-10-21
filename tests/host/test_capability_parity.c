@@ -73,6 +73,44 @@ static void test_canonical_capability_table(void)
     CHECK(!caps->ota, "ota is false (501)");
 }
 
+/* H23-B: "advertised" and "accepted" must be the same predicate.
+ *
+ * The receiver advertises features.session from the capability table and the
+ * HTTP session-create handler gates on michi_product_profile_session_allowed().
+ * If those ever diverged, a DAC-less board would publish session=false and
+ * still hand out sessions nobody can hear. */
+static void test_session_capability_matches_enforcement(void)
+{
+    printf("capabilities: advertised session capability == session gate\n");
+
+    michi_product_profile_t with_audio;
+    fill_profile(&with_audio);
+    CHECK(michi_product_profile_session_allowed(&with_audio),
+          "audio available -> session gate open");
+    CHECK(michi_product_profile_capabilities_for(&with_audio).session,
+          "audio available -> session advertised true");
+
+    michi_product_profile_t no_audio;
+    fill_profile(&no_audio);
+    no_audio.audio_available = false;
+    no_audio.tier = MICHI_PRODUCT_DIAGNOSTIC;
+    CHECK(!michi_product_profile_session_allowed(&no_audio),
+          "no audio (diagnostic board) -> session gate closed");
+    CHECK(!michi_product_profile_capabilities_for(&no_audio).session,
+          "no audio -> session advertised false");
+    CHECK(!michi_product_profile_capabilities_for(&no_audio).volume,
+          "no audio -> volume advertised false");
+    CHECK(!michi_product_profile_capabilities_for(&no_audio).heartbeat,
+          "no audio -> heartbeat advertised false");
+    /* Diagnostics must survive: a restricted board is still diagnosable. */
+    CHECK(michi_product_profile_capabilities_for(&no_audio).diagnostics,
+          "no audio -> diagnostics still advertised true");
+
+    /* No profile at all: never assume audio works. */
+    CHECK(!michi_product_profile_session_allowed(NULL),
+          "NULL profile -> session gate closed (fail closed)");
+}
+
 /* The announce features built by the REAL announce.c with the flag
  * inputs wired exactly like announce_now_locked() does: from the getter. */
 static void test_announce_feature_group(void)
@@ -208,6 +246,7 @@ static void test_host_kconfig_parity(void)
 int main(void)
 {
     test_canonical_capability_table();
+    test_session_capability_matches_enforcement();
     test_announce_feature_group();
     test_runtime_parity();
     test_host_kconfig_parity();

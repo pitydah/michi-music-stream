@@ -646,6 +646,20 @@ static esp_err_t session_start_handler(httpd_req_t *req)
                                      "ota_in_progress");
     }
 
+    /* H23-B: capabilities already advertise session=false when there is no
+     * usable audio output (Signal Truth). Accepting the session anyway would
+     * make that advertisement a lie and hand the controller a session it can
+     * never hear - for instance on a diagnostic board with no DAC. Same 409
+     * the OTA gate uses, with a distinct reason token so the contract shape and
+     * status codes stay unchanged. */
+    if (!michi_product_profile_session_allowed(michi_product_profile_get())) {
+        ESP_LOGW(TAG, "session start rejected: no usable audio output (tier=%s)",
+                 michi_product_profile_tier_name());
+        return michi_http_send_error(req, 409,
+                                     "no usable audio output is available",
+                                     "audio_output_unavailable");
+    }
+
     /* The RTP source IP is the TCP peer of THIS request - never JSON. */
     char source_ip[16] = {0};
     client_ip_str(req, source_ip, sizeof(source_ip));

@@ -125,6 +125,19 @@ const michi_product_capabilities_t *michi_product_profile_capabilities(void);
 michi_product_capabilities_t michi_product_profile_capabilities_for(const michi_product_profile_t *p);
 
 /**
+ * @brief Single source of truth for "may this unit accept a new audio session?".
+ *
+ * Used by the capability advertisement (features.session) AND by the HTTP
+ * session-create gate, so the two can never disagree: advertising
+ * session=false while still accepting a session would hand a controller a
+ * session the unit cannot play.
+ *
+ * False when the profile is unknown or the audio pipeline is unavailable.
+ * NULL means "no proof of audio", which fails closed.
+ */
+bool michi_product_profile_session_allowed(const michi_product_profile_t *p);
+
+/**
  * @brief Build the profile once and cache it (refresh(); the consolidated
  *        summary log lives in app_main).
  *
