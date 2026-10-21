@@ -1299,6 +1299,22 @@ static esp_err_t diagnostics_get_handler(httpd_req_t *req)
         }
     }
     if (send_err == ESP_OK) {
+        /* Operational authority: why this unit may or may not play right now.
+         * The diagnostics response is a Michi extension that ADR-0001 leaves
+         * unfrozen, so adding fields is compatible; consumers ignore unknown
+         * keys. Values are the same names the logs use. */
+        cJSON *ops = cJSON_AddObjectToObject(root, "ops");
+        if (ops == NULL ||
+            cJSON_AddStringToObject(ops, "state",
+                                    michi_ops_state_name(michi_ops_get())) == NULL ||
+            cJSON_AddBoolToObject(ops, "playback_allowed",
+                                  michi_ops_playback_allowed()) == NULL ||
+            cJSON_AddBoolToObject(ops, "ota_allowed",
+                                  michi_ops_ota_allowed()) == NULL) {
+            send_err = ESP_ERR_NO_MEM;
+        }
+    }
+    if (send_err == ESP_OK) {
         michi_audio_metrics_t m;
         if (michi_audio_get_metrics(&m) != ESP_OK) {
             send_err = ESP_ERR_NO_MEM; /* defensive: before init */
