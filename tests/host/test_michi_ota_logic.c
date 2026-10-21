@@ -374,6 +374,143 @@ static void test_trial_boot_audio_health_gate(void)
 }
 
 /* =========================================================================
+ * H23-A: boot classification and full decision walk
+ *
+ * The boot decision must distinguish four situations that all used to collapse
+ * into "pending verify" whenever the OTA read failed:
+ *   - a confirmed / factory image          -> normal, may confirm
+ *   - an image awaiting verification       -> pending, the ONLY rollback target
+ *   - no OTA history (first USB flash)     -> uninitialized, must not loop
+ *   - an unprovable state                  -> unknown, never confirm, never loop
+ * ======================================================================= */
+
+static const char *k_classify_ids =
+    "BOOT-CLASS: running_known / ota_slot / read / image_state";
+
+static void test_boot_classification(void)
+{
+    printf("%s\n", k_classify_ids);
+
+    /* First USB install of a DAC-less board: erased/absent otadata. This is the
+     * exact case that used to be misread as PENDING_VERIFY. */
+    CHECK(michi_ota_classify_boot_state(true, true, MICHI_OTA_READ_NOT_FOUND,
+                                        MICHI_OTA_IMG_UNDEFINED) == MICHI_BOOT_OTA_UNINITIALIZED,
+          "BOOT-CLASS-01: no otadata entry -> UNINITIALIZED (not pending)");
+    CHECK(michi_ota_classify_boot_state(true, true, MICHI_OTA_READ_OK,
+                                        MICHI_OTA_IMG_UNDEFINED) == MICHI_BOOT_OTA_UNINITIALIZED,
+          "BOOT-CLASS-02: readable but unset state -> UNINITIALIZED");
+
+    /* Factory image: not an OTA slot, and the IDF says NOT_SUPPORTED. */
+    CHECK(michi_ota_classify_boot_state(true, false, MICHI_OTA_READ_NOT_SUPPORTED,
+                                        MICHI_OTA_IMG_UNDEFINED) == MICHI_BOOT_OTA_NORMAL,
+          "BOOT-CLASS-03: factory image -> NORMAL");
+
+    /* Confirmed OTA image. */
+    CHECK(michi_ota_classify_boot_state(true, true, MICHI_OTA_READ_OK,
+                                        MICHI_OTA_IMG_VALID) == MICHI_BOOT_OTA_NORMAL,
+          "BOOT-CLASS-04: VALID image -> NORMAL");
+
+    /* The only class with a rollback target. */
+    CHECK(michi_ota_classify_boot_state(true, true, MICHI_OTA_READ_OK,
+                                        MICHI_OTA_IMG_PENDING_VERIFY) == MICHI_BOOT_OTA_PENDING_VERIFY,
+          "BOOT-CLASS-05: PENDING_VERIFY -> PENDING_VERIFY");
+    CHECK(michi_boot_ota_rollback_available(MICHI_BOOT_OTA_PENDING_VERIFY),
+          "BOOT-CLASS-05: rollback available only for pending verify");
+    CHECK(!michi_boot_ota_rollback_available(MICHI_BOOT_OTA_NORMAL) &&
+          !michi_boot_ota_rollback_available(MICHI_BOOT_OTA_UNINITIALIZED) &&
+          !michi_boot_ota_rollback_available(MICHI_BOOT_OTA_UNKNOWN_ERROR),
+          "BOOT-CLASS-05: no rollback target in any other class");
+
+    /* Unprovable / inconsistent inputs are never silently downgraded. */
+    CHECK(michi_ota_classify_boot_state(false, true, MICHI_OTA_READ_OK,
+                                        MICHI_OTA_IMG_VALID) == MICHI_BOOT_OTA_UNKNOWN_ERROR,
+          "BOOT-CLASS-06: running partition unknown -> UNKNOWN_ERROR");
+    CHECK(michi_ota_classify_boot_state(true, true, MICHI_OTA_READ_ERROR,
+                                        MICHI_OTA_IMG_UNDEFINED) == MICHI_BOOT_OTA_UNKNOWN_ERROR,
+          "BOOT-CLASS-07: metadata read error -> UNKNOWN_ERROR");
+    CHECK(michi_ota_classify_boot_state(true, true, MICHI_OTA_READ_INVALID_ARG,
+                                        MICHI_OTA_IMG_UNDEFINED) == MICHI_BOOT_OTA_UNKNOWN_ERROR,
+          "BOOT-CLASS-08: invalid argument -> UNKNOWN_ERROR");
+    CHECK(michi_ota_classify_boot_state(true, false, MICHI_OTA_READ_OK,
+                                        MICHI_OTA_IMG_VALID) == MICHI_BOOT_OTA_UNKNOWN_ERROR,
+          "BOOT-CLASS-09: factory slot with a readable state -> UNKNOWN_ERROR (inconsistent)");
+    CHECK(michi_ota_classify_boot_state(true, true, MICHI_OTA_READ_NOT_SUPPORTED,
+                                        MICHI_OTA_IMG_UNDEFINED) == MICHI_BOOT_OTA_UNKNOWN_ERROR,
+          "BOOT-CLASS-10: OTA slot reported unsupported -> UNKNOWN_ERROR (inconsistent)");
+    CHECK(michi_ota_classify_boot_state(true, true, MICHI_OTA_READ_OK,
+                                        MICHI_OTA_IMG_NEW) == MICHI_BOOT_OTA_UNKNOWN_ERROR,
+          "BOOT-CLASS-11: running a NEW image -> UNKNOWN_ERROR");
+    CHECK(michi_ota_classify_boot_state(true, true, MICHI_OTA_READ_OK,
+                                        MICHI_OTA_IMG_INVALID) == MICHI_BOOT_OTA_UNKNOWN_ERROR,
+          "BOOT-CLASS-12: running an INVALID image -> UNKNOWN_ERROR");
+    CHECK(michi_ota_classify_boot_state(true, true, MICHI_OTA_READ_OK,
+                                        MICHI_OTA_IMG_ABORTED) == MICHI_BOOT_OTA_UNKNOWN_ERROR,
+          "BOOT-CLASS-13: running an ABORTED image -> UNKNOWN_ERROR");
+    CHECK(michi_ota_classify_boot_state(true, true, MICHI_OTA_READ_OK,
+                                        MICHI_OTA_IMG_UNKNOWN) == MICHI_BOOT_OTA_UNKNOWN_ERROR,
+          "BOOT-CLASS-14: unknown image state -> UNKNOWN_ERROR");
+}
+
+static void test_boot_decision_walk(void)
+{
+    printf("BOOT-DECIDE: class + critical + expected_audio + audio_available -> verdict/actions\n");
+
+    /* Normal boot with working audio: the healthy path. */
+    michi_boot_decision_t d = michi_boot_decide(MICHI_BOOT_OTA_NORMAL, true, true, true);
+    CHECK(d.verdict == OTA_SELFTEST_PASS && d.report_verdict &&
+          !d.restart_for_rollback && !d.restricted,
+          "BOOT-DECIDE-01: normal + audio ok -> PASS, confirmed, no restart");
+
+    /* Normal boot without DAC: DEGRADED and no restart (the H22.1 fix). */
+    d = michi_boot_decide(MICHI_BOOT_OTA_NORMAL, true, true, false);
+    CHECK(d.verdict == OTA_SELFTEST_DEGRADED && d.report_verdict &&
+          !d.restart_for_rollback && !d.restricted,
+          "BOOT-DECIDE-02: normal + audio expected but missing -> DEGRADED, no restart");
+
+    /* First USB flash of a DAC-less board: UNINITIALIZED must behave like a
+     * normal boot, which is what the old bool got wrong. */
+    d = michi_boot_decide(MICHI_BOOT_OTA_UNINITIALIZED, true, true, false);
+    CHECK(d.verdict == OTA_SELFTEST_DEGRADED && !d.restart_for_rollback,
+          "BOOT-DECIDE-03: first USB install without DAC -> DEGRADED, no restart");
+
+    /* Critical failure without a rollback target: FATAL, but no restart loop;
+     * the unit stays up in restricted diagnostics. */
+    d = michi_boot_decide(MICHI_BOOT_OTA_NORMAL, false, true, true);
+    CHECK(d.verdict == OTA_SELFTEST_FATAL && d.report_verdict &&
+          !d.restart_for_rollback && d.restricted,
+          "BOOT-DECIDE-04: normal + critical failure -> FATAL, restricted, no restart");
+    d = michi_boot_decide(MICHI_BOOT_OTA_UNINITIALIZED, false, true, false);
+    CHECK(d.verdict == OTA_SELFTEST_FATAL && !d.restart_for_rollback && d.restricted,
+          "BOOT-DECIDE-05: uninitialized + critical failure -> FATAL, restricted, no restart");
+
+    /* Pending verification: the only class that may restart, and only because
+     * that restart performs the rollback. */
+    d = michi_boot_decide(MICHI_BOOT_OTA_PENDING_VERIFY, true, true, false);
+    CHECK(d.verdict == OTA_SELFTEST_FATAL && d.report_verdict &&
+          d.restart_for_rollback && !d.restricted,
+          "BOOT-DECIDE-06: pending + audio missing -> FATAL, rollback restart");
+    d = michi_boot_decide(MICHI_BOOT_OTA_PENDING_VERIFY, false, true, true);
+    CHECK(d.verdict == OTA_SELFTEST_FATAL && d.restart_for_rollback && !d.restricted,
+          "BOOT-DECIDE-07: pending + critical failure -> FATAL, rollback restart");
+    d = michi_boot_decide(MICHI_BOOT_OTA_PENDING_VERIFY, true, true, true);
+    CHECK(d.verdict == OTA_SELFTEST_PASS && d.report_verdict && !d.restart_for_rollback,
+          "BOOT-DECIDE-08: pending + healthy -> PASS (confirms the image)");
+    d = michi_boot_decide(MICHI_BOOT_OTA_PENDING_VERIFY, true, false, false);
+    CHECK(d.verdict == OTA_SELFTEST_DEGRADED && d.report_verdict && !d.restart_for_rollback,
+          "BOOT-DECIDE-09: pending + diagnostic SKU without audio -> DEGRADED, confirmed");
+
+    /* Unprovable image: never confirm, never restart, always restricted. */
+    d = michi_boot_decide(MICHI_BOOT_OTA_UNKNOWN_ERROR, true, true, true);
+    CHECK(d.verdict == OTA_SELFTEST_DEGRADED && !d.report_verdict &&
+          !d.restart_for_rollback && d.restricted,
+          "BOOT-DECIDE-10: unknown OTA state -> no report, no restart, restricted");
+    d = michi_boot_decide(MICHI_BOOT_OTA_UNKNOWN_ERROR, false, true, false);
+    CHECK(d.verdict == OTA_SELFTEST_FATAL && !d.report_verdict &&
+          !d.restart_for_rollback && d.restricted,
+          "BOOT-DECIDE-11: unknown OTA state + critical failure -> FATAL, still no restart");
+}
+
+/* =========================================================================
  * main
  * ======================================================================= */
 
@@ -383,6 +520,8 @@ int main(void)
     test_nvs_pending_version_cmp();
     test_boot_latch_decision();
     test_trial_boot_audio_health_gate();
+    test_boot_classification();
+    test_boot_decision_walk();
 
     if (failures == 0) {
         printf("PASS test_michi_ota_logic\n");

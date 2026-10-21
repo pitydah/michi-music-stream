@@ -492,40 +492,27 @@ void app_main(void)
                              state_ok &&
                              boot_events_ok;
 
-    /* A FATAL verdict only buys anything when an OTA update is awaiting
-     * verification: refusing to cancel it makes the bootloader roll back. On a
-     * normal boot there is no rollback target, so halting just restarts forever
-     * - that is what a DAC-less diagnostic board used to hit. Unknown state
-     * stays on the strict path (fail-closed). */
-    bool trial_boot = true;
-    const esp_err_t trial_err = michi_ota_running_image_pending_verify(&trial_boot);
-    if (trial_err != ESP_OK) {
-        ESP_LOGW(TAG, "trial boot state unreadable (%s): treating as trial boot",
-                 esp_err_to_name(trial_err));
-        trial_boot = true;
+    /* H23-A: classify the boot from the real OTA metadata. Only a pending
+     * verification carries a rollback target, so only that class may justify a
+     * restart. A missing OTA history (first USB flash) is UNINITIALIZED and an
+     * unreadable state is UNKNOWN_ERROR: neither is "pending", and neither may
+     * be reported to the OTA module because nothing can be proven about it. */
+    michi_boot_ota_state_t boot_ota = MICHI_BOOT_OTA_UNKNOWN_ERROR;
+    (void)michi_ota_classify_boot(&boot_ota);
+    const michi_boot_decision_t boot_dec =
+        michi_boot_decide(boot_ota, critical_ok, expected_audio,
+                          profile->audio_available);
+    ESP_LOGI(TAG, "boot_class=%s verdict=%d report=%d rollback_restart=%d restricted=%d",
+             michi_boot_ota_state_name(boot_ota), (int)boot_dec.verdict,
+             (int)boot_dec.report_verdict, (int)boot_dec.restart_for_rollback,
+             (int)boot_dec.restricted);
+    if (boot_ota == MICHI_BOOT_OTA_UNKNOWN_ERROR) {
+        ESP_LOGE(TAG, "boot: OTA state unprovable - image left untouched, restricted diagnostics");
     }
-    ESP_LOGI(TAG, "trial_boot=%d expected_audio=%d audio_available=%d",
-             (int)trial_boot, (int)expected_audio, (int)profile->audio_available);
-
-    const ota_selftest_res_t trial_res = evaluate_trial_boot_gate(
-        critical_ok, trial_boot, expected_audio, profile->audio_available);
-    michi_selftest_result_t st_res;
-    if (trial_res == OTA_SELFTEST_FATAL) {
-        if (critical_ok && expected_audio && !profile->audio_available) {
-            ESP_LOGE(TAG, "trial boot gate: audio expected (profile='%s', source=%d) but audio_available=false on a trial boot -> FATAL (triggers rollback)",
-                     dac_prof, (int)dac_src);
-        }
-        st_res = MICHI_SELFTEST_FATAL;
-    } else if (trial_res == OTA_SELFTEST_DEGRADED) {
-        if (critical_ok && expected_audio && !profile->audio_available) {
-            ESP_LOGW(TAG, "trial boot gate: audio expected (profile='%s', source=%d) but audio_available=false on a normal boot -> DEGRADED (no rollback target, diagnostics stay up)",
-                     dac_prof, (int)dac_src);
-        }
-        st_res = MICHI_SELFTEST_DEGRADED;
-    } else {
-        st_res = MICHI_SELFTEST_PASS;
+    if (boot_dec.report_verdict) {
+        michi_ota_boot_selftest_done(boot_dec.verdict);
     }
-    michi_ota_boot_selftest_done(st_res);
+    const michi_selftest_result_t st_res = boot_dec.verdict;
 
     /* Local (SD) update check (phase 17, review F2): NOT called directly
      * anymore. The FSM observer registered by michi_ota_init triggers
@@ -546,14 +533,22 @@ void app_main(void)
         ESP_LOGI(TAG, "boot=ok mode=%s audio_available=true",
                  michi_product_profile_tier_name());
     } else if (st_res == MICHI_SELFTEST_DEGRADED) {
-        ESP_LOGI(TAG, "boot=degraded mode=%s audio_available=false",
-                 michi_product_profile_tier_name());
-    } else {
-        ESP_LOGE(TAG, "FATAL: self_test failed - boot halted");
-        /* En teoria ya reseteó, pero si no fue un boot OTA,
-           llegó aquí, así que lo detenemos. */
+        ESP_LOGI(TAG, "boot=degraded mode=%s audio_available=%d restricted=%d",
+                 michi_product_profile_tier_name(),
+                 (int)profile->audio_available, (int)boot_dec.restricted);
+    } else if (boot_dec.restart_for_rollback) {
+        /* michi_ota_boot_selftest_done() already restarted for the rollback when
+         * the image was pending. Reaching here means the image stopped being
+         * pending between classification and reporting; a restart is still the
+         * only way for the bootloader to select the other slot. */
+        ESP_LOGE(TAG, "FATAL: self-test failed on a pending OTA image - restarting for rollback");
         esp_restart();
         return;
+    } else {
+        /* No rollback target: restarting would loop forever and hide the
+         * failure. Show it in the FSM and keep HTTP diagnostics reachable. */
+        ESP_LOGE(TAG, "FATAL: self-test failed - restricted diagnostic mode (no rollback target)");
+        (void)michi_state_request(MICHI_STATE_FATAL_ERROR);
     }
 
     for (;;) {

@@ -1782,21 +1782,72 @@ bool michi_ota_busy(void)
     return busy;
 }
 
-esp_err_t michi_ota_running_image_pending_verify(bool *out_pending)
+static michi_ota_read_result_t read_result_from_err(esp_err_t err)
 {
-    if (out_pending == NULL) {
+    switch (err) {
+    case ESP_OK:
+        return MICHI_OTA_READ_OK;
+    case ESP_ERR_NOT_FOUND:
+        return MICHI_OTA_READ_NOT_FOUND;
+    case ESP_ERR_NOT_SUPPORTED:
+        return MICHI_OTA_READ_NOT_SUPPORTED;
+    case ESP_ERR_INVALID_ARG:
+        return MICHI_OTA_READ_INVALID_ARG;
+    default:
+        return MICHI_OTA_READ_ERROR;
+    }
+}
+
+static michi_ota_image_state_t image_state_from_idf(esp_ota_img_states_t st)
+{
+    switch (st) {
+    case ESP_OTA_IMG_NEW:
+        return MICHI_OTA_IMG_NEW;
+    case ESP_OTA_IMG_PENDING_VERIFY:
+        return MICHI_OTA_IMG_PENDING_VERIFY;
+    case ESP_OTA_IMG_VALID:
+        return MICHI_OTA_IMG_VALID;
+    case ESP_OTA_IMG_INVALID:
+        return MICHI_OTA_IMG_INVALID;
+    case ESP_OTA_IMG_ABORTED:
+        return MICHI_OTA_IMG_ABORTED;
+    case ESP_OTA_IMG_UNDEFINED:
+        return MICHI_OTA_IMG_UNDEFINED;
+    default:
+        return MICHI_OTA_IMG_UNKNOWN;
+    }
+}
+
+esp_err_t michi_ota_classify_boot(michi_boot_ota_state_t *out_state)
+{
+    if (out_state == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
+    /* Fail-safe default: anything that goes wrong below leaves the caller on
+     * the unprovable path, never on "pending" and never on "normal". */
+    *out_state = MICHI_BOOT_OTA_UNKNOWN_ERROR;
+
     const esp_partition_t *running = esp_ota_get_running_partition();
     if (running == NULL) {
+        ESP_LOGE(TAG, "ota: boot_classify running_unknown");
         return ESP_ERR_INVALID_STATE;
     }
+
+    /* is_ota_partition() in esp_ota_ops.c is static; mirror its test so the
+     * decision does not depend on the IDF's error codes alone. */
+    const bool is_ota_slot = running->type == ESP_PARTITION_TYPE_APP &&
+                             running->subtype >= ESP_PARTITION_SUBTYPE_APP_OTA_0 &&
+                             running->subtype < ESP_PARTITION_SUBTYPE_APP_OTA_MAX;
+
     esp_ota_img_states_t st = ESP_OTA_IMG_UNDEFINED;
     const esp_err_t err = esp_ota_get_state_partition(running, &st);
-    if (err != ESP_OK) {
-        return err;
-    }
-    *out_pending = (st == ESP_OTA_IMG_PENDING_VERIFY);
+    const michi_ota_read_result_t read = read_result_from_err(err);
+
+    *out_state = michi_ota_classify_boot_state(true, is_ota_slot, read,
+                                               image_state_from_idf(st));
+    ESP_LOGI(TAG, "ota: boot_classify state=%s partition=%s read_err=%s ota_slot=%d",
+             michi_boot_ota_state_name(*out_state), running->label,
+             err == ESP_OK ? "OK" : esp_err_to_name(err), (int)is_ota_slot);
     return ESP_OK;
 }
 

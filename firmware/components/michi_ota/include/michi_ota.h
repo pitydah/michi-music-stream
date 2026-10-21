@@ -6,6 +6,10 @@
 
 #include "esp_err.h"
 
+/* michi_boot_ota_state_t / michi_boot_decision_t live in the pure logic layer;
+ * the boot classifier in this header returns them. */
+#include "michi_ota_logic.h"
+
 /* Error text buffer size (single source of truth: michi_ota.c writes it,
  * the HTTP diagnostics handler reads it with this bound). */
 #define MICHI_OTA_ERR_MAX 96
@@ -258,21 +262,23 @@ typedef enum {
 esp_err_t michi_ota_boot_selftest_done(michi_selftest_result_t selftest_result);
 
 /**
- * @brief Reports whether the running image is awaiting OTA verification.
+ * @brief Classifies this boot from the real OTA metadata (H23-A).
  *
- * True means this boot is a trial boot: the image is in
- * ESP_OTA_IMG_PENDING_VERIFY and a FATAL self-test has a rollback target. The
- * trial-boot gate uses this to tell "refuse to cancel verification so the
- * bootloader rolls back" apart from "restart a normal boot forever".
+ * Distinguishes a confirmed image, one awaiting verification, a device with no
+ * OTA history (first USB flash: ESP_ERR_NOT_FOUND / NOT_SUPPORTED) and a state
+ * that cannot be proven. Only PENDING_VERIFY carries a rollback target, so only
+ * that class may ever justify a restart.
  *
- * Independent of michi_ota_init(): safe to call at any point of app_main.
+ * Fail-safe: on any unexpected condition the output is set to
+ * MICHI_BOOT_OTA_UNKNOWN_ERROR, which never confirms the image and never
+ * restarts. Independent of michi_ota_init(): safe to call from app_main.
  *
- * @param out_pending Receives true when the running image is PENDING_VERIFY.
- * @return ESP_OK; ESP_ERR_INVALID_ARG on NULL; ESP_ERR_INVALID_STATE (or the
- *         esp_ota_get_state_partition error) when it cannot be determined -
- *         callers must treat an error as "unknown" and stay on the strict path.
+ * @param out_state Receives the boot class.
+ * @return ESP_OK on a completed classification (even UNKNOWN_ERROR);
+ *         ESP_ERR_INVALID_ARG on NULL; ESP_ERR_INVALID_STATE when even the
+ *         running partition cannot be resolved (out_state is still set).
  */
-esp_err_t michi_ota_running_image_pending_verify(bool *out_pending);
+esp_err_t michi_ota_classify_boot(michi_boot_ota_state_t *out_state);
 
 #ifdef __cplusplus
 }
