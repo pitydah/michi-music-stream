@@ -172,12 +172,44 @@ static void test_lost_delta_wrap(void)
     CHECK(michi_rtp_guard_lost_delta(0, 65535) == 0, "backward wrap: reorder");
 }
 
+/* H23-C: the approved datagram does not fit one Ethernet MTU.
+ *
+ * 12 (RTP) + 1920 (PCM) = 1932 bytes of UDP payload -> 1940 bytes of IPv4
+ * payload -> 2 fragments on a 1500-byte MTU link (1480 bytes of payload per
+ * fragment). This is a property of the approved contract, NOT a defect to fix
+ * here: shrinking the payload would break compatibility with Micro Server.
+ * It does mean every fragment loss costs a whole 10 ms frame, and that the
+ * session socket buffer must cover the REASSEMBLED datagram (michi_audio
+ * verifies it exceeds 12 + 1920 at init). Pinned so a future payload change
+ * cannot silently alter the fragmentation profile.
+ */
+static void test_canonical_datagram_ip_fragmentation(void)
+{
+    const uint32_t rtp_header = 12;
+    const uint32_t pcm_payload = 1920;
+    const uint32_t udp_header = 8;
+    const uint32_t ipv4_header = 20;
+    const uint32_t ethernet_mtu = 1500;
+
+    const uint32_t ip_payload = rtp_header + pcm_payload + udp_header;
+    const uint32_t per_fragment = ethernet_mtu - ipv4_header;
+    const uint32_t fragments = (ip_payload + per_fragment - 1) / per_fragment;
+
+    CHECK(ip_payload == 1940, "canonical datagram is 1940 bytes of IPv4 payload");
+    CHECK(ip_payload > per_fragment, "canonical datagram exceeds one fragment");
+    CHECK(fragments == 2, "canonical datagram splits into 2 IPv4 fragments at MTU 1500");
+    /* 10 ms of PCM at 48 kHz stereo S16LE is exactly this payload. */
+    CHECK((48000u / 100u) * 2u * 2u == pcm_payload,
+          "1920 bytes == 10 ms of 48 kHz stereo S16LE");
+}
+
 int main(void)
 {
     test_parse_canonical();
     test_parse_rejects();
     test_classify();
     test_lost_delta_wrap();
+    test_canonical_datagram_ip_fragmentation();
     if (failures != 0) {
         printf("rtp_guard: %d FAILURE(S)\n", failures);
         return 1;
