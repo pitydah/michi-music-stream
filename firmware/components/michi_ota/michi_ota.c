@@ -903,6 +903,53 @@ static esp_err_t download_binary(const char *url, const char *expect_hex)
  * its own buffers before calling it. ota_task_fail terminates the task.
  * ------------------------------------------------------------------ */
 
+/* H23 closure P0: keep the operational authority in step with the OTA cycle.
+ *
+ * The FSM already moves to MICHI_STATE_UPDATING, but michi_ops_gate stayed
+ * READY, so a diagnostics dump claimed playback/OTA were allowed while an
+ * update owned the device. Save the pre-update state (always READY or
+ * DIAGNOSTIC: the start gate rejects everything else) and restore it if the
+ * update fails. A successful update reboots, which resets the gate to
+ * BOOT_PENDING by construction. */
+static michi_ops_state_t s_ops_before_update = MICHI_OPS_BOOT_PENDING;
+static bool s_ops_update_active;
+
+static void ops_enter_updating(void)
+{
+    s_ops_before_update = michi_ops_get();
+    if (michi_ops_set(MICHI_OPS_UPDATING) == 0) {
+        s_ops_update_active = true;
+        ESP_LOGI(TAG, "ota: ops=updating (was %s)",
+                 michi_ops_state_name(s_ops_before_update));
+    } else {
+        /* Should be unreachable: the start gate only admits READY/DIAGNOSTIC.
+         * Leave the gate untouched rather than inventing a state. */
+        ESP_LOGW(TAG, "ota: ops transition to updating refused (state=%s)",
+                 michi_ops_state_name(michi_ops_get()));
+    }
+}
+
+static void ops_exit_updating(void)
+{
+    if (!s_ops_update_active) {
+        return;
+    }
+    s_ops_update_active = false;
+    const michi_ops_state_t target = (s_ops_before_update == MICHI_OPS_READY)
+                                         ? MICHI_OPS_READY
+                                         : MICHI_OPS_DIAGNOSTIC;
+    if (michi_ops_set(target) != 0) {
+        /* Something tightened the gate while the update ran (RESTRICTED or
+         * FATAL). That restriction wins: never relax it because an update
+         * failed. */
+        ESP_LOGW(TAG, "ota: ops stays %s after failed update",
+                 michi_ops_state_name(michi_ops_get()));
+        return;
+    }
+    ESP_LOGI(TAG, "ota: ops restored to %s after failed update",
+             michi_ops_state_name(target));
+}
+
 static void ota_task_success(michi_ota_ctx_t *ctx, const char *version,
                              const char *source)
 {
@@ -931,6 +978,9 @@ static void ota_task_fail(michi_ota_ctx_t *ctx, esp_err_t err,
     /* F15: report_error captures the cause directly (guaranteed even with
      * a full bus queue) and posts best-effort for the observers. */
     (void)michi_state_report_error(MICHI_EVENT_UPDATE_FAILED, (uint32_t)err);
+    /* The update no longer owns the device, so playback may resume under the
+     * pre-update authorisation (unless something tightened it meanwhile). */
+    ops_exit_updating();
     michi_state_request(MICHI_STATE_IDLE);
     xSemaphoreTake(s_ctx.mutex, portMAX_DELAY);
     s_ctx.task = NULL; /* redundant with set_failed, kept as defense */
@@ -1515,6 +1565,8 @@ static esp_err_t ota_spawn_task(TaskFunction_t task_fn, void *arg)
                  esp_err_to_name(req_err), michi_state_name(michi_state_get()));
     }
     michi_state_post(MICHI_EVENT_UPDATE_STARTED, 0);
+    /* The update now owns the device: deny playback and further OTA writes. */
+    ops_enter_updating();
     return ESP_OK;
 }
 

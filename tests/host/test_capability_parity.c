@@ -296,7 +296,19 @@ static void test_restricted_boot_hides_playback(void)
     CHECK(michi_ops_set(MICHI_OPS_DIAGNOSTIC) == 0, "diagnostic");
     CHECK(michi_ops_ota_allowed(), "H23-RESTRICT-07: diagnostic board stays updatable");
     CHECK(!michi_ops_playback_allowed(), "H23-RESTRICT-07: but it cannot play");
-    CHECK(michi_ops_set(MICHI_OPS_READY) == 0, "back to ready");
+
+    /* UPDATING: the update owns the device. Playback and further OTA writes are
+     * denied while diagnostics stay available, and the authority returns to
+     * normal service when the update finishes. */
+    CHECK(michi_ops_set(MICHI_OPS_UPDATING) == 0, "H23-UPDATING-01: enter updating");
+    CHECK(!michi_ops_playback_allowed(), "H23-UPDATING-02: no playback during an update");
+    CHECK(!michi_ops_ota_allowed(), "H23-UPDATING-03: no nested OTA during an update");
+    CHECK(!michi_product_profile_session_allowed(&p),
+          "H23-UPDATING-04: session gate closed during an update");
+    CHECK(michi_product_profile_capabilities_for(&p).diagnostics,
+          "H23-UPDATING-05: diagnostics stay advertised");
+    CHECK(michi_ops_set(MICHI_OPS_READY) == 0, "H23-UPDATING-06: update finished -> ready");
+    CHECK(michi_ops_playback_allowed(), "H23-UPDATING-06: playback resumes after the update");
 }
 
 int main(void)
