@@ -256,7 +256,6 @@ static int draw_track_info(uint16_t *fb, uint16_t fb_w, uint16_t fb_h,
 
 void michi_ui_draw_screen_boot(uint16_t *fb, uint16_t fw, uint16_t fh, uint16_t oy)
 {
-    ui_kicker(fb,fw,fh,oy,18,16,"STREAM / INICIO",UI_BRAND_COPPER);
     ui_hero(fb,fw,fh,oy,"michi","Iniciando receptor",MICHI_UI_TEXT_SECONDARY);
     michi_ui_draw_activity_dots(fb,fw,fh,oy,160,206,3,13,UI_BRAND_COPPER);
 }
@@ -312,7 +311,6 @@ void michi_ui_draw_screen_ready(uint16_t *fb,uint16_t fw,uint16_t fh,uint16_t oy
 
 void michi_ui_draw_screen_provisioning(uint16_t *fb,uint16_t fw,uint16_t fh,uint16_t oy)
 {
-    ui_kicker(fb,fw,fh,oy,18,16,"MICHI HOME / PREPARACION",UI_BRAND_COPPER);
     michi_ui_draw_brand(fb,fw,fh,oy,140,65,40);
     ui_draw_text_centered(fb,fw,fh,oy,122,"Configurando",michi_ui_font_get(MICHI_FONT_LG),MICHI_UI_TEXT_PRIMARY);
     ui_panel(fb,fw,fh,oy,16,165,288,44,MICHI_UI_SURFACE,MICHI_UI_SURFACE_ELEVATED);
