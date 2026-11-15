@@ -27,6 +27,8 @@
 
 #include <string.h>
 
+#include "driver/gpio.h"
+#include "esp_rom_sys.h"
 #include "driver/i2c_master.h"
 #include "esp_log.h"
 #include "nvs.h"
@@ -272,6 +274,37 @@ esp_err_t michi_dac_init(void)
          * pull-ups enabled as a fallback; the README requires measuring
          * external pull-ups (2.2-4.7 kOhm) before raising the speed to
          * 400 kHz (internal ~45 kOhm are marginal there). */
+        /* Bus-level diagnostic (H23 hardware audit): sample the idle level of
+         * both lines BEFORE the driver takes them over. The internal pull-up is
+         * enabled, so a healthy unloaded bus reads 1/1. A line stuck at 0 means
+         * something is clamping it (miswired pin landing on GND, an unpowered
+         * module holding the bus, or a short). This is the difference between
+         * "no device ACKs at any address" (ESP_ERR_NOT_FOUND, NACK) and "the
+         * bus cannot transfer at all" (ESP_ERR_TIMEOUT): without it, a wiring
+         * fault is indistinguishable from an absent DAC. Read-only, then the
+         * pins are reset so the I2C driver starts from a clean state. */
+        gpio_config_t line_probe = {
+            .pin_bit_mask = (1ULL << CONFIG_MICHI_DAC_I2C_SDA) |
+                            (1ULL << CONFIG_MICHI_DAC_I2C_SCL),
+            .mode = GPIO_MODE_INPUT,
+            .pull_up_en = GPIO_PULLUP_ENABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        if (gpio_config(&line_probe) == ESP_OK) {
+            esp_rom_delay_us(2000); /* let the weak pull-ups settle */
+            const int sda_level = gpio_get_level(CONFIG_MICHI_DAC_I2C_SDA);
+            const int scl_level = gpio_get_level(CONFIG_MICHI_DAC_I2C_SCL);
+            ESP_LOGI(TAG, "i2c idle levels: sda=%d scl=%d (internal pull-up on; 0 = line held low)",
+                     sda_level, scl_level);
+            if (sda_level == 0 || scl_level == 0) {
+                ESP_LOGW(TAG, "i2c bus clamped low: check DAC power (5V), common GND "
+                              "and that SDA/SCL are not swapped or landing on GND");
+            }
+            gpio_reset_pin(CONFIG_MICHI_DAC_I2C_SDA);
+            gpio_reset_pin(CONFIG_MICHI_DAC_I2C_SCL);
+        }
+
         i2c_master_bus_config_t bus_cfg = {
             .i2c_port = MICHI_DAC_I2C_PORT,
             .sda_io_num = CONFIG_MICHI_DAC_I2C_SDA,
@@ -366,6 +399,22 @@ esp_err_t michi_dac_detect(void)
     err = autodetect();
     if (err != ESP_ERR_NOT_FOUND) {
         return err;
+    }
+
+    /* Bus-level discriminator (H23 hardware audit). The Waveshare PCM5122
+     * board carries a separate EEPROM at 0x50 on the SAME bus. Probing only
+     * that documented address separates two very different failures:
+     *   - ACK  -> the bus is electrically alive, the DAC chip itself is not
+     *             answering (power rail, address strap, or a dead chip);
+     *   - NACK -> nothing on the bus answers at these pins (wiring);
+     *   - TIMEOUT -> the bus cannot complete a transfer (weak/absent external
+     *             pull-ups, a clamped line, or a held clock).
+     * Read-only, single documented address, no register writes. */
+    if (s_bus != NULL) {
+        const esp_err_t eeprom = i2c_master_probe(s_bus, 0x50, 100);
+        ESP_LOGW(TAG, "bus diagnostic: probe 0x50 (module EEPROM) -> %s",
+                 eeprom == ESP_OK ? "ACK (bus alive)"
+                                  : esp_err_to_name(eeprom));
     }
 
     if (profile[0] != '\0') {

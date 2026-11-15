@@ -35,7 +35,7 @@ menu "Michi Music Stream Hardware"
 
     config MICHI_I2S_BCLK
         int "External DAC I2S BCLK pin"
-        default 3
+        default 8
         help
           I2S bit clock to the external DAC. Default 3 is a free GPIO with no
           Waveshare ESP32-S3-LCD-2 collision. REQUIRES physical validation: measure
@@ -54,7 +54,7 @@ menu "Michi Music Stream Hardware"
 
     config MICHI_I2S_DIN
         int "External DAC I2S DIN pin"
-        default 5
+        default 7
         help
           I2S serial data to the external DAC. Default 5 is a free GPIO with no
           Waveshare ESP32-S3-LCD-2 collision. REQUIRES physical validation: measure

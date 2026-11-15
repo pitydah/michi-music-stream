@@ -52,6 +52,21 @@ static inline esp_err_t gpio_set_direction(gpio_num_t gpio_num, gpio_mode_t mode
     return ESP_OK;
 }
 
+/* Host stand-ins used by the DAC bus-level diagnostic. The simulated bus is
+ * idle-high: a test that needs the "line clamped low" path must override these
+ * explicitly, so the default never invents a wiring fault. */
+static inline int gpio_get_level(gpio_num_t gpio_num)
+{
+    (void)gpio_num;
+    return 1;
+}
+
+static inline esp_err_t gpio_reset_pin(gpio_num_t gpio_num)
+{
+    (void)gpio_num;
+    return ESP_OK;
+}
+
 static inline esp_err_t gpio_set_level(gpio_num_t gpio_num, uint32_t level)
 {
     (void)gpio_num;
