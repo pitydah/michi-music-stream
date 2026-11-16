@@ -18,12 +18,31 @@ static uint8_t s_root_pk[MICHI_HOME_KEY_BYTES] = {0};
 static michi_revocation_t s_revocations[MICHI_MAX_REVOCATIONS];
 static size_t s_revocation_count = 0;
 
+static bool field_has_nul(const char *s, size_t max_len)
+{
+    return memchr(s, '\0', max_len) != NULL;
+}
+
+static bool revocation_strings_valid(const michi_revocation_t *r)
+{
+    return field_has_nul(r->home_id, sizeof(r->home_id)) &&
+           field_has_nul(r->revoked_device_michi_id, sizeof(r->revoked_device_michi_id)) &&
+           field_has_nul(r->revoked_at, sizeof(r->revoked_at)) &&
+           field_has_nul(r->reason, sizeof(r->reason)) &&
+           field_has_nul(r->signature, sizeof(r->signature));
+}
+
 esp_err_t michi_home_init(void)
 {
     nvs_handle_t h;
+    s_revocation_count = 0;
+    memset(s_revocations, 0, sizeof(s_revocations));
+
     esp_err_t err = nvs_open(MICHI_HOME_NVS_NAMESPACE, NVS_READONLY, &h);
     if (err != ESP_OK) {
         s_provisioned = false;
+        memset(s_home_id, 0, sizeof(s_home_id));
+        memset(s_root_pk, 0, sizeof(s_root_pk));
         return ESP_OK; /* Unprovisioned is normal on first boot */
     }
 
@@ -32,6 +51,8 @@ esp_err_t michi_home_init(void)
     if (err != ESP_OK) {
         nvs_close(h);
         s_provisioned = false;
+        memset(s_home_id, 0, sizeof(s_home_id));
+        memset(s_root_pk, 0, sizeof(s_root_pk));
         return ESP_OK;
     }
 
@@ -52,8 +73,34 @@ esp_err_t michi_home_init(void)
     if (nvs_open(MICHI_HOME_NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
         size_t blob_len = sizeof(s_revocations);
         if (nvs_get_blob(h, "revocations", s_revocations, &blob_len) == ESP_OK) {
-            s_revocation_count = blob_len / sizeof(michi_revocation_t);
-            ESP_LOGI(TAG, "Loaded %u revocations from NVS", (unsigned)s_revocation_count);
+            if (blob_len == 0 || blob_len > sizeof(s_revocations) ||
+                (blob_len % sizeof(michi_revocation_t)) != 0) {
+                ESP_LOGW(TAG, "Discarding malformed NVS revocations blob (len=%u)",
+                         (unsigned)blob_len);
+                memset(s_revocations, 0, sizeof(s_revocations));
+                s_revocation_count = 0;
+            } else {
+                size_t raw_count = blob_len / sizeof(michi_revocation_t);
+                size_t valid_count = 0;
+                for (size_t i = 0; i < raw_count; i++) {
+                    if (revocation_strings_valid(&s_revocations[i]) &&
+                        michi_home_verify_revocation(&s_revocations[i], s_root_pk)) {
+                        if (valid_count != i) {
+                            s_revocations[valid_count] = s_revocations[i];
+                        }
+                        valid_count++;
+                    } else {
+                        ESP_LOGW(TAG, "Discarding corrupted NVS revocation entry %u", (unsigned)i);
+                    }
+                }
+                if (valid_count < MICHI_MAX_REVOCATIONS) {
+                    memset(&s_revocations[valid_count], 0,
+                           (MICHI_MAX_REVOCATIONS - valid_count) * sizeof(michi_revocation_t));
+                }
+                s_revocation_count = valid_count;
+                ESP_LOGI(TAG, "Loaded %u verified revocations from NVS",
+                         (unsigned)s_revocation_count);
+            }
         }
         nvs_close(h);
     }

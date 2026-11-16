@@ -740,6 +740,42 @@ static void test_revocation(void)
     michi_home_init();
     CHECK(michi_home_is_device_revoked(client_michi_id), "revocation loaded from NVS on restart");
 
+    /* Verify corrupted NVS revocation entries (unterminated / invalid signature / bad length) */
+    {
+        nvs_handle_t nh;
+        michi_revocation_t corrupted[2];
+        corrupted[0] = rev;
+        corrupted[1] = rev;
+        memset(corrupted[1].revoked_device_michi_id, 'A', sizeof(corrupted[1].revoked_device_michi_id));
+        CHECK(nvs_open(MICHI_HOME_NVS_NAMESPACE, NVS_READWRITE, &nh) == ESP_OK,
+              "open NVS for corruption injection");
+        CHECK(nvs_set_blob(nh, "revocations", corrupted, sizeof(corrupted)) == ESP_OK,
+              "write mixed valid+unterminated revocations blob");
+        CHECK(nvs_commit(nh) == ESP_OK, "commit mixed revocations blob");
+        nvs_close(nh);
+
+        michi_home_init();
+        CHECK(michi_home_get_revocations(NULL, 0) == 1,
+              "unterminated/corrupt revocation entry discarded on NVS reload");
+        CHECK(michi_home_is_device_revoked(client_michi_id),
+              "intact signed revocation survives corrupt sibling entry");
+
+        uint8_t bad_len_blob[17];
+        memset(bad_len_blob, 0x5A, sizeof(bad_len_blob));
+        CHECK(nvs_open(MICHI_HOME_NVS_NAMESPACE, NVS_READWRITE, &nh) == ESP_OK,
+              "open NVS for bad-length blob");
+        CHECK(nvs_set_blob(nh, "revocations", bad_len_blob, sizeof(bad_len_blob)) == ESP_OK,
+              "write unaligned revocations blob");
+        CHECK(nvs_commit(nh) == ESP_OK, "commit unaligned blob");
+        nvs_close(nh);
+
+        michi_home_init();
+        CHECK(michi_home_get_revocations(NULL, 0) == 0,
+              "malformed length NVS revocations blob discarded cleanly");
+        CHECK(!michi_home_is_device_revoked(client_michi_id),
+              "no phantom revocations after discarding bad-length blob");
+    }
+
     michi_home_erase();
     CHECK(!michi_home_is_device_revoked(client_michi_id), "revocations erased on home erase");
 }
