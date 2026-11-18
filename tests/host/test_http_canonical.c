@@ -525,6 +525,19 @@ static void test_uuid_format(void)
     CHECK(variant == '8' || variant == '9' || variant == 'a' || variant == 'b', "variant RFC 4122");
 }
 
+static void test_time_diagnostic_status_and_mdns_state(void)
+{
+    printf("time diagnostic: TIME_NOT_SYNCED and provisional mDNS state (STREAM-08/18)\n");
+    CHECK(strcmp(michi_http_time_diagnostic_status(false), "TIME_NOT_SYNCED") == 0,
+          "unsynced clock emits TIME_NOT_SYNCED");
+    CHECK(strcmp(michi_http_time_mdns_state(false), "UNTRUSTED_PROVISIONAL") == 0,
+          "unsynced clock marks mDNS UNTRUSTED_PROVISIONAL");
+    CHECK(strcmp(michi_http_time_diagnostic_status(true), "SYNCED") == 0,
+          "synced clock emits SYNCED");
+    CHECK(strcmp(michi_http_time_mdns_state(true), "SIGNED") == 0,
+          "synced clock marks mDNS SIGNED");
+}
+
 int main(void)
 {
     /* H23 Phase 1: capabilities now also depend on the runtime authority, which
@@ -543,6 +556,7 @@ int main(void)
     test_info_fail_closed_missing_identity();
     test_info_fail_closed_diagnostic();
     test_uuid_format();
+    test_time_diagnostic_status_and_mdns_state();
 
     if (failures != 0) {
         printf("\n%d host HTTP/JSON DTO check(s) FAILED\n", failures);

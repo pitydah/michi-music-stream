@@ -232,6 +232,18 @@ esp_err_t build_info_json_with_identity(cJSON *root, const michi_product_profile
                                         const char *public_key);
 
 /**
+ * @brief Diagnostic status code for the wall clock ("SYNCED" or
+ *        "TIME_NOT_SYNCED" per LINK-22 / STREAM-08 / STREAM-18).
+ */
+const char *michi_http_time_diagnostic_status(bool synchronized);
+
+/**
+ * @brief Provisional mDNS/discovery trust state derived from clock sync
+ *        ("SIGNED" when synchronized, "UNTRUSTED_PROVISIONAL" otherwise).
+ */
+const char *michi_http_time_mdns_state(bool synchronized);
+
+/**
  * @brief Send the single canonical error response.
  *
  * The code is derived from the HTTP status per the section 2.7 map

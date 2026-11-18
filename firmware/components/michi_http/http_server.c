@@ -1286,15 +1286,23 @@ static esp_err_t diagnostics_get_handler(httpd_req_t *req)
     if (send_err == ESP_OK) {
         /* P0-02 time block: wall-clock state, non-sensitive. unix_ms is
          * 0 while not synchronized (michi_time never hands out a
-         * silently invalid timestamp). */
+         * silently invalid timestamp); status explicitly reports
+         * TIME_NOT_SYNCED and UNTRUSTED_PROVISIONAL discovery state. */
+        const bool time_synced = michi_time_is_synchronized();
         cJSON *tm = cJSON_AddObjectToObject(root, "time");
         if (tm == NULL ||
             cJSON_AddBoolToObject(tm, "synchronized",
-                                  michi_time_is_synchronized()) == NULL ||
+                                  time_synced) == NULL ||
             cJSON_AddNumberToObject(tm, "unix_ms",
                                     (double)michi_time_unix_ms()) == NULL ||
             cJSON_AddStringToObject(tm, "source",
-                                    michi_time_sync_source()) == NULL) {
+                                    michi_time_sync_source()) == NULL ||
+            cJSON_AddStringToObject(
+                tm, "status",
+                michi_http_time_diagnostic_status(time_synced)) == NULL ||
+            cJSON_AddStringToObject(
+                tm, "mdns_state",
+                michi_http_time_mdns_state(time_synced)) == NULL) {
             send_err = ESP_ERR_NO_MEM;
         }
     }

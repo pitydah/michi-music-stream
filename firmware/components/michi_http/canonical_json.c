@@ -233,3 +233,13 @@ esp_err_t build_info_json(cJSON *root, const michi_product_profile_t *p)
     }
     return ret;
 }
+
+const char *michi_http_time_diagnostic_status(bool synchronized)
+{
+    return synchronized ? "SYNCED" : "TIME_NOT_SYNCED";
+}
+
+const char *michi_http_time_mdns_state(bool synchronized)
+{
+    return synchronized ? "SIGNED" : "UNTRUSTED_PROVISIONAL";
+}
